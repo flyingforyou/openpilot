@@ -30,7 +30,7 @@ def manager_init() -> None:
   set_time(cloudlog)
 
   # save boot log
-  subprocess.call("./bootlog", cwd=os.path.join(BASEDIR, "selfdrive/loggerd"))
+  subprocess.call("./bootlog", cwd=os.path.join(BASEDIR, "system/loggerd"))
 
   params = Params()
   params.clear_all(ParamKeyType.CLEAR_ON_MANAGER_START)
@@ -44,13 +44,29 @@ def manager_init() -> None:
     ("OpenpilotEnabledToggle", "1"),
     ("ShowDebugUI", "1"),
     ("ShowDateTime", "1"),
+    ("ShowHudMode", "1"),
+    ("ShowSteerRotate", "1"),
+    ("ShowPathEnd", "1"),
+    ("ShowAccelRpm", "1"),
+    ("ShowTpms", "1"),
+    ("ShowSteerMode", "1"),
+    ("ShowDeviceState", "1"),
+    ("ShowConnInfo", "1"),
+    ("ShowLaneInfo", "2"),
+    ("ShowBlindSpot", "1"),
+    ("ShowGapInfo", "1"),
     ("AutoResumeFromGas", "1"),
     ("AutoResumeFromGasSpeed", "30"),
     ("AutoResumeFromGasSpeedMode", "0"),    
-    ("AutoCancelFromGas", "25"),    
+    ("AutoCancelFromGasMode", "1"),    
     ("OpkrPrebuiltOn", "0"),
     ("AutoCurveSpeedCtrl", "1"),
+    ("AutoCurveSpeedIndex", "6"),
     ("AutoCurveSpeedFactor", "100"),
+    ("AutoTurnControl", "0"),
+    ("AutoTurnSpeed", "40"),
+    ("AutoTurnTimeMax", "200"),
+    ("AutoLaneChangeSpeed", "30"),
     ("AutoNaviSpeedCtrl", "1"),
     ("AutoNaviSpeedCtrlStart", "22"),
     ("AutoNaviSpeedCtrlEnd", "6"),
@@ -63,14 +79,14 @@ def manager_init() -> None:
     ("AutoResumeFromBrakeReleaseTrafficSign", "1"),
     ("XEgoObstacleCost", "6"),
     ("JEgoCost", "5"),
-    ("AChangeCost", "150"),
+    ("AChangeCost", "180"),
     ("DangerZoneCost", "100"),
-    ("LeadDangerFactor", "75"),
+    ("LeadDangerFactor", "80"),
     ("LongControlActiveSound", "1"),
     ("AccelLimitEcoSpeed", "3"),
     ("AccelBoost", "100"),
     ("StartAccelApply", "0"),
-    ("StopAccelApply", "0"),
+    ("StopAccelApply", "30"),
     ("TrafficStopDistanceAdjust", "400"),
     ("AutoSpeedUptoRoadSpeedLimit", "100"),
     ("ApplyLongDynamicCost", "0"), 
@@ -95,28 +111,28 @@ def manager_init() -> None:
     ("AutoSyncCruiseSpeedMax", "120"),       
     ("StopDistance", "600"), 
     ("CustomMapbox", "0"),    
-    ("E2eDecelSpeed", "90"),        
+    ("E2eDecelSpeed", "0"),        
     ("LongitudinalTuningKf", "110"),     
     ("LongitudinalTuningKpV", "100"),     
-    ("LongitudinalTuningKiV", "0"),     
+    ("LongitudinalTuningKiV", "200"),     
     ("EnableRadarTracks", "0"),      
     ("EnableAutoEngage", "0"),      
-    ("ApplyDynamicTFollow", "110"), 
+    ("ApplyDynamicTFollow", "105"), 
     ("ApplyDynamicTFollowApart", "95"), 
-    ("ApplyDynamicTFollowDecel", "110"), 
+    ("ApplyDynamicTFollowDecel", "105"), 
     ("SccConnectedBus2", "0"),   
     ("TFollowRatio", "100"),
     ("JerkUpperLowerLimit", "8"),    
     ("KeepEngage", "1"),
-    ("UseLanelines", "0"),    
+    ("UseLaneLineSpeed", "80"),    
     ("PathOffset", "0"),  
     ("PathCostApply", "100"),
     ("HapticFeedbackWhenSpeedCamera", "0"),       
     ("SoftHoldMode", "1"),       
-    ("ApplyModelDistOrder", "32"),       
-    ("SteeringRateCost", "800"),       
+    ("ApplyModelDistOrder", "28"),       
+    ("SteeringRateCost", "700"),       
     ("LateralMotionCost", "11"),       
-    ("LateralAccelCost", "100"),       
+    ("LateralAccelCost", "0"),       
     ("LateralJerkCost", "5"),       
     ("LateralTestMode", "0"),       
     ("SteerActuatorDelay", "30"),       
@@ -242,7 +258,7 @@ def manager_thread() -> None:
     for param in ("DoUninstall", "DoShutdown", "DoReboot"):
       if params.get_bool(param):
         shutdown = True
-        params.put("LastManagerExitReason", param)
+        params.put("LastManagerExitReason", f"{param} {datetime.datetime.now()}")
         cloudlog.warning(f"Shutting down manager - {param} set")
 
     if shutdown:

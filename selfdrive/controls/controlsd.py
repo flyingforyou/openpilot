@@ -116,9 +116,6 @@ class Controls:
     if not self.disengage_on_accelerator:
       self.CP.alternativeExperience |= ALTERNATIVE_EXPERIENCE.DISABLE_DISENGAGE_ON_GAS
 
-    if self.CP.dashcamOnly and self.params.get_bool("DashcamOverride"):
-      self.CP.dashcamOnly = False
-
     # read params
     self.is_metric = self.params.get_bool("IsMetric")
     self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
@@ -201,6 +198,7 @@ class Controls:
     self.autoEngageCounter = 200
     self.right_lane_visible = False
     self.left_lane_visible = False
+    self.desireEvent_prev = 0
 
     # TODO: no longer necessary, aside from process replay
     self.sm['liveParameters'].valid = True
@@ -312,26 +310,31 @@ class Controls:
         self.events.add(EventName.calibrationInvalid)
 
     # Handle lane change
-    if self.sm['lateralPlan'].laneChangeState == LaneChangeState.preLaneChange:
-      direction = self.sm['lateralPlan'].laneChangeDirection
-      md = self.sm['modelV2']
-      left_road_edge = -md.roadEdges[0].y[0]
-      right_road_edge = md.roadEdges[1].y[0]
+    desireEvent = self.sm['lateralPlan'].desireEvent
+    if desireEvent != 0:
+      self.events.add(desireEvent)
+    #if self.sm['lateralPlan'].laneChangeState == LaneChangeState.preLaneChange:
+    #  direction = self.sm['lateralPlan'].laneChangeDirection
+    #  md = self.sm['modelV2']
+    #  left_road_edge = -md.roadEdges[0].y[0]
+    #  right_road_edge = md.roadEdges[1].y[0]
 
-      if (CS.leftBlindspot and direction == LaneChangeDirection.left) or \
-         (CS.rightBlindspot and direction == LaneChangeDirection.right):
-        self.events.add(EventName.laneChangeBlocked)
-      elif ((left_road_edge < 3.5) and direction == LaneChangeDirection.left) or \
-         ((right_road_edge < 3.5) and direction == LaneChangeDirection.right):
-        self.events.add(EventName.laneChangeBlocked)
-      else:
-        if direction == LaneChangeDirection.left:
-          self.events.add(EventName.preLaneChangeLeft)
-        else:
-          self.events.add(EventName.preLaneChangeRight)
-    elif self.sm['lateralPlan'].laneChangeState in (LaneChangeState.laneChangeStarting,
-                                                    LaneChangeState.laneChangeFinishing):
-      self.events.add(EventName.laneChange)
+    #  if (CS.leftBlindspot and direction == LaneChangeDirection.left) or \
+    #     (CS.rightBlindspot and direction == LaneChangeDirection.right):
+    #    self.events.add(EventName.laneChangeBlocked)
+    #  elif ((left_road_edge < 3.5) and direction == LaneChangeDirection.left) or \
+    #     ((right_road_edge < 3.5) and direction == LaneChangeDirection.right):
+    #    if CS.vEgo > 30.0 * CV.KPH_TO_MS:
+    #      self.events.add(EventName.laneChangeBlocked)
+    #  else:
+    #    if direction == LaneChangeDirection.left:
+    #      self.events.add(EventName.preLaneChangeLeft)
+    #    else:
+    #      self.events.add(EventName.preLaneChangeRight)
+    #elif self.sm['lateralPlan'].laneChangeState in (LaneChangeState.laneChangeStarting,
+    #                                                LaneChangeState.laneChangeFinishing):
+    #  self.events.add(EventName.laneChange)
+
 
     for i, pandaState in enumerate(self.sm['pandaStates']):
       # All pandas must match the list of safetyConfigs, and if outside this list, must be silent or noOutput
@@ -623,8 +626,8 @@ class Controls:
       torque_params = self.sm['liveTorqueParameters']
       if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
         self.LaC.update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered, torque_params.frictionCoefficientFiltered)
-        self.debugText2 = "LiveT[{:.0f}{}]: {:.3f},{:.3f},{:.3f}".format(torque_params.totalBucketPoints, torque_params.liveValid, 
-                                                                         torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,torque_params.frictionCoefficientFiltered)                                                                                              
+        #self.debugText2 = "LT[{:.0f}:{}] {:.3f},{:.3f},{:.3f}".format(torque_params.totalBucketPoints, "ON" if torque_params.liveValid else "OFF", 
+        #                                                                 torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,torque_params.frictionCoefficientFiltered)                                                                                              
         #print(self.debugText2)
 
     lat_plan = self.sm['lateralPlan']
@@ -683,7 +686,7 @@ class Controls:
       t_since_plan = (self.sm.frame - self.sm.rcv_frame['longitudinalPlan']) * DT_CTRL
       actuators.accel = self.LoC.update(CC.longActive, CS, long_plan, pid_accel_limits, t_since_plan, CC)
       #self.debugText2 = 'Accel=[{:1.2f}]: {:1.2f},{:1.2f}'.format(actuators.accel, pid_accel_limits[0], pid_accel_limits[1])
-      #self.debugText2 = self.LoC.debugLoCText
+      self.debugText2 = self.LoC.debugLoCText
       #print(self.debugText2)
 
       # Steering PID loop and lateral MPC
@@ -912,7 +915,7 @@ class Controls:
     controlsState.cumLagMs = -self.rk.remaining * 1000.
 
     #print("cumLagMsg={:5.2f}".format(-self.rk.remaining * 1000.))
-    self.debugText1 = 'cumLagMs={:5.1f}'.format(-self.rk.remaining * 1000.)
+    #self.debugText1 = 'cumLagMs={:5.1f}'.format(-self.rk.remaining * 1000.)
     controlsState.debugText1 = self.debugText1
 
     controlsState.startMonoTime = int(start_time * 1e9)

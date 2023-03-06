@@ -22,17 +22,19 @@ const SteeringLimits HYUNDAI_STEERING_LIMITS = HYUNDAI_LIMITS(509, 30, 30);
 const SteeringLimits HYUNDAI_STEERING_LIMITS_ALT = HYUNDAI_LIMITS(409, 11, 11);
 
 const LongitudinalLimits HYUNDAI_LONG_LIMITS = {
-  .max_accel = 200,   // 1/100 m/s2
+  .max_accel = 250,   // 1/100 m/s2
   .min_accel = -400,  // 1/100 m/s2
 };
 
 const CanMsg HYUNDAI_TX_MSGS[] = {
+  {593, 2, 8},                              // MDPS12, Bus 2
   {832, 0, 8},  // LKAS11 Bus 0
   {1265, 0, 4}, // CLU11 Bus 0
   {1157, 0, 4}, // LFAHDA_MFC Bus 0
 };
 
 const CanMsg HYUNDAI_LONG_TX_MSGS[] = {
+  {593, 2, 8},  // MDPS12, Bus 2
   {832, 0, 8},  // LKAS11 Bus 0
   {1265, 0, 4}, // CLU11 Bus 0
   {1265, 1, 4}, // CLU11 Bus 1
@@ -48,6 +50,7 @@ const CanMsg HYUNDAI_LONG_TX_MSGS[] = {
 };
 
 const CanMsg HYUNDAI_CAMERA_SCC_TX_MSGS[] = {
+  {593, 2, 8},                              // MDPS12, Bus 2
   {832, 0, 8},  // LKAS11 Bus 0
   {1265, 2, 4}, // CLU11 Bus 2
   {1157, 0, 4}, // LFAHDA_MFC Bus 0
@@ -110,6 +113,7 @@ bool apilot_connected_prev = false;
 uint32_t LKAS11_lastTxTime = 0;
 uint32_t LKAS11_maxTxDiffTime = 0;
 bool LKAS11_forwarding = true;
+uint32_t last_ts_mdps12_from_op = 0; // from neokii
 
 
 addr_checks hyundai_rx_checks = {hyundai_addr_checks, HYUNDAI_ADDR_CHECK_LEN};
@@ -192,7 +196,7 @@ static int hyundai_rx_hook(CANPacket_t *to_push) {
 
   bool valid = addr_safety_check(to_push, &hyundai_rx_checks,
                                  hyundai_get_checksum, hyundai_compute_checksum,
-                                 hyundai_get_counter);
+                                 hyundai_get_counter, NULL);
 
   int bus = GET_BUS(to_push);
   int addr = GET_ADDR(to_push);
@@ -359,6 +363,9 @@ static int hyundai_tx_hook(CANPacket_t *to_send) {
   if (addr == 832) {
       LKAS11_lastTxTime = microsecond_timer_get();
   }
+  else if (addr == 593) {
+      last_ts_mdps12_from_op = microsecond_timer_get();
+  }
 
   return tx;
 }
@@ -372,6 +379,7 @@ static int hyundai_fwd_hook(int bus_num, CANPacket_t *to_fwd) {
   int is_lfahda_mfc_msg = (addr == 1157);
   int is_scc_msg = (addr == 1056) || (addr == 1057) || (addr == 1290) || (addr == 905);
   //int is_fca_msg = (addr == 909) || (addr == 1155);
+  uint32_t now = microsecond_timer_get();
 
   //int is_clu11_msg = (addr == 1265);
   //int is_mdps12_msg = (addr = 593);
@@ -383,6 +391,13 @@ static int hyundai_fwd_hook(int bus_num, CANPacket_t *to_fwd) {
   }
   if (bus_num == 0) {
     bus_fwd = 2;
+
+    // from neokii
+    if (addr == 593) {
+        if (now - last_ts_mdps12_from_op < 200000) {
+            bus_fwd = -1;
+        }
+    }
   }
   if (bus_num == 2) {
 
@@ -404,7 +419,7 @@ static int hyundai_fwd_hook(int bus_num, CANPacket_t *to_fwd) {
       }
   }
   if (apilot_connected) {
-      uint32_t now = microsecond_timer_get();
+      //uint32_t now = microsecond_timer_get();
       uint32_t diff = now - LKAS11_lastTxTime;
       if (diff > LKAS11_maxTxDiffTime)
       {

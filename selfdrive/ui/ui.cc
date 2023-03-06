@@ -113,7 +113,7 @@ void update_model(UIState *s,
   const auto road_edge_stds = model.getRoadEdgeStds();
   for (int i = 0; i < std::size(scene.road_edge_vertices); i++) {
     scene.road_edge_stds[i] = road_edge_stds[i];
-    update_line_data(s, road_edges[i], 0.025 * 3.5, 0, 0, &scene.road_edge_vertices[i], max_idx);
+    update_line_data(s, road_edges[i], 0.025 * 6.0, 0, 0, &scene.road_edge_vertices[i], max_idx);
   }
 
   // update path
@@ -218,11 +218,38 @@ static void update_state(UIState *s) {
 
 void ui_update_params(UIState *s) {
   auto params = Params();
-  s->scene.is_metric = params.getBool("IsMetric");
-  s->scene.map_on_left = params.getBool("NavSettingLeftSide");
-  s->show_debug = params.getBool("ShowDebugUI");
-  s->show_datetime = params.getBool("ShowDateTime");
-}
+  static int updateSeq = 0;
+  if (updateSeq++ > 100) updateSeq = 0;
+  switch(updateSeq) {
+  case 0:
+      s->scene.is_metric = params.getBool("IsMetric");
+      s->scene.map_on_left = params.getBool("NavSettingLeftSide");
+      s->show_debug = params.getBool("ShowDebugUI");
+      break;
+  case 10:
+      s->show_datetime = std::atoi(params.get("ShowDateTime").c_str());
+      s->show_mode = std::atoi(params.get("ShowHudMode").c_str());
+      s->show_steer_rotate = std::atoi(params.get("ShowSteerRotate").c_str());
+      break;
+  case 20:
+      s->show_path_end = std::atoi(params.get("ShowPathEnd").c_str());;
+      s->show_accel = std::atoi(params.get("ShowAccelRpm").c_str());;
+      s->show_tpms = std::atoi(params.get("ShowTpms").c_str());;
+      break;
+  case 30:
+      s->show_steer_mode = std::atoi(params.get("ShowSteerMode").c_str());;
+      s->show_device_stat = std::atoi(params.get("ShowDeviceState").c_str());;
+      s->show_conn_info = std::atoi(params.get("ShowConnInfo").c_str());;
+      break;
+  case 40:
+      s->show_lane_info = std::atoi(params.get("ShowLaneInfo").c_str());;
+      s->show_blind_spot = std::atoi(params.get("ShowBlindSpot").c_str());;
+      s->show_gap_info = std::atoi(params.get("ShowGapInfo").c_str());;
+      break;
+  case 50:
+      break;
+  }
+ }
 
 void UIState::updateStatus() {
   if (scene.started && sm->updated("controlsState")) {
@@ -246,7 +273,6 @@ void UIState::updateStatus() {
     if (scene.started) {
       status = STATUS_DISENGAGED;
       scene.started_frame = sm->frame;
-      wide_cam_only = Params().getBool("WideCameraOnly");
     }
     started_prev = scene.started;
     emit offroadTransition(!scene.started);
@@ -264,13 +290,12 @@ UIState::UIState(QObject *parent) : QObject(parent) {
   sm = std::make_unique<SubMaster, const std::initializer_list<const char *>>({
     "modelV2", "controlsState", "liveCalibration", "radarState", "deviceState", "roadCameraState",
     "pandaStates", "carParams", "driverMonitoringState", "carState", "liveLocationKalman", "driverStateV2",
-    "wideRoadCameraState", "managerState", "navInstruction", "navRoute", "gnssMeasurements", "lateralPlan", "longitudinalPlan",
-    "gpsLocationExternal", "carControl", "liveParameters", "roadLimitSpeed",
-    "uiPlan",
+    "wideRoadCameraState", "managerState", "navInstruction", "navRoute", "uiPlan",
+    "lateralPlan", "longitudinalPlan", "gpsLocationExternal", "carControl", "liveParameters", "roadLimitSpeed",
+    "liveTorqueParameters",
   });
 
   Params params;
-  wide_cam_only = params.getBool("WideCameraOnly");
   prime_type = std::atoi(params.get("PrimeType").c_str());
   language = QString::fromStdString(params.get("LanguageSetting"));
 

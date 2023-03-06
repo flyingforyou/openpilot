@@ -21,6 +21,9 @@
 #include "system/camerad/cameras/camera_common.h"
 #include "selfdrive/ui/ui.h"
 
+const int FRAME_BUFFER_SIZE = 5;
+static_assert(FRAME_BUFFER_SIZE <= YUV_BUFFER_COUNT);
+
 class CameraWidget : public QOpenGLWidget, protected QOpenGLFunctions {
   Q_OBJECT
 
@@ -38,6 +41,7 @@ signals:
   void clicked();
   void vipcThreadConnected(VisionIpcClient *);
   void vipcThreadFrameReceived();
+  void vipcAvailableStreamsUpdated(std::set<VisionStreamType>);
 
 protected:
   void paintGL() override;
@@ -68,6 +72,7 @@ protected:
   int stream_stride = 0;
   std::atomic<VisionStreamType> active_stream_type;
   std::atomic<VisionStreamType> requested_stream_type;
+  std::set<VisionStreamType> available_streams;
   QThread *vipc_thread = nullptr;
 
   // Calibration
@@ -85,4 +90,7 @@ protected:
 protected slots:
   void vipcConnected(VisionIpcClient *vipc_client);
   void vipcFrameReceived();
+  void availableStreamsUpdated(std::set<VisionStreamType> streams);
 };
+
+Q_DECLARE_METATYPE(std::set<VisionStreamType>);

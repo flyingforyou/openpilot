@@ -83,6 +83,7 @@ function launch {
   tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
   python ./selfdrive/car/hyundai/values.py > /data/params/d/SupportedCars
+  python ./selfdrive/car/gm/values.py > /data/params/d/SupportedCars_gm
 
   # start manager
   cd selfdrive/manager

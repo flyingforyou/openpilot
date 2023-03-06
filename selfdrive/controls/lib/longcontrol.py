@@ -13,8 +13,8 @@ def long_control_state_trans(CP, active, long_control_state, v_ego, v_target,
                              v_target_1sec, brake_pressed, cruise_standstill, softHold):
   # Ignore cruise standstill if car has a gas interceptor
   cruise_standstill = cruise_standstill and not CP.enableGasInterceptor
-  accelerating = v_target_1sec > v_target
-  planned_stop = (v_ego < CP.vEgoStopping and  #(v_target < CP.vEgoStopping and
+  accelerating = v_target_1sec > (v_target + 0.01)
+  planned_stop = (v_ego < CP.vEgoStopping and  #(v_target < CP.vEgoStopping and ## apilot: 내리막, 신호정지시 질질 가는 현상... v_target으로 보면.. 급정지, v_ego를 보면 질질감..
                   v_target_1sec < CP.vEgoStopping and
                   not accelerating)
   stay_stopped = (v_ego < CP.vEgoStopping and
@@ -66,6 +66,7 @@ class LongControl:
     self.readParamCount = 0
     self.longitudinalTuningKf = 1.0
     self.longitudinalTuningKpV = 1.0
+    self.longitudinalTuningKiV = 0.0
     self.startAccelApply = 0.0
     self.stopAccelApply = 0.0
 
@@ -83,8 +84,9 @@ class LongControl:
       self.longitudinalTuningKpV = float(int(Params().get("LongitudinalTuningKpV", encoding="utf8"))) * 0.01
       self.longitudinalTuningKiV = float(int(Params().get("LongitudinalTuningKiV", encoding="utf8"))) * 0.001
       self.CP.longitudinalTuning.kpV = [self.longitudinalTuningKpV]
-      self.CP.longitudinalTuning.kiV = [self.longitudinalTuningKiV]
+      #self.CP.longitudinalTuning.kiV = [self.longitudinalTuningKiV]
       self.pid._k_p = (self.CP.longitudinalTuning.kpBP, self.CP.longitudinalTuning.kpV)
+      self.pid._k_i = ([0, 2.0], [self.longitudinalTuningKiV, 0.0]) # 정지때만.... i를 적용해보자... 시험..
     elif self.readParamCount == 30:
       pass
     elif self.readParamCount == 40:
@@ -165,6 +167,7 @@ class LongControl:
 
     self.last_output_accel = clip(output_accel, accel_limits[0], accel_limits[1])
 
-    self.debugLoCText = "T:{:.2f} V:{:.2f}={:.1f}-{:.1f} Aout:{:.2f}<{:.2f}".format(t_since_plan, (self.v_pid - CS.vEgo)*3.6, self.v_pid*3.6, CS.vEgo*3.3, self.last_output_accel, output_accel)
+    #self.debugLoCText = "T:{:.2f} V:{:.2f}={:.1f}-{:.1f} Aout:{:.2f}<{:.2f}".format(t_since_plan, (self.v_pid - CS.vEgo)*3.6, self.v_pid*3.6, CS.vEgo*3.3, self.last_output_accel, output_accel)
+    self.debugLoCText = "pid={},vego={:.2f},vt={:.2f},{:.2f},vStop={:.2f}".format(self.long_control_state, CS.vEgo, v_target, v_target_1sec, self.CP.vEgoStopping)
 
     return self.last_output_accel

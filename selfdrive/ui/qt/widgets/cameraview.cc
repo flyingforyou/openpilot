@@ -96,8 +96,10 @@ mat4 get_fit_view_transform(float widget_aspect_ratio, float frame_aspect_ratio)
 CameraWidget::CameraWidget(std::string stream_name, VisionStreamType type, bool zoom, QWidget* parent) :
                           stream_name(stream_name), requested_stream_type(type), zoomed_view(zoom), QOpenGLWidget(parent) {
   setAttribute(Qt::WA_OpaquePaintEvent);
+  qRegisterMetaType<std::set<VisionStreamType>>("availableStreams");
   QObject::connect(this, &CameraWidget::vipcThreadConnected, this, &CameraWidget::vipcConnected, Qt::BlockingQueuedConnection);
   QObject::connect(this, &CameraWidget::vipcThreadFrameReceived, this, &CameraWidget::vipcFrameReceived, Qt::QueuedConnection);
+  QObject::connect(this, &CameraWidget::vipcAvailableStreamsUpdated, this, &CameraWidget::availableStreamsUpdated, Qt::QueuedConnection);
 }
 
 CameraWidget::~CameraWidget() {
@@ -179,7 +181,10 @@ void CameraWidget::stopVipcThread() {
     vipc_thread->wait();
     vipc_thread = nullptr;
   }
-  draw_frame_id = 0;
+}
+
+void CameraWidget::availableStreamsUpdated(std::set<VisionStreamType> streams) {
+  available_streams = streams;
 }
 
 void CameraWidget::updateFrameMat() {
@@ -242,19 +247,22 @@ void CameraWidget::paintGL() {
   std::lock_guard lk(frame_lock);
   if (frames.empty()) return;
 
-  auto frame_it = frames.rbegin();
-  if (draw_frame_id > 0) {
-      auto it = std::find_if(frames.rbegin(), frames.rend(), [=](auto& f) { return f.first == draw_frame_id; });
-      if (it != frames.rend()) frame_it = it;
-  }
-  auto [frame_id, frame] = *frame_it;
+  int frame_idx = frames.size() - 1;
+
+  // Always draw latest frame until sync logic is more stable
+  // for (frame_idx = 0; frame_idx < frames.size() - 1; frame_idx++) {
+  //   if (frames[frame_idx].first == draw_frame_id) break;
+  // }
+
   // Log duplicate/dropped frames
-  if (frame_id == prev_frame_id) {
-      qDebug() << "Drawing same frame twice" << frame_id;
+  if (frames[frame_idx].first == prev_frame_id) {
+    qDebug() << "Drawing same frame twice" << frames[frame_idx].first;
+  } else if (frames[frame_idx].first != prev_frame_id + 1) {
+    qDebug() << "Skipped frame" << frames[frame_idx].first;
   }
-  else if (frame_id != prev_frame_id + 1) {
-      qDebug() << "Skipped frame" << frame_id;
-  }
+  prev_frame_id = frames[frame_idx].first;
+  VisionBuf *frame = frames[frame_idx].second;
+  assert(frame != nullptr);
 
   updateFrameMat();
 
@@ -364,6 +372,14 @@ void CameraWidget::vipcThread() {
 
     if (!vipc_client->connected) {
       clearFrames();
+      auto streams = VisionIpcClient::getAvailableStreams(stream_name, false);
+      if (streams.empty()) {
+        //qWarning() << "VisionIPC connected, but no streams available";
+        QThread::msleep(100);
+        continue;
+      }
+      emit vipcAvailableStreamsUpdated(streams);
+
       if (!vipc_client->connect(false)) {
         QThread::msleep(100);
         continue;
@@ -375,7 +391,7 @@ void CameraWidget::vipcThread() {
       {
         std::lock_guard lk(frame_lock);
         frames.push_back(std::make_pair(meta_main.frame_id, buf));
-        while (frames.size() > YUV_BUFFER_COUNT) {
+        while (frames.size() > FRAME_BUFFER_SIZE) {
           frames.pop_front();
         }
       }
@@ -398,4 +414,5 @@ void CameraWidget::vipcThread() {
 void CameraWidget::clearFrames() {
   std::lock_guard lk(frame_lock);
   frames.clear();
+  available_streams.clear();
 }

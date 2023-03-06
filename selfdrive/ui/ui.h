@@ -160,9 +160,19 @@ public:
   QString language;
 
   QTransform car_space_transform;
-  bool wide_cam_only;
   bool show_debug = false;
-  bool show_datetime = false;
+  int show_datetime = 1;
+  bool show_tpms = true;
+  bool show_accel = true;
+  bool show_steer_rotate = true;
+  bool show_path_end = true;
+  int show_steer_mode = 0;
+  bool show_device_stat = true;
+  bool show_conn_info = true;
+  int  show_lane_info = 2;
+  bool show_blind_spot = true;
+  bool show_gap_info = true;
+  int show_mode = 1;
 
 signals:
   void uiUpdate(const UIState &s);
