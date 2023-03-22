@@ -118,6 +118,7 @@ protected:
   QPixmap ic_steer_yellow;
   QPixmap ic_lane_change_l;
   QPixmap ic_lane_change_r;
+  QPixmap ic_lane_change_inhibit;
   QPixmap ic_turn_l;
   QPixmap ic_turn_r;
   QPixmap ic_blinker_l;

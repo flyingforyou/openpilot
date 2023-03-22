@@ -368,11 +368,13 @@ AnnotatedCameraWidget::AnnotatedCameraWidget(VisionStreamType type, QWidget* par
   ic_steer_yellow = QPixmap("../assets/images/steer_yellow.png");
   ic_lane_change_l = QPixmap("../assets/images/lane_change_l.png");
   ic_lane_change_r = QPixmap("../assets/images/lane_change_r.png");
+  ic_lane_change_inhibit = QPixmap("../assets/images/lane_change_inhibit.png");
   ic_turn_l = QPixmap("../assets/images/turn_l.png");
   ic_turn_r = QPixmap("../assets/images/turn_r.png");
   ic_blinker_l = QPixmap("../assets/images/blink_l.png");
   ic_blinker_r = QPixmap("../assets/images/blink_r.png");
   ic_speed_bg = QPixmap("../assets/images/speed_bg.png");
+
 
 }
 
@@ -1646,6 +1648,8 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
     bool showBg = (disp_dist>0.0) ? true: false;
     auto lateralPlan = sm["lateralPlan"].getLateralPlan();
     auto desire = lateralPlan.getDesire();
+    auto laneChangeDirection = lateralPlan.getLaneChangeDirection();
+    auto desireEvent = lateralPlan.getDesireEvent();
     float desireStateTurnLeft = (desire == cereal::LateralPlan::Desire::TURN_LEFT) ? 1 : 0;
     float desireStateTurnRight = (desire == cereal::LateralPlan::Desire::TURN_RIGHT) ? 1 : 0;
     float desireStateLaneChangeLeft = (desire == cereal::LateralPlan::Desire::LANE_CHANGE_LEFT) ? 1 : 0;
@@ -1772,6 +1776,25 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
             else if (desireStateTurnRight > 0.5) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_turn_r);
             else if (desireStateLaneChangeLeft > 0.5) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_l);
             else if (desireStateLaneChangeRight > 0.5) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_r);
+            if (desireEvent == cereal::CarEvent::EventName::PRE_LANE_CHANGE_LEFT) {
+                painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_l);
+                painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
+            }
+            else if (desireEvent == cereal::CarEvent::EventName::PRE_LANE_CHANGE_RIGHT) {
+                painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_r);
+                painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
+            }
+            else if (desireEvent == cereal::CarEvent::EventName::LANE_CHANGE_BLOCKED) {
+                if (laneChangeDirection == cereal::LateralPlan::LaneChangeDirection::LEFT) {
+                    painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_l);
+                    painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
+                }
+                else if (laneChangeDirection == cereal::LateralPlan::LaneChangeDirection::RIGHT) {
+                    painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_r);
+                    painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
+                }
+            }
+
         }
         // blinker 표시~~
         if (true) {
