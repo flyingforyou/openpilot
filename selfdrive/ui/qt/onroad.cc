@@ -1776,15 +1776,15 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
             else if (desireStateTurnRight > 0.5) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_turn_r);
             else if (desireStateLaneChangeLeft > 0.5) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_l);
             else if (desireStateLaneChangeRight > 0.5) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_r);
-            if (desireEvent == cereal::CarEvent::EventName::PRE_LANE_CHANGE_LEFT) {
+            if (desireEvent == 57) {
                 painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_l);
                 painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
             }
-            else if (desireEvent == cereal::CarEvent::EventName::PRE_LANE_CHANGE_RIGHT) {
+            else if (desireEvent == 58) {
                 painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_r);
                 painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
             }
-            else if (desireEvent == cereal::CarEvent::EventName::LANE_CHANGE_BLOCKED) {
+            else if (desireEvent == 71) {
                 if (laneChangeDirection == cereal::LateralPlan::LaneChangeDirection::LEFT) {
                     painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_l);
                     painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
