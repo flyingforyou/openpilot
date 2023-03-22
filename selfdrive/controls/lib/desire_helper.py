@@ -72,6 +72,7 @@ class DesireHelper:
     self.autoLaneChangeSpeed = int(Params().get("AutoLaneChangeSpeed", encoding="'utf8"))
 
     self.desireEvent = 0
+    self.waitTorqueApplied = False
 
 
   def update(self, carstate, lateral_active, lane_change_prob, md, turn_prob):
@@ -116,8 +117,7 @@ class DesireHelper:
       self.lane_change_state = LaneChangeState.off
       #self.lane_change_direction = LaneChangeDirection.none
       self.desireEvent = 0
-    else:
-      #self.lane_change_direction = LaneChangeDirection.none
+    else:      
       # 1. 감지 및 결정 단계: LaneChangeState.off: 깜박이와 속도검사. 
       #   - 정지상태: 깜박이를 켜고 있음: 출발할때 검사해야함.
       #   - 저속: 차선변경속도이하: 턴할지, 차로변경할지 결정해야함.
@@ -125,6 +125,7 @@ class DesireHelper:
       #   - 고속
       if self.lane_change_state == LaneChangeState.off:
         self.desireEvent = 0
+        self.lane_change_direction = LaneChangeDirection.none
         self.turnControlState = False
         if one_blinker and (not self.prev_one_blinker or v_ego_kph < 4 or steering_pressed):  ##깜박이가 켜진시점에 검사, 정지상태에서는 lat_active가 아님. 깜박이켠방향으로 핸들을 돌림.
           # 정지상태, 출발할때
@@ -224,7 +225,8 @@ class DesireHelper:
         elif steering_pressed:
           pass
         elif carstate.steeringPressed: # 반대로 조향한경우 off
-          self.lane_change_state = LaneChangeState.off
+          #self.lane_change_state = LaneChangeState.off
+          pass
 
         # 98% certainty
         if self.turnControlState:
