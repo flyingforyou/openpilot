@@ -369,6 +369,7 @@ AnnotatedCameraWidget::AnnotatedCameraWidget(VisionStreamType type, QWidget* par
   ic_lane_change_l = QPixmap("../assets/images/lane_change_l.png");
   ic_lane_change_r = QPixmap("../assets/images/lane_change_r.png");
   ic_lane_change_inhibit = QPixmap("../assets/images/lane_change_inhibit.png");
+  ic_lane_change_inhibit = QPixmap("../assets/images/lane_change_steer.png");
   ic_turn_l = QPixmap("../assets/images/turn_l.png");
   ic_turn_r = QPixmap("../assets/images/turn_r.png");
   ic_blinker_l = QPixmap("../assets/images/blink_l.png");
@@ -1777,21 +1778,21 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
             else if (desireStateLaneChangeLeft > 0.5) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_l);
             else if (desireStateLaneChangeRight > 0.5) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_r);
             if (desireEvent == 57) {
+                painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_steer);
                 painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_l);
-                painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
             }
             else if (desireEvent == 58) {
+                painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_steer);
                 painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_r);
-                painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
             }
             else if (desireEvent == 71) {
                 if (laneChangeDirection == cereal::LateralPlan::LaneChangeDirection::LEFT) {
-                    painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_l);
                     painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
+                    painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_l);
                 }
                 else if (laneChangeDirection == cereal::LateralPlan::LaneChangeDirection::RIGHT) {
-                    painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_r);
                     painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_inhibit);
+                    painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_lane_change_r);
                 }
             }
 

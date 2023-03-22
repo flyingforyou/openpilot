@@ -23,13 +23,13 @@ DESIRES = {
     LaneChangeState.off: log.LateralPlan.Desire.none,
     LaneChangeState.preLaneChange: log.LateralPlan.Desire.none,
     LaneChangeState.laneChangeStarting: log.LateralPlan.Desire.laneChangeLeft,
-    LaneChangeState.laneChangeFinishing: log.LateralPlan.Desire.laneChangeLeft,
+    LaneChangeState.laneChangeFinishing: log.LateralPlan.Desire.none,
   },
   LaneChangeDirection.right: {
     LaneChangeState.off: log.LateralPlan.Desire.none,
     LaneChangeState.preLaneChange: log.LateralPlan.Desire.none,
     LaneChangeState.laneChangeStarting: log.LateralPlan.Desire.laneChangeRight,
-    LaneChangeState.laneChangeFinishing: log.LateralPlan.Desire.laneChangeRight,
+    LaneChangeState.laneChangeFinishing: log.LateralPlan.Desire.none,
   },
 }
 DESIRES_TURN = {
@@ -118,7 +118,7 @@ class DesireHelper:
       #self.lane_change_direction = LaneChangeDirection.none
       self.desireEvent = 0
     else:      
-      # 1. 감지 및 결정 단계: LaneChangeState.off: 깜박이와 속도검사. 
+      # 0. 감지 및 결정 단계: LaneChangeState.off: 깜박이와 속도검사. 
       #   - 정지상태: 깜박이를 켜고 있음: 출발할때 검사해야함.
       #   - 저속: 차선변경속도이하: 턴할지, 차로변경할지 결정해야함.
       #   - 중속: 80키로이하: 
@@ -150,15 +150,25 @@ class DesireHelper:
 
           # 중속
           elif v_ego_kph < 80.0:
-            if carstate.brakePressed:  # 감속하면서 깜박이.... 경우에따라 턴을 할까??(HW)
+            # 브레이킹하면서 깜박이.... 좌: 좌회전확률이 높음(차로변경차선변경 또는 좌회전). , 우: 우회전확률이 높으나(우측차로변경차선 또는 우회전), 
+            # 하지만... 차로변경차선이 있는지 없는지는 알수 없음... 
+            # 따라서, 브레이크밟으면서 깜박이는 턴속도가 될때까지, 차선변경 턴은 하지 않도록 하자~
+            if carstate.brakePressed:  
+              #로드에지가 아닌경우
               if not road_edge_detected:
                 if steering_pressed and checkAutoTurnEnabled:
-                  self.turnControlState = True
-                self.lane_change_state = LaneChangeState.preLaneChange
+                  self.turnControlState = True                
+                  self.lane_change_state = LaneChangeState.preLaneChange
+                elif carstate.rightBlinker:
+                  self.lane_change_state = LaneChangeState.preLaneChange
+                elif carstate.leftBlinker and steering_pressed:
+                  self.lane_change_state = LaneChangeState.preLaneChange
+              #우, 로드에지
               elif carstate.rightBlinker:
                 if checkAutoTurnEnabled and (checkAutoTurnSpeed or steering_pressed):
                   self.turnControlState = True
                 self.lane_change_state = LaneChangeState.preLaneChange
+              #좌, 로드에지
               else:
                 if checkAutoTurnEnabled and (checkAutoTurnSpeed or steering_pressed):
                   self.turnControlState = True
@@ -173,7 +183,7 @@ class DesireHelper:
               self.lane_change_ll_prob = 1.0
               self.waitTorqueApplied = False
 
-      # 2. 대기단계: LaneChangeState.preLaneChange: 
+      # 1. 대기단계: LaneChangeState.preLaneChange: 
       elif self.lane_change_state == LaneChangeState.preLaneChange:        
         self.desireEvent = 0
         self.lane_change_pulse_timer += DT_MDL
@@ -186,13 +196,13 @@ class DesireHelper:
             self.lane_change_state = LaneChangeState.off
           elif v_ego_kph < 2.0:
             self.lane_change_pulse_timer = 0.0
-          elif self.lane_change_pulse_timer > 0.1: # and not blindspot_detected:
+          elif self.lane_change_pulse_timer > 0.2: # and not blindspot_detected:
             self.lane_change_state = LaneChangeState.laneChangeStarting
         else:
           # 깜박이가 꺼지거나, 속도가 줄어들면... 차선변경 중지.
           if not one_blinker: #속도가 줄어도 차선변경이 가능하게 함(시험), or v_ego_kph < self.autoLaneChangeSpeed:  
             self.lane_change_state = LaneChangeState.off
-          elif self.lane_change_pulse_timer > 0.1:
+          elif self.lane_change_pulse_timer > 0.2:
             if blindspot_detected:
               self.desireEvent = EventName.laneChangeBlocked
               self.waitTorqueApplied = True
@@ -208,7 +218,7 @@ class DesireHelper:
             elif self.desireEvent == 0:
               self.desireEvent = EventName.preLaneChangeLeft if self.lane_change_direction == LaneChangeDirection.left else EventName.preLaneChangeRight
 
-      # LaneChangeState.laneChangeStarting
+      # 2. LaneChangeState.laneChangeStarting
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
         self.desireEvent = EventName.laneChange
         # fade out over .5s
@@ -236,7 +246,7 @@ class DesireHelper:
             if lane_change_prob < 0.02 and self.lane_change_ll_prob < 0.01:
               self.lane_change_state = LaneChangeState.laneChangeFinishing
 
-      # LaneChangeState.laneChangeFinishing
+      # 3.LaneChangeState.laneChangeFinishing
       elif self.lane_change_state == LaneChangeState.laneChangeFinishing:
         self.desireEvent = EventName.laneChange
         # fade in laneline over 1s
