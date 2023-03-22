@@ -216,17 +216,17 @@ class DesireHelper:
 
         ## 차선변경시 핸들을 방향으로 건들면... 턴으로 변경, 반대로 하면 취소..
         if not self.turnControlState:
-          if steering_pressed and checkAutoTurnSpeed:
+          if steering_pressed and checkAutoTurnSpeed:  # 저속, 차선변경중 같은 방향 핸들토크.
             self.turnControlState = True
-          elif carstate.steeringPressed:
-            self.lane_change_state = LaneChangeState.off
-          elif self.lane_change_direction == LaneChangeDirection.right and road_edge_detected and checkAutoTurnSpeed:
+          elif carstate.steeringPressed:  # 차선변경중 핸들토크: 무시
+            #self.lane_change_state = LaneChangeState.off
+            pass
+          elif self.lane_change_direction == LaneChangeDirection.right and road_edge_detected and checkAutoTurnSpeed: # 우측차선변경, 로드엣지, 턴속도, 턴~
             self.turnControlState = True
-        elif steering_pressed:
+        elif steering_pressed: #턴중 핸들돌림... 무시
           pass
-        elif carstate.steeringPressed: # 반대로 조향한경우 off
-          #self.lane_change_state = LaneChangeState.off
-          pass
+        elif carstate.steeringPressed: # 턴중 반대로 핸들돌림... off
+          self.lane_change_state = LaneChangeState.off
 
         # 98% certainty
         if self.turnControlState:
