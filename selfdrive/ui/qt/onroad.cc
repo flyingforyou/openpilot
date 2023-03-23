@@ -369,7 +369,7 @@ AnnotatedCameraWidget::AnnotatedCameraWidget(VisionStreamType type, QWidget* par
   ic_lane_change_l = QPixmap("../assets/images/lane_change_l.png");
   ic_lane_change_r = QPixmap("../assets/images/lane_change_r.png");
   ic_lane_change_inhibit = QPixmap("../assets/images/lane_change_inhibit.png");
-  ic_lane_change_inhibit = QPixmap("../assets/images/lane_change_steer.png");
+  ic_lane_change_steer = QPixmap("../assets/images/lane_change_steer.png");
   ic_turn_l = QPixmap("../assets/images/turn_l.png");
   ic_turn_r = QPixmap("../assets/images/turn_r.png");
   ic_blinker_l = QPixmap("../assets/images/blink_l.png");
