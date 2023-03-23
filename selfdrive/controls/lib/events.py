@@ -532,9 +532,9 @@ EVENTS: Dict[int, Dict[str, Union[Alert, AlertCallbackType]]] = {
     ET.WARNING: Alert(
       "Car Detected in Blindspot or RoadEdge",
       "",
-      AlertStatus.userPrompt, AlertSize.prompt,
+      AlertStatus.userPrompt, AlertSize.none,
       #Priority.LOW, VisualAlert.none, AudibleAlert.prompt, .1),
-      Priority.LOW, VisualAlert.none, AudibleAlert.none, .1),
+      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, .1),
   },
 
   EventName.laneChange: {
