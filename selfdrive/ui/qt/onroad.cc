@@ -1613,7 +1613,7 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
     // 과녁을 표시할 위치를 계산
     const int icon_size = 256;
     const float d_rel = lead_data.getX()[0];
-    float x = std::clamp((float)vd.x(), 500.f, width() - 500.f);
+    float x = std::clamp((float)vd.x(), 550.f, width() - 550.f);
     float y = std::clamp((float)vd.y(), 300.f, height() - 180.f);
 
     y -= ((icon_size / 2) - d_rel);
@@ -1623,6 +1623,8 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         y = path_y; // height() - 250;
     }
     if (y > height() - 400) y = height() - 400;
+
+    if (s->show_mode == 2) y = height() - 400;
 
     x = apilot_filter_x.update(x);
     y = apilot_filter_y.update(y);
@@ -1835,18 +1837,17 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
 #endif
             str.sprintf("%.0f km/h", cur_speed + radar_rel_speed * 3.6);
             if (radar_rel_speed < -0.1) bgColor = redColor(200);
-            else if (radar_rel_speed > 0.1) bgColor = greenColor(200);
-            else bgColor = blackColor(120);
+            else bgColor = greenColor(200);
+
             configFont(painter, "Inter", 40, "Bold");
             if (s->show_steer_mode >= 2) {
-                int radar_y = (path_y > height() - 400) ? height() - 400 : path_y - 40;
+                int radar_y = (path_y > height() - 500) ? height() - 500 : path_y - 40;
                 QRect rectRadar(path_x - 250 / 2, radar_y - 35, 250, 45);
                 painter.setPen(Qt::NoPen);
                 painter.setBrush(bgColor);
                 painter.drawRoundedRect(rectRadar, 15, 15);
                 configFont(painter, "Inter", 40, "Bold");
                 textColor = whiteColor(255);
-
                 drawTextWithColor(painter, path_x, radar_y, str, textColor);
             }
             else {
@@ -1878,7 +1879,7 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
                     //drawTextWithColor(painter, x, y +120, (brake_hold) ? "AUTOHOLD" : "SOFTHOLD", textColor);
                 }
                 else {
-                    drawTextWithColor(painter, x, y +120, "신호대기", textColor);
+                    drawTextWithColor(painter, x, y +120, (lp.getTrafficState()>=1000)?"신호오류":"신호대기", textColor);
                 }
             }
         }
@@ -1948,12 +1949,21 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         if (gap >= 2) painter.drawRect(rectGap2);
         if (gap >= 3) painter.drawRect(rectGap3);
 #endif
-        configFont(painter, "Inter", 60, "Bold");
+        //configFont(painter, "Inter", 60, "Bold");
+        //textColor = whiteColor(255);
+        //QString str;
+        //str.sprintf("%d", gap1);
+        //drawTextWithColor(painter, x + dxGap + 20, y + 0, str, textColor);
+    }
+    // 갭정보표시 중앙위
+    if(true) {
+        configFont(painter, "Inter", 50, "Bold");
         textColor = whiteColor(255);
         QString str;
         //str.sprintf("%.1f", tFollow);
         str.sprintf("%d", gap1);
-        drawTextWithColor(painter, x + dxGap + 20, y + 0, str, textColor);
+        drawTextWithColor(painter, x + dxGap + 15, y + 60, str, textColor);
+
     }
 
     // 타겟하단: 롱컨상태표시
@@ -2053,7 +2063,7 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         //bool long_control = 1;// scc_smoother.getLongControl();
 
         // kph
-        //float applyMaxSpeed = controls_state.getVCruiseOut();// scc_smoother.getApplyMaxSpeed();
+        float applyMaxSpeed = controls_state.getVCruiseOut();// scc_smoother.getApplyMaxSpeed();
         float cruiseMaxSpeed = controls_state.getVCruiseCluster();// scc_smoother.getCruiseMaxSpeed();
         //float xCruiseTarget = lp.getXCruiseTarget() * 3.6;
 
@@ -2148,12 +2158,18 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         cruiseMaxSpeed = 110;
         enabled = true;
         longActiveUser = 2;
+        applyMaxSpeed = 109;
 #endif
         configFont(painter, "Inter", 60, "Bold");
         if (enabled && (longActiveUser > 0 || (longOverride && blinkerOn))) str.sprintf("%d", (int)(cruiseMaxSpeed + 0.5));
         else str = "--";
         color = QColor(0, 255, 0, 255);
         drawTextWithColor(painter, bx+170, by+15, str, color);
+        if (enabled && longActiveUser>0 && applyMaxSpeed < cruiseMaxSpeed - 0.5) {
+            configFont(painter, "Inter", 50, "Bold");
+            str.sprintf("%d", (int)(applyMaxSpeed + 0.5));
+            drawTextWithColor(painter, bx + 280, by, str, color);
+        }
 
 #ifdef __TEST
         check_millis[5] = millis_since_boot();

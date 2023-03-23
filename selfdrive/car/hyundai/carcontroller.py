@@ -54,8 +54,8 @@ class CarController:
     self.accel_last = 0
     self.apply_steer_last = 0
     self.car_fingerprint = CP.carFingerprint
-    self.send_lfa_mfa = True if self.car_fingerprint in FEATURES["send_lfa_mfa"] else False
-    self.send_lfa_mfa_lkas = True if self.car_fingerprint in FEATURES["send_lfa_mfa"] and self.car_fingerprint not in [CAR.HYUNDAI_GENESIS] else False
+    #self.send_lfa_mfa_lkas = True if self.car_fingerprint in FEATURES["send_lfa_mfa"] and self.car_fingerprint not in [CAR.HYUNDAI_GENESIS] else False
+    self.send_lfa_mfa_lkas = CP.flags & HyundaiFlags.SEND_LFA.value
     self.last_button_frame = 0
     self.pcmCruiseButtonDelay = 0
     self.jerkUpperLowerLimit = 12.0       

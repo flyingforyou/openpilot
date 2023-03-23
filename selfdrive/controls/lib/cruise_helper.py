@@ -431,6 +431,7 @@ class CruiseHelper:
     #    #v_cruise_kph = min(v_ego_kph_set, v_cruise_kph) # 레이더가 갑자기 사라지는 경우 현재속도로 세트함.
     
     trafficState = (controls.sm['longitudinalPlan'].trafficState % 100)
+    trafficError = controls.sm['longitudinalPlan'].trafficState >= 1000
     if self.longActiveUser>0:
       if xState != self.xState and xState == XState.softHold:
         controls.events.add(EventName.autoHold)
@@ -445,6 +446,11 @@ class CruiseHelper:
         if (frame - self.trafficSignedFrame)*DT_CTRL > 20.0: # 알리고 20초가 지나면 알리자.
           controls.events.add(EventName.trafficStopping)
           self.trafficSignedFrame = frame
+      elif trafficError:
+        if (frame - self.trafficSignedFrame)*DT_CTRL > 20.0: 
+          controls.events.add(EventName.trafficError)
+          self.trafficSignedFrame = frame
+
 
     self.trafficState = trafficState
     self.dRel = dRel
