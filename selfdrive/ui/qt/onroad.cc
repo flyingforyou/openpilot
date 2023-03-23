@@ -370,6 +370,8 @@ AnnotatedCameraWidget::AnnotatedCameraWidget(VisionStreamType type, QWidget* par
   ic_lane_change_r = QPixmap("../assets/images/lane_change_r.png");
   ic_lane_change_inhibit = QPixmap("../assets/images/lane_change_inhibit.png");
   ic_lane_change_steer = QPixmap("../assets/images/lane_change_steer.png");
+  ic_bsd_l = QPixmap("../assets/images/bsd_l.png");
+  ic_bsd_r = QPixmap("../assets/images/bsd_r.png");
   ic_turn_l = QPixmap("../assets/images/turn_l.png");
   ic_turn_r = QPixmap("../assets/images/turn_r.png");
   ic_blinker_l = QPixmap("../assets/images/blink_l.png");
@@ -1644,6 +1646,8 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
     float v_ego_kph = v_ego * MS_TO_KPH;
     float cur_speed = v_ego * (s->scene.is_metric ? MS_TO_KPH : MS_TO_MPH);
     bool brake_valid = car_state.getBrakeLights();
+    bool bsd_l = car_state.getLeftBlindspot();
+    bool bsd_r = car_state.getRightBlindspot();
     // 차로변경/자동턴 표시
     bool showDistInfo = true;
     bool showBg = (disp_dist>0.0) ? true: false;
@@ -1802,6 +1806,12 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
             painter.setOpacity(1.0);
             if (rightBlinker && blinkerOn) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_blinker_r);
             if (leftBlinker && blinkerOn) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_blinker_l);
+        }
+        // BSD 표시
+        if (true) {
+            painter.setOpacity(1.0);
+            if (bsd_l) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_bsd_l);
+            if (bsd_r) painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_bsd_r);
         }
 
 
