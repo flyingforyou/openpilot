@@ -2168,7 +2168,7 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         if (enabled && longActiveUser>0 && applyMaxSpeed < cruiseMaxSpeed - 0.5) {
             configFont(painter, "Inter", 50, "Bold");
             str.sprintf("%d", (int)(applyMaxSpeed + 0.5));
-            drawTextWithColor(painter, bx + 280, by, str, color);
+            drawTextWithColor(painter, bx + 250, by - 50, str, color);
         }
 
 #ifdef __TEST
