@@ -1585,13 +1585,19 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
     // Path의 끝위치를 계산 및 표시
     int     track_vertices_len = scene.track_vertices.length();
     float path_x = width() / 2;
-    float path_y = height() - 200;
+    float path_y = height() - 400;
     float path_width = 160;
+    float path_bx = path_x;
+    //float path_by = path_y;
+    //float path_bwidth = path_width;
     {
         if (track_vertices_len >= 10) {
             path_width = scene.track_vertices[track_vertices_len / 2].x() - scene.track_vertices[track_vertices_len / 2 - 1].x();
             path_x = (scene.track_vertices[track_vertices_len / 2].x() + scene.track_vertices[track_vertices_len / 2 - 1].x()) / 2.;
             path_y = scene.track_vertices[track_vertices_len / 2].y();
+            //path_bwidth = scene.track_vertices[0].x() - scene.track_vertices[track_vertices_len -1].x();
+            path_bx = (scene.track_vertices[0].x() + scene.track_vertices[track_vertices_len - 1].x()) / 2.;
+            //path_by = scene.track_vertices[0].y();
             if (uiDrawPathEnd) {
 #if 1
                 painter.setPen(QPen(Qt::red, 10));
@@ -1624,7 +1630,10 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
     }
     if (y > height() - 400) y = height() - 400;
 
-    if (s->show_mode == 2) y = height() - 400;
+    if (s->show_mode == 2) {
+        y = height() - 400;
+        x = path_bx;
+    }
 
     x = apilot_filter_x.update(x);
     y = apilot_filter_y.update(y);
