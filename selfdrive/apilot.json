@@ -254,7 +254,7 @@
     {
       "group": "주행튜닝",
       "name": "LongitudinalTuningKiV",
-      "title": "KiV게인(2000)",
+      "title": "KiV게인(200)",
       "descr": "정지중에만 반영(시험용)",
       "min": 0,
       "max": 2000,
@@ -495,7 +495,7 @@
       "group": "화면",
       "name": "ShowDateTime",
       "title": "시간정보표시",
-      "descr": "0:표시없음,1:시간/날짜,2:시간,3:날짜",
+      "descr": "",
       "min": 0,
       "max": 3,
       "default": 1,
