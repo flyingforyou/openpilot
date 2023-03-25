@@ -102,6 +102,14 @@ typedef struct {
   int cnt;
 } line_vertices_data;
 
+typedef struct {
+    float x, y;
+} vertex_data;
+
+typedef struct {
+    float x, y, d, v;
+} lead_vertex_data;
+
 typedef struct UIScene {
   bool calibration_valid = false;
   bool calibration_wide_valid  = false;
@@ -121,6 +129,7 @@ typedef struct UIScene {
   // lead
   QPointF lead_vertices[2];
   bool lead_radar[2] = {false, false};
+  std::vector<lead_vertex_data> lead_vertices_oncoming, lead_vertices_ongoing, lead_vertices_stopped;
   // DMoji state
   float driver_pose_vals[3];
   float driver_pose_diff[3];
@@ -173,6 +182,7 @@ public:
   bool show_blind_spot = true;
   bool show_gap_info = true;
   bool show_dm_info = false;
+  int show_radar_info = 0;
   int show_mode = 1;
 
 signals:
