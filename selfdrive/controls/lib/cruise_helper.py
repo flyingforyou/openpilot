@@ -402,9 +402,9 @@ class CruiseHelper:
     return clip(v_cruise_kph, self.cruiseSpeedMin, MAX_SET_SPEED_KPH)
 
   def send_apilot_event(self, controls, eventName, waiting = 20):
-    if (controls.frame - self.trafficSignedFrame)*DT_CTRL > waiting: 
+    if (controls.sm.frame - self.trafficSignedFrame)*DT_CTRL > waiting: 
        controls.events.add(eventName)
-       self.trafficSignedFrame = frame
+       self.trafficSignedFrame = controls.sm.frame
 
   def update_v_cruise_apilot(self, v_cruise_kph, buttonEvents, enabled, metric, controls, CS):
     frame = controls.sm.frame
