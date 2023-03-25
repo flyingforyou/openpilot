@@ -635,6 +635,7 @@ CommunityPanel::CommunityPanel(QWidget* parent) : QWidget(parent) {
   toggleLayout->addWidget(new CValueControl("ShowLaneInfo", "화면:차선정보", "-1:모두표시안함, 0:패스만, 1:레인만, 2: 로드엣지까지", "../assets/offroad/icon_shell.png", -1, 2, 1));
   toggleLayout->addWidget(new CValueControl("ShowBlindSpot", "화면:BSD표시", "0:안함,1:사용함", "../assets/offroad/icon_shell.png", 0, 1, 1));
   toggleLayout->addWidget(new CValueControl("ShowGapInfo", "화면:GAP정보", "0:안함,1:사용함", "../assets/offroad/icon_shell.png", 0, 1, 1));
+  toggleLayout->addWidget(new CValueControl("ShowDmInfo", "화면:DM정보", "0:안함,1:사용함", "../assets/offroad/icon_shell.png", 0, 1, 1));
 
 }
 
