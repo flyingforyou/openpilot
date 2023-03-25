@@ -627,7 +627,7 @@ CommunityPanel::CommunityPanel(QWidget* parent) : QWidget(parent) {
   toggleLayout->addWidget(new CValueControl("ShowDateTime", "화면:시간정보", "0:표시안함,1:시간/날짜표시,2:시간표시,3:날짜표시", "../assets/offroad/icon_shell.png", 0, 3, 1));
   toggleLayout->addWidget(new CValueControl("ShowSteerRotate", "화면:핸들회전", "0:안함,1:회전함", "../assets/offroad/icon_shell.png", 0, 1, 1));
   toggleLayout->addWidget(new CValueControl("ShowPathEnd", "화면:패스끝표시", "0:안함,1:사용함", "../assets/offroad/icon_shell.png", 0, 1, 1));
-  toggleLayout->addWidget(new CValueControl("ShowAccelRpm", "화면:가속도표시", "0:안함,1:사용함", "../assets/offroad/icon_shell.png", 0, 1, 1));
+  toggleLayout->addWidget(new CValueControl("ShowAccelRpm", "화면:가속도표시", "0:안함,1:가속도,1:가속도+RPM", "../assets/offroad/icon_shell.png", 0, 2, 1));
   toggleLayout->addWidget(new CValueControl("ShowTpms", "화면:TPMS표시", "0:안함,1:사용함", "../assets/offroad/icon_shell.png", 0, 1, 1));
   toggleLayout->addWidget(new CValueControl("ShowSteerMode", "화면:핸들표시모드", "0:검정핸들,1:칼라핸들,2:핸들없음", "../assets/offroad/icon_shell.png", 0, 2, 1));
   toggleLayout->addWidget(new CValueControl("ShowDeviceState", "화면:디바이스상태", "0:안함,1:사용함", "../assets/offroad/icon_shell.png", 0, 1, 1));

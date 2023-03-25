@@ -163,7 +163,7 @@ public:
   bool show_debug = false;
   int show_datetime = 1;
   bool show_tpms = true;
-  bool show_accel = true;
+  int show_accel = 2;
   bool show_steer_rotate = true;
   bool show_path_end = true;
   int show_steer_mode = 0;

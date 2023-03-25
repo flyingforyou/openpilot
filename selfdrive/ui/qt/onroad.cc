@@ -377,6 +377,8 @@ AnnotatedCameraWidget::AnnotatedCameraWidget(VisionStreamType type, QWidget* par
   ic_blinker_l = QPixmap("../assets/images/blink_l.png");
   ic_blinker_r = QPixmap("../assets/images/blink_r.png");
   ic_speed_bg = QPixmap("../assets/images/speed_bg.png");
+  ic_traffic_green = QPixmap("../assets/images/traffic_green.png");
+  ic_traffic_red = QPixmap("../assets/images/traffic_red.png");
 
 
 }
@@ -1706,10 +1708,12 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
             case 1: trafficMode = 1;    // red
                 stop_dist = lp.getXStop();
                 stopping = true;
-                //painter.drawPixmap(400, 400, 350, 350, ic_stopman);
+                painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_traffic_red);
                 showBg = true;
                 break;
-            case 2: trafficMode = 2; break; // green // 표시안함.
+            case 2: trafficMode = 2; 
+                painter.drawPixmap(x - icon_size / 2, y - icon_size / 2, icon_size, icon_size, ic_traffic_green);
+                break; // green // 표시안함.
             case 3: trafficMode = 3; showBg = true; break; // yellow
             }
         }
@@ -2013,7 +2017,7 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
     if (accel1 > 2.5) accel1 = -2.5;
     accel = accel1;
 #endif
-    if(s->show_accel) {
+    if(s->show_accel>0) {
         QRect rectAccel(x + dx, y + 5, 40, 128);
         //painter.setPen(Qt::NoPen);
         painter.setPen(QPen(Qt::white, 2));
@@ -2037,7 +2041,7 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
     if (engineRpm1 > 4000.0) engineRpm1 = 0.0;
     motorRpm = engineRpm1;
 #endif
-    if(s->show_accel) {
+    if(s->show_accel>1) {
         dx += 60;
         //str.sprintf("%s: %.0f CHARGE: %.0f%%", (motorRpm > 0.0) ? "MOTOR" : "RPM", (motorRpm > 0.0) ? motorRpm : engineRpm, car_state.getChargeMeter());
         //drawTextWithColor(p, width() - 350, 80, str, textColor);
