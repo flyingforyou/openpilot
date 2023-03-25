@@ -122,8 +122,8 @@ struct CarEvent @0x9b1657f34caf3ad3 {
     autoHold @120; #ajouatom
     trafficStopping @121; #ajouatom
     trafficError @122; #ajouatom
-    speedDown @123; #ajouatom
     laneChangeRoadEdge @123; #ajouatom
+    speedDown @124; #ajouatom
     radarCanErrorDEPRECATED @15;
     communityFeatureDisallowedDEPRECATED @62;
     radarCommIssueDEPRECATED @67;
