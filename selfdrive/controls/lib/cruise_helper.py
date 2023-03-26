@@ -539,7 +539,8 @@ class CruiseHelper:
         if xState == XState.softHold: #소프트 홀드상태에서 가속페달을 밟으면 크루즈를 끄자~
           self.cruise_control(controls, CS, -2)
         elif xState in [XState.e2eStop, XState.e2eCruise] and v_ego_kph_set < v_cruise_kph and controls.v_future*CV.MS_TO_KPH < v_ego_kph * 0.6: # 모델이 감속을 지시하고 엑셀을 밟으면 속도를 빠르게 하면 안됨.
-          v_cruise_kph = v_ego_kph_set
+          #v_cruise_kph = v_ego_kph_set
+          self.cruise_control(controls, CS, -2)
           pass
       elif not CS.gasPressed and self.gasPressedCount > 2 and self.longCruiseGap != 5: #엑셀을 밟았다가 떼면..
         if False: #CS.myDrivingMode == 2: 관성모드 없앰..
