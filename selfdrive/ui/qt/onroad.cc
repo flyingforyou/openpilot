@@ -2285,17 +2285,21 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         QRect rcFont = fm.boundingRect("9");
         textColor = whiteColor(255);
         int w = rcFont.width();
+        int wStr = 0;
         bool disp = false;
         for (auto const& vrd : s->scene.lead_vertices_ongoing) {
             auto [rx, ry, rd, rv] = vrd;
             disp = true;
-            if (fabs(rv) > 0.5) str.sprintf("%.0f", rv * 3.6);
+            if (fabs(rv) > 0.5) {
+                str.sprintf("%.0f", rv * 3.6); 
+                wStr = w * (str.length() + 1);
             else {
                 str = "*"; 
+                wStr = w;
                 disp = (s->show_radar_info > 1) ? true : false;
             }
             if (disp) {
-                QRect rectRadar(rx - w * str.length() / 2, ry - 35, w* (str.length() + 1), 42);
+                QRect rectRadar(rx - wStr / 2, ry - 35, wStr, 42);
                 bgColor = greenColor(255);
                 painter.setBrush(bgColor);
                 painter.drawRoundedRect(rectRadar, 15, 15);
@@ -2305,13 +2309,16 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         for (auto const& vrd : s->scene.lead_vertices_oncoming) {
             auto [rx, ry, rd, rv] = vrd;
             disp = true;
-            if (fabs(rv) > 0.5) str.sprintf("%.0f", rv * 3.6);
+            if (fabs(rv) > 0.5) {
+                str.sprintf("%.0f", rv * 3.6);
+                wStr = w * (str.length() + 1);
             else {
                 str = "*";
+                wStr = w;
                 disp = (s->show_radar_info > 1) ? true : false;
             }
             if (disp) {
-                QRect rectRadar(rx - w * str.length() / 2, ry - 35, w* (str.length() + 1), 42);
+                QRect rectRadar(rx - wStr / 2, ry - 35, wStr, 42);
                 bgColor = redColor(255);
                 painter.setBrush(bgColor);
                 painter.drawRoundedRect(rectRadar, 15, 15);
@@ -2321,13 +2328,16 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         for (auto const& vrd : s->scene.lead_vertices_stopped) {
             auto [rx, ry, rd, rv] = vrd;
             disp = true;
-            if (fabs(rv) > 0.5) str.sprintf("%.0f", rv * 3.6);
+            if (fabs(rv) > 0.5) {
+                str.sprintf("%.0f", rv * 3.6);
+                wStr = w * (str.length() + 1);
             else {
                 str = "*";
+                wStr = w;
                 disp = (s->show_radar_info > 1) ? true : false;
             }
             if (disp) {
-                QRect rectRadar(rx - w * str.length() / 2, ry - 35, w * (str.length()+1), 42);
+                QRect rectRadar(rx - wStr / 2, ry - 35, wStr, 42);
                 bgColor = blackColor(255);
                 painter.setBrush(bgColor);
                 painter.drawRoundedRect(rectRadar, 15, 15);
