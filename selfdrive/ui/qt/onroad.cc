@@ -2289,7 +2289,7 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         for (auto const& vrd : s->scene.lead_vertices_ongoing) {
             auto [rx, ry, rd, rv] = vrd;
             disp = true;
-            if (fabs(rv) > 0.5) str.sprintf("%.0f", rv * 3.6);
+            if (fabs(rv) > 0.5) str.sprintf(" %.0f ", rv * 3.6);
             else {
                 str = "*"; 
                 disp = (s->show_radar_info > 1) ? true : false;
@@ -2305,7 +2305,7 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         for (auto const& vrd : s->scene.lead_vertices_oncoming) {
             auto [rx, ry, rd, rv] = vrd;
             disp = true;
-            if (fabs(rv) > 0.5) str.sprintf("%.0f", rv * 3.6);
+            if (fabs(rv) > 0.5) str.sprintf(" %.0f ", rv * 3.6);
             else {
                 str = "*";
                 disp = (s->show_radar_info > 1) ? true : false;
@@ -2321,7 +2321,7 @@ void AnnotatedCameraWidget::drawLeadApilot(QPainter& painter, const cereal::Mode
         for (auto const& vrd : s->scene.lead_vertices_stopped) {
             auto [rx, ry, rd, rv] = vrd;
             disp = true;
-            if (fabs(rv) > 0.5) str.sprintf("%.0f", rv * 3.6);
+            if (fabs(rv) > 0.5) str.sprintf(" %.0f ", rv * 3.6);
             else {
                 str = "*";
                 disp = (s->show_radar_info > 1) ? true : false;
