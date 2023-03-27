@@ -520,7 +520,7 @@ class LongitudinalMpc:
         # self.trafficState = 1 if self.stopSignCount * DT_MDL > 0.3 else 2 if self.startSignCount * DT_MDL > 0.3 else 0
         # 신호등의 상태를 과거값을 기억하고 있으면 어떨까?
 
-        if self.stopSignCount * DT_MDL > 0.3 and carstate.rightBlinker == False:
+        if self.stopSignCount * DT_MDL > 0.0 and carstate.rightBlinker == False:
            self.trafficState = 1 
         elif self.startSignCount * DT_MDL > 0.3:
            self.trafficState = 2 
