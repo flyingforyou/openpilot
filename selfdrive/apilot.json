@@ -292,7 +292,7 @@
       "unit": 1
     },
     {
-      "group": "조향",
+      "group": "감속제어",
       "name": "AutoCurveSpeedFactor",
       "title": "커브속도조절비율(100%)",
       "descr": "커브속도조절(커브속도 조절 2일때 적용)",
@@ -772,7 +772,7 @@
       "unit": 1
     },
     {
-      "group": "조향",
+      "group": "감속제어",
       "name": "AutoCurveSpeedCtrl",
       "title": "커브속도제어방법(3)",
       "descr": "0:사용안함,1:방법1,2:방법2,3:APILOT",
@@ -782,7 +782,7 @@
       "unit": 1
     },
     {
-      "group": "조향",
+      "group": "감속제어",
       "name": "AutoCurveSpeedIndex",
       "title": "커브속도제어INDEX",
       "descr": "",
@@ -812,7 +812,7 @@
       "unit": 1
     },
     {
-      "group": "속도제한",
+      "group": "감속제어",
       "name": "AutoNaviSpeedCtrl",
       "title": "과속카메라 작동방법(2)",
       "descr": "0:사용안함, 1:NDA, 2:NDA + 순정네비게이션",
@@ -822,7 +822,7 @@
       "unit": 1
     },
     {
-      "group": "속도제한",
+      "group": "감속제어",
       "name": "AutoNaviSpeedCtrlStart",
       "title": "과속카메라감속 시작 시간(22초)",
       "descr": "감속시작시점을 설정합니다.",
@@ -832,7 +832,7 @@
       "unit": 1
     },
     {
-      "group": "속도제한",
+      "group": "감속제어",
       "name": "AutoNaviSpeedCtrlEnd",
       "title": "과속카메라감속 완료 시간(6초)",
       "descr": "감속종료시점을 설정합니다.",
