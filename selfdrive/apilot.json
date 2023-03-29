@@ -783,7 +783,7 @@
     },
     {
       "group": "조향",
-      "name": "AutoCurveSpeedIndex(15)",
+      "name": "AutoCurveSpeedIndex",
       "title": "커브속도제어INDEX",
       "descr": "",
       "min": 0,
