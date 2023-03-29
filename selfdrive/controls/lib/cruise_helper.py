@@ -581,8 +581,8 @@ class CruiseHelper:
           if resume_cond and v_ego_kph >= 3.0 and 0 < self.autoResumeFromBrakeReleaseDist < dRel and CS.rightBlinker == False:
             v_cruise_kph = v_ego_kph_set  # 현재속도로 세트~
             self.cruise_control(controls, CS, 3)
-          # 70km/h미만, 신호정지신호, 직선도로인경우
-          elif v_ego_kph < 70.0 and xState == XState.e2eStop and abs(self.position_y) < 5.0 and self.autoResumeFromBrakeReleaseTrafficSign and CS.rightBlinker == False and CS.leftBlinker == False:
+          # 70km/h미만, 신호정지신호, 직선도로인경우, 깜박이 OFF
+          elif v_ego_kph < 70.0 and trafficState == 1 and self.autoResumeFromBrakeReleaseTrafficSign and CS.rightBlinker == False and CS.leftBlinker == False:
             v_cruise_kph = v_ego_kph_set  
             self.cruise_control(controls, CS, 3)
           # 전방차량이 없고, 속도가 40km/h(변수) 이상인경우
