@@ -636,7 +636,7 @@ void CameraState::camera_open(MultiCameraState *multi_cam_state_, int camera_num
   if (ret != 0) {
     // TODO: use build flag instead?
       LOGD("AR0231 init failed, trying OX03C10");
-      LOGD("AR0231 init failed, trying OX03C10");
+      printf("AR0231 init failed, trying OX03C10");
       camera_id = CAMERA_ID_OX03C10;
     ret = sensors_init();
   }
