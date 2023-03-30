@@ -623,28 +623,28 @@ void CameraState::camera_open(MultiCameraState *multi_cam_state_, int camera_num
   sensor_fd = open_v4l_by_name_and_index("cam-sensor-driver", camera_num);
   assert(sensor_fd >= 0);
   LOGD("opened sensor for %d", camera_num);
-  printf("opened sensor for %d", camera_num);
+  printf("opened sensor for %d\n", camera_num);
 
   // init memorymanager for this camera
   mm.init(multi_cam_state->video0_fd);
 
   // probe the sensor
   LOGD("-- Probing sensor %d", camera_num);
-  printf("-- Probing sensor %d", camera_num);
+  printf("-- Probing sensor %d\n", camera_num);
   camera_id = CAMERA_ID_AR0231;
   ret = sensors_init();
   if (ret != 0) {
     // TODO: use build flag instead?
       LOGD("AR0231 init failed, trying OX03C10");
-      printf("AR0231 init failed, trying OX03C10");
+      printf("AR0231 init failed, trying OX03C10\n");
       camera_id = CAMERA_ID_OX03C10;
     ret = sensors_init();
   }
   LOGD("-- Probing sensor %d done with %d", camera_num, ret);
-  printf("-- Probing sensor %d done with %d", camera_num, ret);
+  printf("-- Probing sensor %d done with %d\n", camera_num, ret);
   if (ret != 0) {
       LOGE("** sensor %d FAILED bringup, disabling", camera_num);
-      printf("** sensor %d FAILED bringup, disabling", camera_num);
+      printf("** sensor %d FAILED bringup, disabling\n", camera_num);
       enabled = false;
     return;
   }
