@@ -131,6 +131,7 @@ int CameraState::clear_req_queue() {
 void CameraState::sensors_start() {
   if (!enabled) return;
   LOGD("starting sensor %d", camera_num);
+  printf("starting sensor %d", camera_num);
   if (camera_id == CAMERA_ID_AR0231) {
     sensors_i2c(start_reg_array_ar0231, std::size(start_reg_array_ar0231), CAM_SENSOR_PACKET_OPCODE_SENSOR_CONFIG, true);
   } else if (camera_id == CAMERA_ID_OX03C10) {
@@ -621,25 +622,30 @@ void CameraState::camera_open(MultiCameraState *multi_cam_state_, int camera_num
   int ret;
   sensor_fd = open_v4l_by_name_and_index("cam-sensor-driver", camera_num);
   assert(sensor_fd >= 0);
-  LOGE("opened sensor for %d", camera_num);
+  LOGD("opened sensor for %d", camera_num);
+  printf("opened sensor for %d", camera_num);
 
   // init memorymanager for this camera
   mm.init(multi_cam_state->video0_fd);
 
   // probe the sensor
-  LOGE("-- Probing sensor %d", camera_num);
+  LOGD("-- Probing sensor %d", camera_num);
+  printf("-- Probing sensor %d", camera_num);
   camera_id = CAMERA_ID_AR0231;
   ret = sensors_init();
   if (ret != 0) {
     // TODO: use build flag instead?
-    LOGE("AR0231 init failed, trying OX03C10");
-    camera_id = CAMERA_ID_OX03C10;
+      LOGD("AR0231 init failed, trying OX03C10");
+      LOGD("AR0231 init failed, trying OX03C10");
+      camera_id = CAMERA_ID_OX03C10;
     ret = sensors_init();
   }
-  LOGE("-- Probing sensor %d done with %d", camera_num, ret);
+  LOGD("-- Probing sensor %d done with %d", camera_num, ret);
+  printf("-- Probing sensor %d done with %d", camera_num, ret);
   if (ret != 0) {
-    LOGE("** sensor %d FAILED bringup, disabling", camera_num);
-    enabled = false;
+      LOGE("** sensor %d FAILED bringup, disabling", camera_num);
+      printf("** sensor %d FAILED bringup, disabling", camera_num);
+      enabled = false;
     return;
   }
 
