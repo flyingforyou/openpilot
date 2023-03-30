@@ -54,7 +54,7 @@
     {
       "group": "Á¶ÇâÆ©´×",
       "name": "LateralAccelCost",
-      "title": "_LateralAccelCost(100)",
+      "title": "_LateralAccelCost(0)",
       "descr": "",
       "min": 0,
       "max": 1000,
