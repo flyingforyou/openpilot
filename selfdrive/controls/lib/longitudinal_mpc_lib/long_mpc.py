@@ -264,6 +264,7 @@ class LongitudinalMpc:
     self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
     self.reset()
     self.source = SOURCES[2]
+    self.x_obstacle_min = 0.0
 
   def reset(self):
     # self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
@@ -699,6 +700,7 @@ class LongitudinalMpc:
         self.source = 'lead1'
 
     self.v_cruise = v_cruise
+    self.x_obstacle_min = self.params[:,2]
 
   def run(self):
     # t0 = sec_since_boot()
