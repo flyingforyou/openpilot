@@ -273,6 +273,26 @@
     },
     {
       "group": "주행튜닝",
+      "name": "LeadDangerFactor",
+      "title": "LEAD_DANGER_FACTOR(80)",
+      "descr": "",
+      "min": 75,
+      "max": 100,
+      "default": 80,
+      "unit": 1
+    },
+    {
+      "group": "주행튜닝",
+      "name": "DangerZoneCost",
+      "title": "DANGER_ZONE_COST(100)",
+      "descr": "",
+      "min": 0,
+      "max": 400,
+      "default": 100,
+      "unit": 10
+    },
+    {
+      "group": "주행튜닝",
       "name": "TrafficStopAccel",
       "title": "신호정지 감속율 (80%)",
       "descr": "신호를 만나면 서서히 감속하여 정지합니다.",
