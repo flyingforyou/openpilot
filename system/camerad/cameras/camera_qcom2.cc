@@ -659,10 +659,12 @@ void CameraState::camera_open(MultiCameraState *multi_cam_state_, int camera_num
   LOG("-- Configuring sensor");
   uint32_t dt;
   if (camera_id == CAMERA_ID_AR0231) {
+      printf("############## config sensor AR0231(%d)\n", camera_num);
     sensors_i2c(init_array_ar0231, std::size(init_array_ar0231), CAM_SENSOR_PACKET_OPCODE_SENSOR_CONFIG, true);
     dt = 0x12;  // Changing stats to 0x2C doesn't work, so change pixels to 0x12 instead
   } else if (camera_id == CAMERA_ID_OX03C10) {
-    sensors_i2c(init_array_ox03c10, std::size(init_array_ox03c10), CAM_SENSOR_PACKET_OPCODE_SENSOR_CONFIG, false);
+      printf("############## config sensor OX03C10(%d)\n", camera_num);
+      sensors_i2c(init_array_ox03c10, std::size(init_array_ox03c10), CAM_SENSOR_PACKET_OPCODE_SENSOR_CONFIG, false);
     // one is 0x2a, two are 0x2b
     dt = 0x2c;
   } else {
