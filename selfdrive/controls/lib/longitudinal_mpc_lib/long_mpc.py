@@ -701,6 +701,7 @@ class LongitudinalMpc:
 
     self.v_cruise = v_cruise
     self.x_obstacle_min = self.params[:,2]
+    print(self.x_obstacle_min)
 
   def run(self):
     # t0 = sec_since_boot()
