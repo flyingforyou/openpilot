@@ -502,6 +502,16 @@
       "unit": 10
     },
     {
+      "group": "자동크루즈",
+      "name": "AutoSpeedUptoRoadSpeedLimit",
+      "title": "자동속도증가모드 (100)",
+      "descr": "전방차량따라 로드스피드까지 자동속도올림.",
+      "min": 0,
+      "max": 200,
+      "default": 100,
+      "unit": 10
+    },
+    {
       "group": "화면",
       "name": "ShowDebugUI",
       "title": "디버그정보 표시",
