@@ -12,6 +12,8 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
+from openpilot.selfdrive.controls.lib.curve_speed.curve_speed_controller import CurveSpeedController
+from openpilot.selfdrive.controls.lib.curve_speed.lateral_load_governor import LateralLoadGovernor
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
@@ -52,6 +54,8 @@ class LongitudinalPlanner:
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
+    self.curve = CurveSpeedController()     # feedforward curve-speed profile + backward pass
+    self.governor = LateralLoadGovernor()   # reactive lateral-load backstop + throttle-fade interlock
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -124,6 +128,24 @@ class LongitudinalPlanner:
       clipped_accel_coast = max(accel_coast, accel_clip[0])
       clipped_accel_coast_interp = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED*2], [accel_clip[1], clipped_accel_coast])
       accel_clip[1] = min(accel_clip[1], clipped_accel_coast_interp)
+
+    # Curve-aware longitudinal: the feedforward curve-speed profile, with the reactive lateral-load
+    # governor folded in as a tighter cap (whichever wants the lower speed). Always enabled; both
+    # return V_UNSET when they are not constraining, so this can only ever slow the car down.
+    long_enabled = sm['carControl'].enabled
+    long_override = sm['carControl'].cruiseControl.override
+    self.curve.update(sm, long_enabled, long_override, self.v_desired_filter.x, self.a_desired, v_cruise)
+    self.governor.update(sm, long_enabled, long_override, v_ego)
+
+    curve_v, curve_a = self.curve.output_v_target, self.curve.output_a_target
+    if self.governor.output_v_target < curve_v:
+      curve_v, curve_a = self.governor.output_v_target, min(curve_a, 0.0)
+    if curve_v < v_cruise:
+      v_cruise, self.a_desired = curve_v, curve_a
+
+    # Throttle-fade interlock: don't add throttle while the steering is near or at its lateral limit.
+    if self.a_desired > 0.0:
+      self.a_desired *= self.governor.throttle_scale()
 
     if force_slow_decel:
       v_cruise = 0.0
