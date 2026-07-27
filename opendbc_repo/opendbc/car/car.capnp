@@ -246,6 +246,10 @@ struct CarState {
     standstill @4 :Bool;
     nonAdaptive @5 :Bool;
 
+    # 0 means unavailable or not implemented.
+    # Tesla legacy (HW1/HW2/HW3) uses values 1 through 7.
+    gapAdjust @7 :UInt8;
+
     speedOffsetDEPRECATED @3 :Float32;
   }
 

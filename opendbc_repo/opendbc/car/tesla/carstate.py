@@ -9,6 +9,24 @@ from opendbc.car.tesla.values import DBC, CANBUS, GEAR_MAP, STEER_THRESHOLD, Tes
 
 ButtonType = structs.CarState.ButtonEvent.Type
 
+TESLA_DTR_RAW_TO_GAP = {
+  0: 1,
+  33: 2,
+  66: 3,
+  100: 4,
+  133: 5,
+  166: 6,
+  200: 7,
+}
+
+
+def decode_tesla_gap(raw_gap: int) -> int:
+  """Convert Tesla legacy DTR_Dist_Rq raw value to a gap level.
+
+  Returns 1 through 7 for a valid Tesla gap, or 0 for SNA/an unknown value.
+  """
+  return TESLA_DTR_RAW_TO_GAP.get(int(raw_gap), 0)
+
 
 class CarState(CarStateBase):
   def __init__(self, CP):
@@ -43,6 +61,7 @@ class CarState(CarStateBase):
 
     self.hands_on_level = 0
     self.das_control = None
+    self.cruise_gap = 0
 
   def update_autopark_state(self, autopark_state: str, cruise_enabled: bool):
     autopark_now = autopark_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED")
@@ -231,9 +250,16 @@ class CarState(CarStateBase):
     if self.CP.carFingerprint == CAR.TESLA_MODEL_X_HW1:
       ret.leftBlinker = cp_chassis.vl["STW_ACTN_RQ"]["TurnIndLvr_Stat"] == 1
       ret.rightBlinker = cp_chassis.vl["STW_ACTN_RQ"]["TurnIndLvr_Stat"] == 2
+
+      # Steering wheel Gap 1-7 setting. 255/SNA and other unknown raw values hold the last valid gap.
+      decoded_gap = decode_tesla_gap(cp_chassis.vl["STW_ACTN_RQ"]["DTR_Dist_Rq"])
+      if decoded_gap != 0:
+        self.cruise_gap = decoded_gap
+      ret.cruiseState.gapAdjust = self.cruise_gap
     else:
       ret.leftBlinker = cp_chassis.vl["GTW_carState"]["BC_indicatorLStatus"] == 1
       ret.rightBlinker = cp_chassis.vl["GTW_carState"]["BC_indicatorRStatus"] == 1
+      ret.cruiseState.gapAdjust = 0
 
     # Seatbelt
     if self.CP.flags & TeslaLegacyParams.NO_SDM1:
