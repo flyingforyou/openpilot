@@ -40,6 +40,7 @@ class LeadVehicle:
   glow: list[float] = field(default_factory=list)
   chevron: list[float] = field(default_factory=list)
   fill_alpha: int = 0
+  source: str = ""
 
 
 class ModelRenderer(Widget):
@@ -163,7 +164,8 @@ class ModelRenderer(Widget):
         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
         if point:
-          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect)
+          source = "R" if lead_data.radar else "V"
+          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect, source)
 
   def _update_model(self, lead, path_x_array):
     """Update model visualization data based on model message"""
@@ -237,7 +239,7 @@ class ModelRenderer(Widget):
       stops=gradient_stops,
     )
 
-  def _update_lead_vehicle(self, d_rel, v_rel, point, rect):
+  def _update_lead_vehicle(self, d_rel, v_rel, point, rect, source):
     speed_buff, lead_buff = 10.0, 40.0
 
     # Calculate fill alpha
@@ -259,7 +261,7 @@ class ModelRenderer(Widget):
     glow = [(x + (sz * 1.35) + g_xo, y + sz + g_yo), (x, y - g_yo), (x - (sz * 1.35) - g_xo, y + sz + g_yo)]
     chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]
 
-    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha))
+    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), source=source)
 
   def _draw_lane_lines(self):
     """Draw lane lines and road edges"""
@@ -322,6 +324,17 @@ class ModelRenderer(Widget):
 
       rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
       rl.draw_triangle_fan(lead.chevron, len(lead.chevron), rl.Color(201, 34, 49, lead.fill_alpha))
+
+      if lead.source:
+        apex_x, apex_y = lead.chevron[1]
+        chevron_height = max(lead.chevron[0][1] - apex_y, 1.0)
+        font_size = int(np.clip(chevron_height * 0.52, 24, 34))
+        text_width = rl.measure_text(lead.source, font_size)
+        text_x = int(apex_x - text_width / 2)
+        text_y = int(apex_y + chevron_height * 0.43)
+        source_color = rl.Color(80, 200, 255, 255) if lead.source == "R" else rl.Color(255, 190, 50, 255)
+        rl.draw_text(lead.source, text_x + 2, text_y + 2, font_size, rl.Color(0, 0, 0, 220))
+        rl.draw_text(lead.source, text_x, text_y, font_size, source_color)
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_distance: float) -> int:
