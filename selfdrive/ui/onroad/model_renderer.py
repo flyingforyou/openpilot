@@ -1,4 +1,5 @@
 import colorsys
+import time
 import numpy as np
 import pyray as rl
 from cereal import messaging, car
@@ -50,6 +51,8 @@ class ModelRenderer(Widget):
     self._prev_allow_throttle = True
     self._lane_line_probs = np.zeros(4, dtype=np.float32)
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
+    self._left_blindspot = False
+    self._right_blindspot = False
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._path_offset_z = HEIGHT_INIT[0]
 
@@ -95,6 +98,9 @@ class ModelRenderer(Widget):
 
     # Update state
     self._experimental_mode = sm['selfdriveState'].experimentalMode
+    car_state = sm['carState'] if sm.valid['carState'] else None
+    self._left_blindspot = bool(car_state and car_state.leftBlindspot)
+    self._right_blindspot = bool(car_state and car_state.rightBlindspot)
 
     live_calib = sm['liveCalibration']
     self._path_offset_z = live_calib.height[0] if live_calib.height else HEIGHT_INIT[0]
@@ -257,12 +263,21 @@ class ModelRenderer(Widget):
 
   def _draw_lane_lines(self):
     """Draw lane lines and road edges"""
+    # laneLines[1] and laneLines[2] are the ego lane's left and right boundaries.
+    # Toggle every 250 ms, resulting in a 2 Hz warning flash.
+    blindspot_flash_on = int(time.monotonic() * 4.0) % 2 == 0
+
     for i, lane_line in enumerate(self._lane_lines):
       if lane_line.projected_points.size == 0:
         continue
 
-      alpha = np.clip(self._lane_line_probs[i], 0.0, 0.7)
-      color = rl.Color(255, 255, 255, int(alpha * 255))
+      blindspot_active = (i == 1 and self._left_blindspot) or (i == 2 and self._right_blindspot)
+      if blindspot_active:
+        color = rl.Color(255, 35, 35, 255 if blindspot_flash_on else 45)
+      else:
+        alpha = np.clip(self._lane_line_probs[i], 0.0, 0.7)
+        color = rl.Color(255, 255, 255, int(alpha * 255))
+
       draw_polygon(self._rect, lane_line.projected_points, color)
 
     for i, road_edge in enumerate(self._road_edges):
