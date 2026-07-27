@@ -1,3 +1,5 @@
+import time
+
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -65,6 +67,10 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
+    self._gap_adjust: int = 0
+    self._last_gap_adjust: int = 0
+    self._gap_popup_until: float = 0.0
+    self._lead_source: str | None = None
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -79,6 +85,10 @@ class HudRenderer(Widget):
       self.is_cruise_set = False
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
+      self._gap_adjust = 0
+      self._last_gap_adjust = 0
+      self._gap_popup_until = 0.0
+      self._lead_source = None
       return
 
     controls_state = sm['controlsState']
@@ -100,6 +110,19 @@ class HudRenderer(Widget):
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
 
+    gap_adjust = int(car_state.cruiseState.gapAdjust)
+    if 1 <= gap_adjust <= 7:
+      # Do not show a popup for the first valid value after UI startup.
+      if self._last_gap_adjust != 0 and gap_adjust != self._last_gap_adjust:
+        self._gap_popup_until = time.monotonic() + 1.0
+      self._last_gap_adjust = gap_adjust
+      self._gap_adjust = gap_adjust
+    else:
+      self._gap_adjust = 0
+
+    lead_one = sm['radarState'].leadOne
+    self._lead_source = ("RADAR" if lead_one.radar else "VISION") if lead_one.status else None
+
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
     # Draw the header background
@@ -120,6 +143,11 @@ class HudRenderer(Widget):
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
     self._exp_button.render(rl.Rectangle(button_x, button_y, UI_CONFIG.button_size, UI_CONFIG.button_size))
+
+    if self._lead_source is not None:
+      self._draw_lead_source(rect)
+    if self._gap_adjust != 0 and time.monotonic() < self._gap_popup_until:
+      self._draw_gap_popup(rect)
 
   def user_interacting(self) -> bool:
     return self._exp_button.is_pressed
@@ -178,3 +206,47 @@ class HudRenderer(Widget):
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+
+  def _draw_gap_popup(self, rect: rl.Rectangle) -> None:
+    """Draw a transient 'GAP N' popup after the driver changes the Tesla gap setting."""
+    text = f"GAP {self._gap_adjust}"
+    font_size = 64
+    padding_x = 42
+    height = 104
+
+    text_size = measure_text_cached(self._font_bold, text, font_size)
+    width = text_size.x + padding_x * 2
+
+    x = rect.x + (rect.width - width) / 2
+    y = rect.y + 340
+
+    popup_rect = rl.Rectangle(x, y, width, height)
+    rl.draw_rectangle_rounded(popup_rect, 0.35, 10, rl.Color(0, 0, 0, 210))
+    rl.draw_rectangle_rounded_lines_ex(popup_rect, 0.35, 10, 5, rl.Color(255, 255, 255, 100))
+
+    text_pos = rl.Vector2(x + (width - text_size.x) / 2, y + (height - text_size.y) / 2)
+    rl.draw_text_ex(self._font_bold, text, text_pos, font_size, 0, COLORS.WHITE)
+
+  def _draw_lead_source(self, rect: rl.Rectangle) -> None:
+    """Draw a badge showing whether the primary lead is radar-matched or vision-only."""
+    text = self._lead_source
+    if text is None:
+      return
+
+    font_size = 36
+    height = 68
+    padding_x = 30
+
+    text_size = measure_text_cached(self._font_semi_bold, text, font_size)
+    width = max(190, text_size.x + padding_x * 2)
+
+    x = rect.x + rect.width - UI_CONFIG.border_size - width
+    y = rect.y + UI_CONFIG.border_size + UI_CONFIG.button_size + 20
+
+    background = rl.Color(30, 110, 180, 210) if text == "RADAR" else rl.Color(210, 145, 20, 210)
+    badge_rect = rl.Rectangle(x, y, width, height)
+    rl.draw_rectangle_rounded(badge_rect, 0.45, 10, background)
+    rl.draw_rectangle_rounded_lines_ex(badge_rect, 0.45, 10, 4, rl.Color(255, 255, 255, 100))
+
+    text_pos = rl.Vector2(x + (width - text_size.x) / 2, y + (height - text_size.y) / 2)
+    rl.draw_text_ex(self._font_semi_bold, text, text_pos, font_size, 0, COLORS.WHITE)
