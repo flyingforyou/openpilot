@@ -59,6 +59,17 @@ CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
 
+TESLA_GAP_T_FOLLOW = {
+  1: 1.10,
+  2: 1.20,
+  3: 1.30,
+  4: 1.40,
+  5: 1.50,
+  6: 1.60,
+  7: 1.75,
+}
+T_FOLLOW_RISE_RATE = 0.10  # seconds of tFollow per real second
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -70,7 +81,9 @@ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
     raise NotImplementedError("Longitudinal personality not supported")
 
 
-def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
+def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard, gap_adjust=0):
+  if gap_adjust in TESLA_GAP_T_FOLLOW:
+    return TESLA_GAP_T_FOLLOW[gap_adjust]
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.75
   elif personality==log.LongitudinalPersonality.standard:
@@ -79,6 +92,12 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
     return 1.25
   else:
     raise NotImplementedError("Longitudinal personality not supported")
+
+def limit_t_follow_increase(current: float, target: float, dt: float) -> float:
+  """Apply target immediately when decreasing, rate limit only increases."""
+  if target > current:
+    return min(target, current + T_FOLLOW_RISE_RATE * dt)
+  return target
 
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
@@ -249,6 +268,8 @@ class LongitudinalMpc:
     self.time_linearization = 0.0
     self.time_integrator = 0.0
     self.x0 = np.zeros(X_DIM)
+    self.t_follow = get_T_FOLLOW()
+    self.gap_adjust_initialized = False
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights):
@@ -273,6 +294,21 @@ class LongitudinalMpc:
     cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
     constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     self.set_cost_weights(cost_weights, constraint_cost_weights)
+
+  def update_t_follow(self, personality, gap_adjust: int) -> float:
+    if gap_adjust not in TESLA_GAP_T_FOLLOW:
+      self.t_follow = get_T_FOLLOW(personality)
+      self.gap_adjust_initialized = False
+      return self.t_follow
+
+    target_t_follow = get_T_FOLLOW(personality, gap_adjust)
+    # First valid vehicle gap should be applied immediately.
+    if not self.gap_adjust_initialized:
+      self.t_follow = target_t_follow
+      self.gap_adjust_initialized = True
+    else:
+      self.t_follow = limit_t_follow_increase(self.t_follow, target_t_follow, self.dt)
+    return self.t_follow
 
   def set_cur_state(self, v, a):
     v_prev = self.x0[1]
@@ -313,8 +349,8 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
-    t_follow = get_T_FOLLOW(personality)
+  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, gap_adjust=0):
+    t_follow = self.update_t_follow(personality, int(gap_adjust))
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
 
