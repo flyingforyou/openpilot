@@ -1,0 +1,352 @@
+From 7ba825893edcba9c80915c070d3dc9b3cacc6c36 Mon Sep 17 00:00:00 2001
+From: OpenAI <noreply@openai.com>
+Date: Mon, 27 Jul 2026 21:29:51 +0000
+Subject: [PATCH] tesla: use steering wheel gap for longitudinal control
+
+Decode the legacy Model S/X DTR distance setting and publish it through CarState. Use the selected gap for MPC time following with a rate-limited increase, and show gap changes plus the primary lead perception source on the onroad HUD.
+---
+ opendbc_repo/opendbc/car/car.capnp            |  1 +
+ opendbc_repo/opendbc/car/tesla/carstate.py    | 23 ++++++++
+ .../opendbc/car/tesla/tests/test_tesla.py     | 20 +++++++
+ .../lib/longitudinal_mpc_lib/long_mpc.py      | 39 +++++++++++-
+ .../controls/lib/longitudinal_planner.py      |  3 +-
+ .../controls/tests/test_following_distance.py | 29 ++++++++-
+ selfdrive/ui/onroad/hud_renderer.py           | 59 +++++++++++++++++++
+ 7 files changed, 169 insertions(+), 5 deletions(-)
+
+diff --git a/opendbc_repo/opendbc/car/car.capnp b/opendbc_repo/opendbc/car/car.capnp
+--- a/opendbc_repo/opendbc/car/car.capnp
++++ b/opendbc_repo/opendbc/car/car.capnp
+@@ -6,6 +6,7 @@ struct CarState {
+     available @2 :Bool;
+     standstill @4 :Bool;
+     nonAdaptive @5 :Bool;
++    gapAdjust @7 :UInt8;  # 0: unavailable, Tesla legacy: 1-7
+ 
+     speedOffsetDEPRECATED @3 :Float32;
+   }
+diff --git a/opendbc_repo/opendbc/car/tesla/carstate.py b/opendbc_repo/opendbc/car/tesla/carstate.py
+--- a/opendbc_repo/opendbc/car/tesla/carstate.py
++++ b/opendbc_repo/opendbc/car/tesla/carstate.py
+@@ -9,6 +9,22 @@ from opendbc.car.tesla.values import DBC, CANBUS, GEAR_MAP, STEER_THRESHOLD, Tes
+ 
+ ButtonType = structs.CarState.ButtonEvent.Type
+ 
++
++TESLA_DTR_RAW_TO_GAP = {
++  0: 1,
++  33: 2,
++  66: 3,
++  100: 4,
++  133: 5,
++  166: 6,
++  200: 7,
++}
++
++
++def decode_tesla_gap(raw_gap: int) -> int:
++  return TESLA_DTR_RAW_TO_GAP.get(int(raw_gap), 0)
++
++
+ class CarState(CarStateBase):
+   def __init__(self, CP):
+     super().__init__(CP)
+@@ -40,6 +56,7 @@ class CarState(CarStateBase):
+ 
+     self.hands_on_level = 0
+     self.das_control = None
++    self.cruise_gap = 0
+   def update_autopark_state(self, autopark_state: str, cruise_enabled: bool):
+     autopark_now = autopark_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED")
+     if autopark_now and not self.autopark_prev and not self.cruise_enabled_prev:
+@@ -95,6 +112,12 @@ class CarState(CarStateBase):
+     if self.CP.carFingerprint == CAR.TESLA_MODEL_X_HW1:
+       ret.leftBlinker = cp_chassis.vl["STW_ACTN_RQ"]["TurnIndLvr_Stat"] == 1
+       ret.rightBlinker = cp_chassis.vl["STW_ACTN_RQ"]["TurnIndLvr_Stat"] == 2
++      gap_samples = cp_chassis.vl_all["STW_ACTN_RQ"]["DTR_Dist_Rq"]
++      if gap_samples:
++        decoded_gap = decode_tesla_gap(gap_samples[-1])
++        if decoded_gap:
++          self.cruise_gap = decoded_gap
++      ret.cruiseState.gapAdjust = self.cruise_gap
+     else:
+       ret.leftBlinker = cp_chassis.vl["GTW_carState"]["BC_indicatorLStatus"] == 1
+       ret.rightBlinker = cp_chassis.vl["GTW_carState"]["BC_indicatorRStatus"] == 1
+diff --git a/opendbc_repo/opendbc/car/tesla/tests/test_tesla.py b/opendbc_repo/opendbc/car/tesla/tests/test_tesla.py
+--- a/opendbc_repo/opendbc/car/tesla/tests/test_tesla.py
++++ b/opendbc_repo/opendbc/car/tesla/tests/test_tesla.py
+@@ -1,5 +1,8 @@
++import pytest
++
+ from opendbc.car import gen_empty_fingerprint
+ from opendbc.car.structs import CarParams
++from opendbc.car.tesla.carstate import decode_tesla_gap
+ from opendbc.car.tesla.interface import CarInterface
+ from opendbc.car.tesla.fingerprints import FW_VERSIONS
+ from opendbc.car.tesla.radar_interface import RADAR_START_ADDR
+@@ -7,6 +10,23 @@ from opendbc.car.tesla.values import CAR, FSD_14_FW
+ 
+ Ecu = CarParams.Ecu
+ 
++
++@pytest.mark.parametrize("raw_gap, expected", [
++  (0, 1),
++  (33, 2),
++  (66, 3),
++  (100, 4),
++  (133, 5),
++  (166, 6),
++  (200, 7),
++  (255, 0),
++  (1, 0),
++  (99, 0),
++])
++def test_decode_tesla_gap(raw_gap, expected):
++  assert decode_tesla_gap(raw_gap) == expected
++
++
+ class TestTeslaFingerprint:
+   def test_fsd_14_fw(self):
+     for car_model, ecus in FW_VERSIONS.items():
+diff --git a/selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py b/selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py
+--- a/selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py
++++ b/selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py
+@@ -1,4 +1,15 @@
+ MIN_X_LEAD_FACTOR = 0.5
++TESLA_GAP_T_FOLLOW = {
++  1: 1.10,
++  2: 1.20,
++  3: 1.30,
++  4: 1.40,
++  5: 1.50,
++  6: 1.60,
++  7: 1.75,
++}
++T_FOLLOW_RISE_RATE = 0.10
++
+ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
+   if personality==log.LongitudinalPersonality.relaxed:
+     return 1.0
+@@ -9,7 +20,9 @@ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
+   else:
+     raise NotImplementedError("Longitudinal personality not supported")
+ 
+-def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
++def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard, gap_adjust=0):
++  if gap_adjust in TESLA_GAP_T_FOLLOW:
++    return TESLA_GAP_T_FOLLOW[gap_adjust]
+   if personality==log.LongitudinalPersonality.relaxed:
+     return 1.75
+   elif personality==log.LongitudinalPersonality.standard:
+@@ -19,6 +32,11 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
+   else:
+     raise NotImplementedError("Longitudinal personality not supported")
+ 
++def limit_t_follow_increase(current, target, dt):
++  if target > current:
++    return min(target, current + T_FOLLOW_RISE_RATE * dt)
++  return target
++
+ def get_stopped_equivalence_factor(v_lead):
+   return (v_lead**2) / (2 * COMFORT_BRAKE)
+ def get_safe_obstacle_distance(v_ego, t_follow):
+@@ -79,6 +97,8 @@ class LongitudinalMpc:
+     self.time_linearization = 0.0
+     self.time_integrator = 0.0
+     self.x0 = np.zeros(X_DIM)
++    self.t_follow = get_T_FOLLOW()
++    self.gap_adjust_initialized = False
+     self.set_weights()
+   def set_cost_weights(self, cost_weights, constraint_cost_weights):
+     W = np.asfortranarray(np.diag(cost_weights))
+@@ -116,6 +136,19 @@ class LongitudinalMpc:
+     if abs(v_prev - v) > 2.:  # probably only helps if v < v_prev
+       for i in range(N+1):
+         self.solver.set(i, 'x', self.x0)
++  def update_t_follow(self, personality, gap_adjust):
++    if gap_adjust not in TESLA_GAP_T_FOLLOW:
++      self.t_follow = get_T_FOLLOW(personality)
++      self.gap_adjust_initialized = False
++      return self.t_follow
++
++    target_t_follow = get_T_FOLLOW(personality, gap_adjust)
++    if not self.gap_adjust_initialized:
++      self.t_follow = target_t_follow
++      self.gap_adjust_initialized = True
++    else:
++      self.t_follow = limit_t_follow_increase(self.t_follow, target_t_follow, self.dt)
++    return self.t_follow
+   @staticmethod
+   def extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau):
+     a_lead_traj = a_lead * np.exp(-a_lead_tau * (T_IDXS**2)/2.)
+@@ -144,8 +177,8 @@ class LongitudinalMpc:
+     a_lead = np.clip(a_lead, -10., 5.)
+     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
+     return lead_xv
+-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
+-    t_follow = get_T_FOLLOW(personality)
++  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, gap_adjust=0):
++    t_follow = self.update_t_follow(personality, int(gap_adjust))
+     v_ego = self.x0[1]
+     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
+ 
+diff --git a/selfdrive/controls/lib/longitudinal_planner.py b/selfdrive/controls/lib/longitudinal_planner.py
+--- a/selfdrive/controls/lib/longitudinal_planner.py
++++ b/selfdrive/controls/lib/longitudinal_planner.py
+@@ -6,7 +6,8 @@
+       v_cruise = 0.0
+     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
+     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
+-    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality)
++    gap_adjust = int(sm['carState'].cruiseState.gapAdjust)
++    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality, gap_adjust=gap_adjust)
+     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
+     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
+     self.j_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC[:-1], self.mpc.j_solution)
+diff --git a/selfdrive/controls/tests/test_following_distance.py b/selfdrive/controls/tests/test_following_distance.py
+--- a/selfdrive/controls/tests/test_following_distance.py
++++ b/selfdrive/controls/tests/test_following_distance.py
+@@ -4,7 +4,8 @@ from openpilot.common.parameterized import parameterized_class
+ 
+ from cereal import log
+ 
+-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW
++from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (get_safe_obstacle_distance, get_stopped_equivalence_factor,
++                                                                          get_T_FOLLOW, limit_t_follow_increase)
+ from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
+ 
+ def desired_follow_distance(v_ego, v_lead, t_follow=None):
+@@ -27,6 +28,32 @@ def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personalit
+   assert valid
+   return output[-1,2] - output[-1,1]
+ 
++
++@pytest.mark.parametrize("gap, expected", [
++  (1, 1.10),
++  (2, 1.20),
++  (3, 1.30),
++  (4, 1.40),
++  (5, 1.50),
++  (6, 1.60),
++  (7, 1.75),
++])
++def test_tesla_gap_t_follow(gap, expected):
++  assert get_T_FOLLOW(log.LongitudinalPersonality.standard, gap_adjust=gap) == pytest.approx(expected)
++
++
++def test_invalid_gap_uses_personality():
++  assert get_T_FOLLOW(log.LongitudinalPersonality.standard, gap_adjust=0) == pytest.approx(1.45)
++
++
++def test_t_follow_decrease_is_immediate():
++  assert limit_t_follow_increase(1.75, 1.10, 0.05) == pytest.approx(1.10)
++
++
++def test_t_follow_increase_is_rate_limited():
++  assert limit_t_follow_increase(1.10, 1.75, 0.05) == pytest.approx(1.105)
++
++
+ @parameterized_class(("e2e", "personality", "speed"), itertools.product(
+                       [True, False], # e2e
+                       [log.LongitudinalPersonality.relaxed, # personality
+diff --git a/selfdrive/ui/onroad/hud_renderer.py b/selfdrive/ui/onroad/hud_renderer.py
+--- a/selfdrive/ui/onroad/hud_renderer.py
++++ b/selfdrive/ui/onroad/hud_renderer.py
+@@ -1,3 +1,5 @@
++import time
++
+ import pyray as rl
+ from dataclasses import dataclass
+ from openpilot.common.constants import CV
+@@ -62,6 +64,10 @@ class HudRenderer(Widget):
+     self.set_speed: float = SET_SPEED_NA
+     self.speed: float = 0.0
+     self.v_ego_cluster_seen: bool = False
++    self._gap_adjust: int = 0
++    self._last_gap_adjust: int = 0
++    self._gap_popup_until: float = 0.0
++    self._lead_source: str | None = None
+     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
+     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
+     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
+@@ -74,6 +80,10 @@ class HudRenderer(Widget):
+       self.is_cruise_set = False
+       self.set_speed = SET_SPEED_NA
+       self.speed = 0.0
++      self._gap_adjust = 0
++      self._last_gap_adjust = 0
++      self._gap_popup_until = 0.0
++      self._lead_source = None
+       return
+ 
+     controls_state = sm['controlsState']
+@@ -92,6 +102,16 @@ class HudRenderer(Widget):
+     v_ego = v_ego_cluster if self.v_ego_cluster_seen else car_state.vEgo
+     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
+     self.speed = max(0.0, v_ego * speed_conversion)
++
++    gap_adjust = int(car_state.cruiseState.gapAdjust)
++    if 1 <= gap_adjust <= 7:
++      if self._last_gap_adjust != 0 and gap_adjust != self._last_gap_adjust:
++        self._gap_popup_until = time.monotonic() + 1.0
++      self._gap_adjust = gap_adjust
++      self._last_gap_adjust = gap_adjust
++
++    lead_one = sm['radarState'].leadOne
++    self._lead_source = ("RADAR" if lead_one.radar else "VISION") if lead_one.status else None
+   def _render(self, rect: rl.Rectangle) -> None:
+     """Render HUD elements to the screen."""
+     # Draw the header background
+@@ -112,6 +132,11 @@ class HudRenderer(Widget):
+     button_y = rect.y + UI_CONFIG.border_size
+     self._exp_button.render(rl.Rectangle(button_x, button_y, UI_CONFIG.button_size, UI_CONFIG.button_size))
+ 
++    if self._lead_source is not None:
++      self._draw_lead_source(rect)
++    if self._gap_adjust and time.monotonic() < self._gap_popup_until:
++      self._draw_gap_popup(rect)
++
+   def user_interacting(self) -> bool:
+     return self._exp_button.is_pressed
+   def _draw_set_speed(self, rect: rl.Rectangle) -> None:
+@@ -162,3 +187,37 @@ class HudRenderer(Widget):
+     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
+     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
+     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
++
++  def _draw_gap_popup(self, rect: rl.Rectangle) -> None:
++    text = f"GAP {self._gap_adjust}"
++    font_size = 64
++    text_size = measure_text_cached(self._font_bold, text, font_size)
++    width = text_size.x + 84
++    height = 104
++    x = rect.x + (rect.width - width) / 2
++    y = rect.y + 340
++    popup_rect = rl.Rectangle(x, y, width, height)
++
++    rl.draw_rectangle_rounded(popup_rect, 0.35, 10, rl.Color(0, 0, 0, 210))
++    rl.draw_rectangle_rounded_lines_ex(popup_rect, 0.35, 10, 5, rl.Color(255, 255, 255, 100))
++    text_pos = rl.Vector2(x + (width - text_size.x) / 2, y + (height - text_size.y) / 2)
++    rl.draw_text_ex(self._font_bold, text, text_pos, font_size, 0, COLORS.WHITE)
++
++  def _draw_lead_source(self, rect: rl.Rectangle) -> None:
++    text = self._lead_source
++    if text is None:
++      return
++
++    font_size = 36
++    text_size = measure_text_cached(self._font_semi_bold, text, font_size)
++    width = max(190, text_size.x + 60)
++    height = 68
++    x = rect.x + rect.width - UI_CONFIG.border_size - width
++    y = rect.y + UI_CONFIG.border_size + UI_CONFIG.button_size + 20
++    background = rl.Color(30, 110, 180, 210) if text == "RADAR" else rl.Color(210, 145, 20, 210)
++    badge_rect = rl.Rectangle(x, y, width, height)
++
++    rl.draw_rectangle_rounded(badge_rect, 0.45, 10, background)
++    rl.draw_rectangle_rounded_lines_ex(badge_rect, 0.45, 10, 4, rl.Color(255, 255, 255, 100))
++    text_pos = rl.Vector2(x + (width - text_size.x) / 2, y + (height - text_size.y) / 2)
++    rl.draw_text_ex(self._font_semi_bold, text, text_pos, font_size, 0, COLORS.WHITE)
+-- 
+2.47.3
+

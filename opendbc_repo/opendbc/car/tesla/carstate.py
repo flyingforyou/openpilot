@@ -251,10 +251,15 @@ class CarState(CarStateBase):
       ret.leftBlinker = cp_chassis.vl["STW_ACTN_RQ"]["TurnIndLvr_Stat"] == 1
       ret.rightBlinker = cp_chassis.vl["STW_ACTN_RQ"]["TurnIndLvr_Stat"] == 2
 
-      # Steering wheel Gap 1-7 setting. 255/SNA and other unknown raw values hold the last valid gap.
-      decoded_gap = decode_tesla_gap(cp_chassis.vl["STW_ACTN_RQ"]["DTR_Dist_Rq"])
-      if decoded_gap != 0:
-        self.cruise_gap = decoded_gap
+      # Steering wheel Gap 1-7 setting. Raw 0 is a valid gap (ACC_DIST_1), so the signal must not
+      # be read before the message has actually been received: CANParser zero-inits every signal,
+      # which would otherwise latch gap 1 (the shortest follow distance) on startup. Until a gap
+      # is received we publish 0 so the planner keeps using the personality based tFollow.
+      # 255/SNA and other unknown raw values hold the last valid gap.
+      if cp_chassis.ts_nanos["STW_ACTN_RQ"]["DTR_Dist_Rq"] != 0:
+        decoded_gap = decode_tesla_gap(cp_chassis.vl["STW_ACTN_RQ"]["DTR_Dist_Rq"])
+        if decoded_gap != 0:
+          self.cruise_gap = decoded_gap
       ret.cruiseState.gapAdjust = self.cruise_gap
     else:
       ret.leftBlinker = cp_chassis.vl["GTW_carState"]["BC_indicatorLStatus"] == 1

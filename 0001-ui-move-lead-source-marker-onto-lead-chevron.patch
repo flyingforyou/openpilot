@@ -1,0 +1,129 @@
+From a6cd52601e82985f2d6c683fc55c83f6fa4f5f2e Mon Sep 17 00:00:00 2001
+From: OpenAI <noreply@openai.com>
+Date: Mon, 27 Jul 2026 23:12:12 +0000
+Subject: [PATCH] ui: move lead source marker onto lead chevron
+
+---
+ selfdrive/ui/onroad/hud_renderer.py   | 25 -------------------------
+ selfdrive/ui/onroad/model_renderer.py | 19 ++++++++++++++++---
+ 2 files changed, 16 insertions(+), 28 deletions(-)
+
+diff --git a/selfdrive/ui/onroad/hud_renderer.py b/selfdrive/ui/onroad/hud_renderer.py
+index d333970..0547aa3 100644
+--- a/selfdrive/ui/onroad/hud_renderer.py
++++ b/selfdrive/ui/onroad/hud_renderer.py
+@@ -16,7 +16,6 @@ class HudRenderer(Widget):
+     self._gap_adjust: int = 0
+     self._last_gap_adjust: int = 0
+     self._gap_popup_until: float = 0.0
+-    self._lead_source: str | None = None
+     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
+     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
+     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
+@@ -49,7 +48,6 @@ class HudRenderer(Widget):
+       self._gap_adjust = 0
+       self._last_gap_adjust = 0
+       self._gap_popup_until = 0.0
+-      self._lead_source = None
+       return
+ 
+     controls_state = sm['controlsState']
+@@ -79,9 +77,6 @@ class HudRenderer(Widget):
+         self._gap_popup_until = time.monotonic() + 1.0
+       self._gap_adjust = gap_adjust
+       self._last_gap_adjust = gap_adjust
+-
+-    lead_one = sm['radarState'].leadOne
+-    self._lead_source = ("RADAR" if lead_one.radar else "VISION") if lead_one.status else None
+   def _render(self, rect: rl.Rectangle) -> None:
+     """Render HUD elements to the screen."""
+ 
+@@ -107,8 +102,6 @@ class HudRenderer(Widget):
+     button_y = rect.y + UI_CONFIG.border_size
+     self._exp_button.render(rl.Rectangle(button_x, button_y, UI_CONFIG.button_size, UI_CONFIG.button_size))
+ 
+-    if self._lead_source is not None:
+-      self._draw_lead_source(rect)
+     if self._gap_adjust and time.monotonic() < self._gap_popup_until:
+       self._draw_gap_popup(rect)
+ 
+@@ -145,21 +138,3 @@ class HudRenderer(Widget):
+     text_pos = rl.Vector2(x + (width - text_size.x) / 2, y + (height - text_size.y) / 2)
+     rl.draw_text_ex(self._font_bold, text, text_pos, font_size, 0, COLORS.WHITE)
+ 
+-  def _draw_lead_source(self, rect: rl.Rectangle) -> None:
+-    text = self._lead_source
+-    if text is None:
+-      return
+-
+-    font_size = 36
+-    text_size = measure_text_cached(self._font_semi_bold, text, font_size)
+-    width = max(190, text_size.x + 60)
+-    height = 68
+-    x = rect.x + rect.width - UI_CONFIG.border_size - width
+-    y = rect.y + UI_CONFIG.border_size + UI_CONFIG.button_size + 20
+-    background = rl.Color(30, 110, 180, 210) if text == "RADAR" else rl.Color(210, 145, 20, 210)
+-    badge_rect = rl.Rectangle(x, y, width, height)
+-
+-    rl.draw_rectangle_rounded(badge_rect, 0.45, 10, background)
+-    rl.draw_rectangle_rounded_lines_ex(badge_rect, 0.45, 10, 4, rl.Color(255, 255, 255, 100))
+-    text_pos = rl.Vector2(x + (width - text_size.x) / 2, y + (height - text_size.y) / 2)
+-    rl.draw_text_ex(self._font_semi_bold, text, text_pos, font_size, 0, COLORS.WHITE)
+diff --git a/selfdrive/ui/onroad/model_renderer.py b/selfdrive/ui/onroad/model_renderer.py
+index cc76498..5b675f5 100644
+--- a/selfdrive/ui/onroad/model_renderer.py
++++ b/selfdrive/ui/onroad/model_renderer.py
+@@ -17,6 +17,7 @@ class LeadVehicle:
+   glow: list[float] = field(default_factory=list)
+   chevron: list[float] = field(default_factory=list)
+   fill_alpha: int = 0
++  source: str = ""
+ 
+ 
+ 
+@@ -49,7 +50,8 @@ class ModelRenderer(Widget):
+         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
+         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
+         if point:
+-          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect)
++          source = "R" if lead_data.radar else "V"
++          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect, source)
+ 
+ 
+ 
+@@ -69,7 +71,7 @@ class ModelRenderer(Widget):
+ 
+ 
+ 
+-  def _update_lead_vehicle(self, d_rel, v_rel, point, rect):
++  def _update_lead_vehicle(self, d_rel, v_rel, point, rect, source):
+     speed_buff, lead_buff = 10.0, 40.0
+     # Calculate fill alpha
+     fill_alpha = 0
+@@ -89,7 +91,7 @@ class ModelRenderer(Widget):
+     glow = [(x + (sz * 1.35) + g_xo, y + sz + g_yo), (x, y - g_yo), (x - (sz * 1.35) - g_xo, y + sz + g_yo)]
+     chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]
+ 
+-    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha))
++    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), source=source)
+ 
+ 
+ 
+@@ -117,3 +119,14 @@ class ModelRenderer(Widget):
+ 
+       rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
+       rl.draw_triangle_fan(lead.chevron, len(lead.chevron), rl.Color(201, 34, 49, lead.fill_alpha))
++
++      if lead.source:
++        apex_x, apex_y = lead.chevron[1]
++        chevron_height = max(lead.chevron[0][1] - apex_y, 1.0)
++        font_size = int(np.clip(chevron_height * 0.52, 24, 34))
++        text_width = rl.measure_text(lead.source, font_size)
++        text_x = int(apex_x - text_width / 2)
++        text_y = int(apex_y + chevron_height * 0.43)
++        source_color = rl.Color(80, 200, 255, 255) if lead.source == "R" else rl.Color(255, 190, 50, 255)
++        rl.draw_text(lead.source, text_x + 2, text_y + 2, font_size, rl.Color(0, 0, 0, 220))
++        rl.draw_text(lead.source, text_x, text_y, font_size, source_color)
+-- 
+2.47.3
+
