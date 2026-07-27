@@ -236,6 +236,10 @@ class LongitudinalMpc:
   def __init__(self, dt=DT_MDL):
     self.dt = dt
     self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
+    # Not reset by reset(): a solver failure must not drop the gap slew limiter back to
+    # "first valid gap", which would apply a pending tFollow increase in a single step.
+    self.t_follow = get_T_FOLLOW()
+    self.gap_adjust_initialized = False
     self.reset()
     self.source = LongitudinalPlanSource.cruise
 
@@ -268,8 +272,6 @@ class LongitudinalMpc:
     self.time_linearization = 0.0
     self.time_integrator = 0.0
     self.x0 = np.zeros(X_DIM)
-    self.t_follow = get_T_FOLLOW()
-    self.gap_adjust_initialized = False
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights):
