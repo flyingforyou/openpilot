@@ -1,11 +1,30 @@
+import pytest
+
 from opendbc.car import gen_empty_fingerprint
 from opendbc.car.structs import CarParams
+from opendbc.car.tesla.carstate import decode_tesla_gap
 from opendbc.car.tesla.interface import CarInterface
 from opendbc.car.tesla.fingerprints import FW_VERSIONS
 from opendbc.car.tesla.radar_interface import RADAR_START_ADDR
 from opendbc.car.tesla.values import CAR, FSD_14_FW
 
 Ecu = CarParams.Ecu
+
+
+@pytest.mark.parametrize("raw_gap, expected", [
+  (0, 1),
+  (33, 2),
+  (66, 3),
+  (100, 4),
+  (133, 5),
+  (166, 6),
+  (200, 7),
+  (255, 0),
+  (1, 0),
+  (99, 0),
+])
+def test_decode_tesla_gap(raw_gap, expected):
+  assert decode_tesla_gap(raw_gap) == expected
 
 
 class TestTeslaFingerprint:
