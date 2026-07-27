@@ -4,7 +4,8 @@ from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
 
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (get_safe_obstacle_distance, get_stopped_equivalence_factor,
+                                                                          get_T_FOLLOW, limit_t_follow_increase)
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
@@ -12,6 +13,32 @@ def desired_follow_distance(v_ego, v_lead, t_follow=None):
   if t_follow is None:
     t_follow = get_T_FOLLOW()
   return get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
+
+
+@pytest.mark.parametrize("gap, expected", [
+  (1, 1.10),
+  (2, 1.20),
+  (3, 1.30),
+  (4, 1.40),
+  (5, 1.50),
+  (6, 1.60),
+  (7, 1.75),
+])
+def test_tesla_gap_t_follow(gap, expected):
+  assert get_T_FOLLOW(log.LongitudinalPersonality.standard, gap_adjust=gap) == pytest.approx(expected)
+
+
+def test_invalid_gap_uses_personality():
+  assert get_T_FOLLOW(log.LongitudinalPersonality.standard, gap_adjust=0) == pytest.approx(1.45)
+
+
+def test_t_follow_decrease_is_immediate():
+  assert limit_t_follow_increase(1.75, 1.10, 0.05) == pytest.approx(1.10)
+
+
+def test_t_follow_increase_is_rate_limited():
+  assert limit_t_follow_increase(1.10, 1.75, 0.05) == pytest.approx(1.105)
+
 
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):
   man = Maneuver(
