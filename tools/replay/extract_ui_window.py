@@ -9,8 +9,9 @@ republish_route.py then plays that small file back with almost no memory of its 
 
   PYTHONPATH=. python3 tools/replay/extract_ui_window.py <rlog.zst> <out.pkl> [duration_s]
 
-Picks a window where radarState.leadOne.status is true, so the lead chevron and its R/V source
-label are actually on screen during playback.
+Picks a window where openpilot is engaged and radarState.leadOne.status is true. Both matter:
+the mici renderer hides the lane lines, the path and the lead chevron entirely while
+disengaged, so a disengaged window replays as a blank screen.
 """
 import pickle
 import sys
@@ -25,17 +26,20 @@ SERVICES = [
 
 
 def main(rlog_path: str, out_path: str, duration_s: float):
-  lr = LogReader(rlog_path)
-
-  # First pass: find when a lead is present so the window actually shows the R/V label.
+  # First pass: find where openpilot is engaged AND a lead is present, so the window shows
+  # the lane lines, the chevron and its R/V label rather than a blank disengaged screen.
   lead_start = None
-  for msg in lr:
-    if msg.which() == 'radarState' and msg.radarState.leadOne.status:
+  engaged = False
+  for msg in LogReader(rlog_path):
+    which = msg.which()
+    if which == 'selfdriveState':
+      engaged = msg.selfdriveState.enabled
+    elif which == 'radarState' and engaged and msg.radarState.leadOne.status:
       lead_start = msg.logMonoTime
       break
 
   if lead_start is None:
-    print("no lead in this segment, starting from the beginning")
+    print("no engaged-with-lead window in this segment, starting from the beginning")
 
   out = []
   t_start = None
