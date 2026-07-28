@@ -51,12 +51,14 @@ def _segments(route: str, base: str = REALDATA) -> list[str]:
 
 
 def _read_events(path: str):
+  """Stream the segment. Materializing a decompressed rlog costs a couple hundred MB, which
+  was enough to get this process killed and restarted mid-replay."""
   with open(path, 'rb') as f:
-    data = zstandard.ZstdDecompressor().stream_reader(f).read()
-  try:
-    yield from capnp_log.Event.read_multiple_bytes(data)
-  except capnp.KjException:
-    pass  # segments truncated by power loss end mid-message
+    stream = zstandard.ZstdDecompressor().stream_reader(f)
+    try:
+      yield from capnp_log.Event.read_multiple(stream)
+    except capnp.KjException:
+      pass  # segments truncated by power loss end mid-message
 
 
 def dbcs_for_fingerprint(fingerprint: str) -> list[str]:
@@ -131,6 +133,14 @@ class CanSource:
       self.status = ''
 
   def _run_replay(self, route: str, segs: list[str], stop: threading.Event) -> None:
+    try:
+      self._replay_loop(segs, stop)
+    except Exception as e:   # a dead thread with no explanation is worse than a bad status
+      with self.lock:
+        if self.replay is not None:
+          self.status = f'재생 실패: {type(e).__name__} {e}'
+
+  def _replay_loop(self, segs: list[str], stop: threading.Event) -> None:
     while not stop.is_set():
       for i, path in enumerate(segs):
         if stop.is_set():
