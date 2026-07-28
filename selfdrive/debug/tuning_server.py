@@ -80,7 +80,7 @@ class State:
 class Handler(BaseHTTPRequestHandler):
   state: State
   params: Params
-  can: 'CanDecoder | None'
+  can: 'LazyCan'
   allow_engaged: bool
 
   def log_message(self, *a):
@@ -100,10 +100,11 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, json.dumps(self.state.get()))
 
     if self.path.startswith('/api/can'):
-      if self.can is None:
+      dec = self.can.get()
+      if dec is None:
         return self._send(200, json.dumps({'messages': [], 'dbc': None, 'total': 0,
-                                           'error': 'CarParams를 아직 받지 못했습니다'}))
-      return self._send(200, json.dumps(self.can.snapshot('changed=1' in self.path)))
+                                           'error': '차량 인식 대기 중 (CarParams 없음)'}))
+      return self._send(200, json.dumps(dec.snapshot('changed=1' in self.path)))
 
     if self.path.startswith('/api/settings'):
       out = {}
@@ -153,9 +154,25 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
+class LazyCan:
+  """CarParams only appears once the car has been identified, which is long after this server
+  starts at boot. Keep retrying instead of deciding at startup that there is no car."""
+
+  def __init__(self, params: Params):
+    self.params = params
+    self.decoder: CanDecoder | None = None
+    self.lock = threading.Lock()
+
+  def get(self) -> "CanDecoder | None":
+    if self.decoder is None:
+      with self.lock:
+        if self.decoder is None:
+          self.decoder = build_can_decoder(self.params)
+    return self.decoder
+
+
 def build_can_decoder(params: Params) -> "CanDecoder | None":
-  """Decode against whatever DBCs this car actually uses. Needs CarParams, which only exists
-  once the car has been identified, so this returns None until then."""
+  """Decode against whatever DBCs this car actually uses."""
   raw = params.get("CarParams")
   if raw is None:
     return None
@@ -494,7 +511,7 @@ def main():
   Handler.state = State()
   Handler.params = Params()
   Handler.allow_engaged = args.allow_engaged
-  Handler.can = build_can_decoder(Handler.params)
+  Handler.can = LazyCan(Handler.params)
 
   srv = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
   print(f"serving on http://0.0.0.0:{args.port}"
