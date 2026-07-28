@@ -113,7 +113,27 @@ class CanDecoder:
       if sm.updated['can']:
         self.ingest(sm['can'])
 
-  def snapshot(self, changed_only: bool = False, now: float | None = None) -> dict:
+  def catalog(self) -> list[dict]:
+    """Every message the DBC defines, so a signal that never arrives is visibly absent rather
+    than just missing from the list."""
+    out, seen = [], set()
+    for dbc, _ in self.dbcs:
+      for address, msg in dbc.addr_to_msg.items():
+        if address in seen:
+          continue
+        seen.add(address)
+        out.append({
+          'bus': None, 'address': address, 'name': msg.name,
+          'hex': None, 'hz': 0.0, 'count': 0, 'age': None, 'seen': False,
+          'signals': [{'name': sig.name, 'v': None, 'raw': None, 'enum': None,
+                       'noise': is_noise_signal(sig), 'changed': False}
+                      for sig in sorted(msg.sigs.values(), key=lambda s: s.name)],
+          'anyChanged': False,
+        })
+    return out
+
+  def snapshot(self, changed_only: bool = False, now: float | None = None,
+               include_unseen: bool = True) -> dict:
     now = time.monotonic() if now is None else now
     out = []
     with self.lock:
@@ -130,6 +150,16 @@ class CanDecoder:
             for n, s in sorted(entry['signals'].items())
           ],
           'anyChanged': bool(changed),
+          'seen': True,
         })
-    out.sort(key=lambda m: (m['bus'], m['address']))
-    return {'messages': out, 'dbc': self.dbc_name, 'total': len(out)}
+
+    if include_unseen and not changed_only:
+      live = {m['address'] for m in out}
+      out += [m for m in self.catalog() if m['address'] not in live]
+
+    out.sort(key=lambda m: (m['bus'] is None, m['bus'] or 0, m['address']))
+    return {
+      'messages': out, 'dbc': self.dbc_name, 'total': len(out),
+      'seen': sum(1 for m in out if m['seen']),
+      'known': sum(1 for m in out if m['name']),
+    }
