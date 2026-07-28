@@ -306,13 +306,27 @@ class CarState(CarStateBase):
     else:
       ret.seatbeltUnlatched = cp_chassis.vl["SDM1"]["SDM_bcklDrivStatus"] != 1
 
-    # Blindspot status is broadcast by the legacy DAS on the autopilot party bus.
-    # Values 1 and 2 are warning levels; 3 is SNA and must not block a lane change.
-    # Raven (Model S HW3) uses a different party DBC that doesn't have this message.
+    # Blindspot combines two independent legacy signals:
+    #  - PARK_status2 (ultrasonic Park Assist, chassis bus): what the instrument cluster's
+    #    blind spot icon actually reflects, active mainly at low/parking speed.
+    #  - AutopilotStatus (vision/radar, autopilot party bus): the DAS auto-lane-change
+    #    blind spot assessment, active mainly at road speed. Values 1 and 2 are warning
+    #    levels; 3 is SNA and must not block a lane change.
+    # Raven (Model S HW3) uses a different party DBC that doesn't have AutopilotStatus, but
+    # its chassis bus DBC still has PARK_status2, so that half still applies unconditionally.
+    park_status = cp_chassis.vl["PARK_status2"]
+    park_left_blindspot = int(park_status["PARK_sdiBlindSpotLeft"]) == 1
+    park_right_blindspot = int(park_status["PARK_sdiBlindSpotRight"]) == 1
+
+    das_left_blindspot = False
+    das_right_blindspot = False
     if self.CP.carFingerprint != CAR.TESLA_MODEL_S_HW3:
       autopilot_status = cp_ap_party.vl["AutopilotStatus"]
-      ret.leftBlindspot = int(autopilot_status["DAS_blindSpotRearLeft"]) in (1, 2)
-      ret.rightBlindspot = int(autopilot_status["DAS_blindSpotRearRight"]) in (1, 2)
+      das_left_blindspot = int(autopilot_status["DAS_blindSpotRearLeft"]) in (1, 2)
+      das_right_blindspot = int(autopilot_status["DAS_blindSpotRearRight"]) in (1, 2)
+
+    ret.leftBlindspot = park_left_blindspot or das_left_blindspot
+    ret.rightBlindspot = park_right_blindspot or das_right_blindspot
 
     # AEB
     ret.stockAeb = cp_ap_pt.vl["DAS_control"]["DAS_aebEvent"] == 1
