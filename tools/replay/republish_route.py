@@ -21,6 +21,7 @@ SERVICES = [
   'carState', 'radarState', 'modelV2', 'liveCalibration', 'selfdriveState',
   'carControl', 'carParams', 'controlsState', 'longitudinalPlan', 'deviceState',
   'pandaStates', 'onroadEvents', 'driverMonitoringState', 'liveParameters', 'carOutput',
+  'roadCameraState', 'wideRoadCameraState',
 ]
 
 
