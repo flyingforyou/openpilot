@@ -17,6 +17,7 @@ from openpilot.system.ui.widgets import Widget
 CLIP_MARGIN = 500
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
+METER_TO_FOOT = 3.28084
 
 THROTTLE_COLORS = [
   rl.Color(13, 248, 122, 102),   # HSLF(148/360, 0.94, 0.51, 0.4)
@@ -49,6 +50,7 @@ class LeadVehicle:
   chevron: list[float] = field(default_factory=list)
   fill_alpha: int = 0
   source: str = ""
+  d_rel: float = 0.0
 
 
 class ModelRenderer(Widget):
@@ -289,7 +291,7 @@ class ModelRenderer(Widget):
     glow = [(x + (sz * 1.35) + g_xo, y + sz + g_yo), (x, y - g_yo), (x - (sz * 1.35) - g_xo, y + sz + g_yo)]
     chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]
 
-    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), source=source)
+    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), source=source, d_rel=d_rel)
 
   def _get_ll_color(self, prob: float, adjacent: bool, left: bool):
     alpha = np.clip(prob, 0.0, 0.7)
@@ -392,15 +394,31 @@ class ModelRenderer(Widget):
       apex_x, apex_y = lead.chevron[1]
       chevron_height = max(lead.chevron[0][1] - apex_y, 1.0)
       font_size = float(np.clip(chevron_height * 2.48, 52, 72))
-      text_size = measure_text_cached(self._font_bold, lead.source, font_size)
+      dist_font_size = font_size * 0.45
 
-      text_x = np.clip(apex_x - text_size.x / 2, 2.0, max(self._rect.width - text_size.x - 2.0, 2.0))
-      text_y = np.clip(apex_y + chevron_height + 3.0, 2.0, max(self._rect.height - text_size.y - 2.0, 2.0))
+      dist_text = f"{lead.d_rel:.0f}m" if ui_state.is_metric else f"{lead.d_rel * METER_TO_FOOT:.0f}ft"
+
+      text_size = measure_text_cached(self._font_bold, lead.source, font_size)
+      dist_size = measure_text_cached(self._font_bold, dist_text, dist_font_size)
+
+      # Source letter stacked over the distance, both centered on the chevron.
+      block_w = max(text_size.x, dist_size.x)
+      block_h = text_size.y + dist_size.y
+      block_x = np.clip(apex_x - block_w / 2, 2.0, max(self._rect.width - block_w - 2.0, 2.0))
+      block_y = np.clip(apex_y + chevron_height + 3.0, 2.0, max(self._rect.height - block_h - 2.0, 2.0))
 
       color = rl.Color(80, 200, 255, 255) if lead.source == "R" else rl.Color(255, 190, 50, 255)
-      rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x + 3, text_y + 3), font_size, 0,
+
+      text_x = block_x + (block_w - text_size.x) / 2
+      rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x + 3, block_y + 3), font_size, 0,
                       rl.Color(0, 0, 0, 220))
-      rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x, text_y), font_size, 0, color)
+      rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x, block_y), font_size, 0, color)
+
+      dist_x = block_x + (block_w - dist_size.x) / 2
+      dist_y = block_y + text_size.y
+      rl.draw_text_ex(self._font_bold, dist_text, rl.Vector2(dist_x + 2, dist_y + 2), dist_font_size, 0,
+                      rl.Color(0, 0, 0, 220))
+      rl.draw_text_ex(self._font_bold, dist_text, rl.Vector2(dist_x, dist_y), dist_font_size, 0, rl.WHITE)
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_height: float) -> int:
