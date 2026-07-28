@@ -8,9 +8,10 @@ right, so a run can be set up and its effect watched without stopping to SSH in.
   PYTHONPATH=/data/openpilot python3 selfdrive/debug/tuning_server.py
   # then open http://<device-ip>:8088 from anything on the same network
 
-Control settings are refused while onroad by default -- changing how the car decides to brake
-mid-drive is a different risk than changing it in a parking lot. Pass --allow-onroad to lift
-that; the page will say so.
+Control settings are refused while openpilot is engaged -- changing how the car decides to
+brake while it is actively braking is a different risk than changing it with the driver in
+control. Disengaged is fine, so options can be swapped at a light without shutting anything
+down. Pass --allow-engaged to lift that; the page will say so.
 """
 import argparse
 import json
@@ -75,7 +76,7 @@ class State:
 class Handler(BaseHTTPRequestHandler):
   state: State
   params: Params
-  allow_onroad: bool
+  allow_engaged: bool
 
   def log_message(self, *a):
     pass  # don't spam the console on every poll
@@ -101,7 +102,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
           v = None
         out[k] = {'value': v, 'type': kind, 'label': label, 'help': help_}
-      return self._send(200, json.dumps({'settings': out, 'allowOnroad': self.allow_onroad}))
+      return self._send(200, json.dumps({'settings': out, 'allowEngaged': self.allow_engaged}))
 
     return self._send(200, PAGE, 'text/html; charset=utf-8')
 
@@ -119,9 +120,9 @@ class Handler(BaseHTTPRequestHandler):
     if key not in SETTINGS:
       return self._send(400, json.dumps({'error': f'알 수 없는 설정: {key}'}))
 
-    if self.state.get().get('onroad') and not self.allow_onroad:
+    if self.state.get().get('engaged') and not self.allow_engaged:
       return self._send(409, json.dumps({
-        'error': '주행 중에는 변경할 수 없습니다. 정차 후 다시 시도하세요.'}))
+        'error': 'openpilot이 제어 중일 때는 변경할 수 없습니다. 해제 후 다시 시도하세요.'}))
 
     kind = SETTINGS[key][0]
     try:
@@ -209,7 +210,7 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
 
 <script>
 const $=i=>document.getElementById(i);
-let onroad=false, allowOnroad=false;
+let engaged=false, allowEngaged=false;
 
 function toast(t,err){const m=$('msg');m.textContent=t;m.className='show'+(err?' err':'');
   clearTimeout(m._t);m._t=setTimeout(()=>m.className='',2600);}
@@ -217,7 +218,7 @@ function toast(t,err){const m=$('msg');m.textContent=t;m.className='show'+(err?'
 async function poll(){
   try{
     const s=await(await fetch('/api/state')).json();
-    onroad=s.onroad;
+    engaged=s.engaged;
     $('conn').textContent=s.connected?(s.onroad?'주행 중 · onroad':'정차 · offroad')
                                      :'openpilot 대기 중';
     const L=s.lead||{};
@@ -241,7 +242,7 @@ async function poll(){
 
 async function loadSettings(){
   const d=await(await fetch('/api/settings')).json();
-  allowOnroad=d.allowOnroad;
+  allowEngaged=d.allowEngaged;
   const box=$('settings');box.innerHTML='';
   for(const[k,c]of Object.entries(d.settings)){
     const row=document.createElement('div');row.className='row';
@@ -265,7 +266,7 @@ async function loadSettings(){
 }
 
 async function save(key,value,el){
-  if(onroad&&!allowOnroad){toast('주행 중에는 변경할 수 없습니다. 정차 후 시도하세요.',1);
+  if(engaged&&!allowEngaged){toast('제어 중에는 변경할 수 없습니다. 해제 후 시도하세요.',1);
     loadSettings();return;}
   const r=await fetch('/api/settings',{method:'POST',
     headers:{'Content-Type':'application/json'},body:JSON.stringify({key,value})});
@@ -282,17 +283,18 @@ loadSettings();poll();setInterval(poll,300);
 def main():
   ap = argparse.ArgumentParser()
   ap.add_argument('--port', type=int, default=8088)
-  ap.add_argument('--allow-onroad', action='store_true',
-                  help='허용 시 주행 중에도 설정 변경 가능 (권장하지 않음)')
+  ap.add_argument('--allow-engaged', action='store_true',
+                  help='허용 시 openpilot 제어 중에도 설정 변경 가능 (권장하지 않음)')
   args = ap.parse_args()
 
   Handler.state = State()
   Handler.params = Params()
-  Handler.allow_onroad = args.allow_onroad
+  Handler.allow_engaged = args.allow_engaged
 
   srv = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
   print(f"serving on http://0.0.0.0:{args.port}"
-        + ("  (onroad writes ALLOWED)" if args.allow_onroad else "  (onroad writes blocked)"))
+        + ("  (writes allowed while ENGAGED)" if args.allow_engaged
+           else "  (writes blocked while engaged)"))
   srv.serve_forever()
 
 
