@@ -281,7 +281,9 @@ class RadarD:
 
   def refresh_tuning(self) -> None:
     """Pick up live tuning changes so options can be A/B'd between runs without a rebuild."""
-    self.stopped_lead_enabled = self.params.get_bool("StoppedLeadMatchEnabled")
+    # get_bool() ignores the key's declared default and reports False until something writes
+    # the param, which would silently disable this. get(return_default=True) honors it.
+    self.stopped_lead_enabled = bool(self.params.get("StoppedLeadMatchEnabled", return_default=True))
     hold_ms = self.params.get("StoppedLeadHoldMs", return_default=True) or 500
     # +STOPPED_LEAD_COUNT_UP of evidence per frame, so the threshold is half the frame count
     self.stopped_lead_count_max = max(1, int((hold_ms / 1000.0) / DT_MDL))

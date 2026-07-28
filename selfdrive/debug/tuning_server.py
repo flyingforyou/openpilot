@@ -97,7 +97,9 @@ class Handler(BaseHTTPRequestHandler):
       out = {}
       for k, (kind, label, help_) in SETTINGS.items():
         try:
-          v = self.params.get_bool(k) if kind == 'bool' else self.params.get(k, return_default=True)
+          # not get_bool(): it ignores the declared default and reads False until first write
+          v = self.params.get(k, return_default=True)
+          v = bool(v) if kind == 'bool' else v
         except Exception:
           v = None
         out[k] = {'value': v, 'type': kind, 'label': label, 'help': help_}
