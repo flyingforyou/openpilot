@@ -256,6 +256,9 @@ SConscript([
   'selfdrive/ui/SConscript',
 ])
 
+if Dir('#tools/replay/').exists():
+  SConscript(['tools/replay/SConscript'])
+
 if Dir('#tools/cabana/').exists() and arch != "larch64":
   SConscript(['tools/cabana/SConscript'])
 
