@@ -20,6 +20,13 @@ KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
+METER_TO_FOOT = 3.28084
+
+# Left column strip between the driver monitor icon (16,10 sized 60x60) and the
+# steering wheel (centered at x=46, y=height-39), used for the lead distance.
+LEAD_DIST_CENTER_X = 46
+LEAD_DIST_CENTER_Y = 123
+LEAD_DIST_FONT_SIZE = 32.0
 
 
 @dataclass(frozen=True)
@@ -112,6 +119,7 @@ class HudRenderer(Widget):
     self._gap_adjust: int = 0
     self._last_gap_adjust: int = 0
     self._gap_popup_until: float = 0.0
+    self._lead_d_rel: float | None = None
 
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
@@ -155,6 +163,7 @@ class HudRenderer(Widget):
       self._gap_adjust = 0
       self._last_gap_adjust = 0
       self._gap_popup_until = 0.0
+      self._lead_d_rel = None
       return
 
     controls_state = sm['controlsState']
@@ -188,6 +197,9 @@ class HudRenderer(Widget):
     else:
       self._gap_adjust = 0
 
+    lead_one = sm['radarState'].leadOne if sm.valid['radarState'] else None
+    self._lead_d_rel = lead_one.dRel if (lead_one and lead_one.status) else None
+
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
 
@@ -197,6 +209,9 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_steering_wheel(rect)
+
+    if self._lead_d_rel is not None:
+      self._draw_lead_distance(rect)
 
     if self._gap_adjust != 0 and time.monotonic() < self._gap_popup_until:
       self._draw_gap_popup(rect)
@@ -284,6 +299,21 @@ class HudRenderer(Widget):
       0,
       max_color,
     )
+
+  def _draw_lead_distance(self, rect: rl.Rectangle) -> None:
+    """Distance to the lead, in the left strip between the driver monitor and the wheel."""
+    if self._lead_d_rel is None:
+      return
+
+    d = self._lead_d_rel
+    text = f"{d:.0f}m" if ui_state.is_metric else f"{d * METER_TO_FOOT:.0f}ft"
+    text_size = measure_text_cached(self._font_bold, text, LEAD_DIST_FONT_SIZE)
+
+    x = rect.x + LEAD_DIST_CENTER_X - text_size.x / 2
+    y = rect.y + LEAD_DIST_CENTER_Y - text_size.y / 2
+
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(x + 2, y + 2), LEAD_DIST_FONT_SIZE, 0, rl.Color(0, 0, 0, 220))
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(x, y), LEAD_DIST_FONT_SIZE, 0, COLORS.WHITE)
 
   def _draw_gap_popup(self, rect: rl.Rectangle) -> None:
     """Briefly show the Tesla gap setting after the driver changes it."""
