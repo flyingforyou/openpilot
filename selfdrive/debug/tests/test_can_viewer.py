@@ -96,3 +96,38 @@ def test_real_signal_change_is_reported_and_expires():
 
   after_hold = 0.1 + CanDecoder.CHANGE_HOLD_S + 0.1
   assert dec.snapshot(now=after_hold)['messages'][0]['anyChanged'] is False
+
+
+def test_catalog_lists_dbc_messages_never_received():
+  dec = _decoder()
+  dec.ingest([FakeFrame(0, 69, bytes(8))], now=0.0)
+  snap = dec.snapshot(now=0.0)
+
+  received = [m for m in snap['messages'] if m['seen']]
+  assert [m['address'] for m in received] == [69]
+
+  # everything else the DBC defines is still listed, with nothing to show
+  from opendbc.can.dbc import DBC
+  unseen = [m for m in snap['messages'] if not m['seen']]
+  assert len(unseen) == len(DBC('tesla_can').addr_to_msg) - 1
+  sample = unseen[0]
+  assert sample['name'] and sample['hex'] is None and sample['bus'] is None
+  assert all(s['v'] is None for s in sample['signals'])
+  assert snap['seen'] == 1
+
+
+def test_received_message_is_not_duplicated_by_catalog():
+  dec = _decoder()
+  dec.ingest([FakeFrame(0, 69, bytes(8)), FakeFrame(2, 69, bytes(8))], now=0.0)
+  snap = dec.snapshot(now=0.0)
+
+  entries = [m for m in snap['messages'] if m['address'] == 69]
+  assert sorted(m['bus'] for m in entries) == [0, 2], "seen on two buses, and no catalog stub"
+
+
+def test_unseen_can_be_excluded():
+  dec = _decoder()
+  dec.ingest([FakeFrame(0, 69, bytes(8))], now=0.0)
+
+  assert dec.snapshot(include_unseen=False, now=0.0)['total'] == 1
+  assert dec.snapshot(changed_only=True, now=0.0)['total'] == 0, "catalog must not leak in here"

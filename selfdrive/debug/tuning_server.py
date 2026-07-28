@@ -149,8 +149,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, json.dumps({
           'messages': [], 'dbc': None, 'total': 0, **self.can.state(),
           'error': '차량 미연결 · 저장된 route를 재생해서 볼 수 있습니다'}))
-      return self._send(200, json.dumps({**dec.snapshot('changed=1' in self.path),
-                                         **self.can.state()}))
+      snap = dec.snapshot('changed=1' in self.path,
+                          include_unseen='unseen=0' not in self.path)
+      return self._send(200, json.dumps({**snap, **self.can.state()}))
 
     if self.path.startswith('/api/settings'):
       out = {}
@@ -482,6 +483,8 @@ button.tg[aria-pressed=true]{border-color:var(--hot);color:var(--hot)}
 .msg{background:var(--card);border:1px solid var(--line);border-radius:10px;margin-bottom:8px;
 overflow:hidden}
 .msg.hot{border-color:var(--hot)}
+.msg.unseen{opacity:.5}
+.msg.unseen .addr{color:var(--dim)}
 .mh{display:flex;align-items:baseline;gap:9px;padding:10px 12px;cursor:pointer;flex-wrap:wrap}
 .addr{font-family:var(--m);font-size:13px;color:var(--radar);font-weight:600}
 .nm{font-size:13px;flex:1;min-width:100px}
@@ -510,15 +513,19 @@ font-size:12px;border-bottom:1px solid var(--line)}
 <div class="bar">
   <input type="search" id="q" placeholder="메시지·신호 이름 또는 주소" aria-label="검색">
   <button class="tg" id="only" aria-pressed="false">변한 것만</button>
+  <button class="tg" id="unseen" aria-pressed="true">미수신</button>
+  <button class="tg" id="unknown" aria-pressed="true">DBC 외</button>
   <button class="tg" id="pause" aria-pressed="false">일시정지</button>
 </div>
 <div id="list"></div>
 
 <script>
 const $=i=>document.getElementById(i);
-const open=new Set(); let paused=false, onlyChanged=false;
+const open=new Set(); let paused=false, onlyChanged=false, showUnseen=true, showUnknown=true;
 
 $('only').onclick=()=>{onlyChanged=!onlyChanged;$('only').setAttribute('aria-pressed',onlyChanged);};
+$('unseen').onclick=()=>{showUnseen=!showUnseen;$('unseen').setAttribute('aria-pressed',showUnseen);render(last);};
+$('unknown').onclick=()=>{showUnknown=!showUnknown;$('unknown').setAttribute('aria-pressed',showUnknown);render(last);};
 $('pause').onclick=()=>{paused=!paused;$('pause').setAttribute('aria-pressed',paused);};
 $('q').oninput=()=>render(last);
 
@@ -547,13 +554,15 @@ $('play').onclick=async()=>{
 };
 
 let last={messages:[]};
-function key(m){return m.bus+':'+m.address;}
+function key(m){return (m.bus===null?'x':m.bus)+':'+m.address;}
 
 function render(d){
   last=d;
   const q=$('q').value.trim().toLowerCase();
   const list=$('list');
   let msgs=d.messages||[];
+  if(!showUnseen) msgs=msgs.filter(m=>m.seen);
+  if(!showUnknown) msgs=msgs.filter(m=>m.name);
   if(q) msgs=msgs.filter(m=>
     (m.name||'').toLowerCase().includes(q) ||
     String(m.address).includes(q) || m.address.toString(16).includes(q) ||
@@ -565,13 +574,15 @@ function render(d){
     const k=key(m), isOpen=open.has(k);
     const sigs=isOpen&&m.signals.length?'<div class="sigs">'+m.signals.map(s=>
       `<div class="sig${s.changed?' ch':''}${s.noise?' noise':''}"><span class="n">${s.name}</span>`+
-      `<span class="val">${s.v}${s.enum?`<span class="en">${s.enum}</span>`:''}</span></div>`
+      `<span class="val">${m.seen?s.v:'N/A'}${s.enum?`<span class="en">${s.enum}</span>`:''}</span></div>`
     ).join('')+'</div>':'';
-    return `<div class="msg${m.anyChanged?' hot':''}" data-k="${k}">
+    const meta=m.seen?`bus ${m.bus} · ${m.hz}Hz`:'미수신';
+    const bytes=m.seen?m.hex.replace(/(..)/g,'$1 ').trim():'N/A';
+    return `<div class="msg${m.anyChanged?' hot':''}${m.seen?'':' unseen'}" data-k="${k}">
       <div class="mh"><span class="addr">0x${m.address.toString(16).toUpperCase()}</span>
         <span class="nm${m.name?'':' unk'}">${m.name||'(DBC에 없음)'}</span>
-        <span class="hz">bus ${m.bus} · ${m.hz}Hz</span></div>
-      <div class="bytes">${m.hex.replace(/(..)/g,'$1 ').trim()}</div>${sigs}</div>`;
+        <span class="hz">${meta}</span></div>
+      <div class="bytes">${bytes}</div>${sigs}</div>`;
   }).join('');
 
   list.querySelectorAll('.msg').forEach(el=>{
@@ -585,7 +596,7 @@ async function tick(){
   try{
     const d=await(await fetch('/api/can'+(onlyChanged?'?changed=1':''))).json();
     const src=d.mode==='replay'?`재생: ${d.route} · ${d.status}`:'라이브';
-    $('sub').textContent=d.dbc?`${d.total}개 메시지 · ${d.dbc} · ${src}`
+    $('sub').textContent=d.dbc?`수신 ${d.seen}/${d.known} · 전체 ${d.total} · ${d.dbc} · ${src}`
                               :(d.error||'DBC를 찾을 수 없습니다');
     render(d);
   }catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}
