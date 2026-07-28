@@ -502,6 +502,7 @@ font-size:12px;border-bottom:1px solid var(--line)}
 .sig .val{font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
 .sig.ch .n,.sig.ch .val{color:var(--hot)}
 .sig .en{color:var(--dim);font-size:10.5px;margin-left:6px}
+.sig.noise{opacity:.4}
 .empty{color:var(--dim);font-size:13px;padding:24px 4px;text-align:center}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body>
@@ -540,7 +541,7 @@ function render(d){
   list.innerHTML=msgs.map(m=>{
     const k=key(m), isOpen=open.has(k);
     const sigs=isOpen&&m.signals.length?'<div class="sigs">'+m.signals.map(s=>
-      `<div class="sig${s.changed?' ch':''}"><span class="n">${s.name}</span>`+
+      `<div class="sig${s.changed?' ch':''}${s.noise?' noise':''}"><span class="n">${s.name}</span>`+
       `<span class="val">${s.v}${s.enum?`<span class="en">${s.enum}</span>`:''}</span></div>`
     ).join('')+'</div>':'';
     return `<div class="msg${m.anyChanged?' hot':''}" data-k="${k}">

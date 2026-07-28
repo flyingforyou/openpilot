@@ -5,6 +5,7 @@ the moment you are sitting in the car wondering which signal moves when you pres
 it decodes live and flags what changed, so a knob can be found in one pass instead of a drive
 plus an analysis session.
 """
+import re
 import threading
 import time
 from collections import defaultdict
@@ -14,13 +15,23 @@ from opendbc.can.dbc import DBC
 from opendbc.can.parser import CANDefine, get_raw_value
 
 
+# Counters and checksums change on every single frame by design. Flagging them as "changed"
+# buries the one signal you are actually hunting for. This DBC types none of them (every
+# signal is DEFAULT), so match on the naming instead.
+NOISE_SIGNAL_RE = re.compile(r"(^CRC_|^MC_|Checksum$|Counter$|_CRC$|_Cnt$)", re.IGNORECASE)
+
+
+def is_noise_signal(sig) -> bool:
+  return getattr(sig, 'type', 0) != 0 or bool(NOISE_SIGNAL_RE.search(sig.name))
+
+
 class CanDecoder:
   """Tracks every (bus, address) seen, decoded where the DBC knows the message."""
 
   # A signal is "recently changed" for this long, so a change is still visible after glancing up
   CHANGE_HOLD_S = 3.0
 
-  def __init__(self, dbc_names: list[str]):
+  def __init__(self, dbc_names: list[str], start: bool = True):
     self.lock = threading.Lock()
     self.msgs: dict[tuple[int, int], dict] = {}
     self.dbc_name = None
@@ -33,8 +44,10 @@ class CanDecoder:
       except Exception:
         continue
 
+    self.counts: dict[tuple[int, int], int] = defaultdict(int)
     self.started = time.monotonic()
-    threading.Thread(target=self._run, daemon=True).start()
+    if start:
+      threading.Thread(target=self._run, daemon=True).start()
 
   def _lookup(self, address: int):
     for dbc, dv in self.dbcs:
@@ -54,49 +67,54 @@ class CanDecoder:
       except Exception:
         continue
       enum = (dv.get(msg.address) or {}).get(sig.name, {}).get(int(value)) if dv else None
-      out[sig.name] = {'v': round(value, 4), 'raw': raw, 'enum': enum}
+      out[sig.name] = {'v': round(value, 4), 'raw': raw, 'enum': enum,
+                       'noise': is_noise_signal(sig)}
     return out
+
+  def ingest(self, frames, now: float | None = None) -> None:
+    """Take a batch of CAN frames. Split out from the live loop so it can be driven from a
+    recorded log as well as the bus."""
+    now = time.monotonic() if now is None else now
+
+    for frame in frames:
+      key = (frame.src, frame.address)
+      self.counts[key] += 1
+      dat = bytes(frame.dat)
+
+      with self.lock:
+        entry = self.msgs.get(key)
+        if entry is None:
+          msg, dv = self._lookup(frame.address)
+          entry = {
+            'bus': frame.src, 'address': frame.address,
+            'name': msg.name if msg else None,
+            'len': len(dat), 'hex': dat.hex(), 'signals': {},
+            'changed': {}, 'count': 0, 'last': now, 'hz': 0.0,
+            '_msg': msg, '_dv': dv, '_first': now,
+          }
+          self.msgs[key] = entry
+
+        prev_sigs = entry['signals']
+        sigs = self._decode(entry['_msg'], entry['_dv'], dat) if entry['_msg'] else {}
+        for n, sig in sigs.items():
+          if sig['noise']:
+            continue
+          if n in prev_sigs and prev_sigs[n]['raw'] != sig['raw']:
+            entry['changed'][n] = now
+
+        entry.update(hex=dat.hex(), signals=sigs, count=self.counts[key], last=now)
+        span = now - entry['_first']
+        entry['hz'] = round((self.counts[key] - 1) / span, 1) if self.counts[key] > 1 and span > 0 else 0.0
 
   def _run(self):
     sm = messaging.SubMaster(['can'])
-    counts: dict[tuple[int, int], int] = defaultdict(int)
-
     while True:
       sm.update(100)
-      if not sm.updated['can']:
-        continue
-      now = time.monotonic()
+      if sm.updated['can']:
+        self.ingest(sm['can'])
 
-      for frame in sm['can']:
-        key = (frame.src, frame.address)
-        counts[key] += 1
-        dat = bytes(frame.dat)
-
-        with self.lock:
-          entry = self.msgs.get(key)
-          if entry is None:
-            msg, dv = self._lookup(frame.address)
-            entry = {
-              'bus': frame.src, 'address': frame.address,
-              'name': msg.name if msg else None,
-              'len': len(dat), 'hex': dat.hex(), 'signals': {},
-              'changed': {}, 'count': 0, 'last': now, 'hz': 0.0,
-              '_msg': msg, '_dv': dv, '_first': now,
-            }
-            self.msgs[key] = entry
-
-          prev_sigs = entry['signals']
-          sigs = self._decode(entry['_msg'], entry['_dv'], dat) if entry['_msg'] else {}
-          for n, s in sigs.items():
-            if n in prev_sigs and prev_sigs[n]['raw'] != s['raw']:
-              entry['changed'][n] = now
-
-          entry.update(hex=dat.hex(), signals=sigs, count=counts[key], last=now)
-          span = max(now - entry['_first'], 1e-3)
-          entry['hz'] = round(counts[key] / span, 1)
-
-  def snapshot(self, changed_only: bool = False) -> dict:
-    now = time.monotonic()
+  def snapshot(self, changed_only: bool = False, now: float | None = None) -> dict:
+    now = time.monotonic() if now is None else now
     out = []
     with self.lock:
       for entry in self.msgs.values():
