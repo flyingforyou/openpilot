@@ -10,7 +10,7 @@ from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
-from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.filter_simple import BounceFilter, FirstOrderFilter
 from cereal import log
 
 EventName = log.OnroadEvent.EventName
@@ -28,6 +28,7 @@ GAP_ALERT_MARGIN = 18                # AlertRenderer.ALERT_MARGIN
 GAP_ALERT_BG_HEIGHT_FRAC = 0.583     # AlertRenderer's "small alert" height
 GAP_ALERT_FONT_SIZE = 82             # what AlertRenderer picks for text this short
 GAP_ALERT_TEXT_Y = 11                # AlertRenderer's text1_y_offset for this font size
+GAP_ALERT_SLIDE = 50                 # AlertRenderer slides text in from rect.y - 50
 GAP_POPUP_SECONDS = 2.0
 
 # Left column strip between the driver monitor icon (16,10 sized 60x60) and the
@@ -139,6 +140,9 @@ class HudRenderer(Widget):
 
     self._gap_label = UnifiedLabel(text="", font_size=GAP_ALERT_FONT_SIZE, font_weight=FontWeight.DISPLAY,
                                    line_height=0.86)
+    # Same slide-in-and-fade as AlertRenderer, so it enters and leaves like a real alert
+    self._gap_alert_y_filter = BounceFilter(0, 0.1, 1 / gui_app.target_fps)
+    self._gap_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
 
     self._turn_intent = TurnIntent()
     self._torque_bar = TorqueBar()
@@ -224,7 +228,13 @@ class HudRenderer(Widget):
     if self._lead_d_rel is not None:
       self._draw_lead_distance(rect)
 
-    if self._can_draw_top_icons and self._gap_adjust != 0 and time.monotonic() < self._gap_popup_until:
+    # Filters must run every frame, not just while showing, so the exit animates too.
+    show_gap = (self._can_draw_top_icons and self._gap_adjust != 0 and
+                time.monotonic() < self._gap_popup_until)
+    self._gap_alert_y_filter.update(rect.y if show_gap else rect.y - GAP_ALERT_SLIDE)
+    self._gap_alpha_filter.update(1 if show_gap else 0)
+
+    if self._gap_alpha_filter.x > 0.01:
       self._draw_gap_popup(rect)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
@@ -333,11 +343,13 @@ class HudRenderer(Widget):
     lowercase display font at the same margin, so it reads as part of the alert language
     rather than a separate widget.
     """
+    alpha = self._gap_alpha_filter.x
+
     # Background: solid for the top fifth, then fade out. Matches AlertRenderer's
     # small alert (0.583 of height) used by the lane change alerts.
     bg_height = round(rect.height * GAP_ALERT_BG_HEIGHT_FRAC)
     solid_height = round(bg_height * 0.2)
-    color = rl.Color(0, 0, 0, int(255 * 0.90))
+    color = rl.Color(0, 0, 0, int(255 * 0.90 * alpha))
     translucent = rl.Color(0, 0, 0, 0)
 
     rl.draw_rectangle(int(rect.x), int(rect.y), int(rect.width), solid_height, color)
@@ -345,12 +357,13 @@ class HudRenderer(Widget):
                                  int(bg_height - solid_height), color, translucent)
 
     text = f"gap {self._gap_adjust}"
-    text_color = rl.Color(255, 255, 255, int(255 * 0.9))
+    text_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
     self._gap_label.set_text(text)
     self._gap_label.set_text_color(text_color)
     self._gap_label.set_font_size(GAP_ALERT_FONT_SIZE)
     self._gap_label.set_alignment(rl.GuiTextAlignment.TEXT_ALIGN_LEFT)
-    self._gap_label.render(rl.Rectangle(rect.x + GAP_ALERT_MARGIN, rect.y + GAP_ALERT_TEXT_Y,
+    self._gap_label.render(rl.Rectangle(rect.x + GAP_ALERT_MARGIN,
+                                        self._gap_alert_y_filter.x + GAP_ALERT_TEXT_Y,
                                         rect.width - GAP_ALERT_MARGIN, rect.height))
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
