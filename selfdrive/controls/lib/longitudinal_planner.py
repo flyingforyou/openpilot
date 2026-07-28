@@ -6,6 +6,7 @@ import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
@@ -66,6 +67,12 @@ class LongitudinalPlanner:
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
+
+    # Tesla legacy gap setting doesn't reliably re-announce itself on every boot (may be a
+    # momentary request rather than a continuous status). Persist the last known value so a
+    # fresh boot uses it immediately instead of silently falling back to the personality tFollow.
+    self.params = Params()
+    self.tesla_last_gap_adjust = self.params.get("TeslaLastGapAdjust", return_default=True) if CP.brand == "tesla" else 0
 
   @staticmethod
   def parse_model(model_msg):
@@ -153,6 +160,13 @@ class LongitudinalPlanner:
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     gap_adjust = int(sm['carState'].cruiseState.gapAdjust)
+    if self.CP.brand == "tesla":
+      if gap_adjust != 0:
+        if gap_adjust != self.tesla_last_gap_adjust:
+          self.tesla_last_gap_adjust = gap_adjust
+          self.params.put_nonblocking("TeslaLastGapAdjust", gap_adjust)
+      else:
+        gap_adjust = self.tesla_last_gap_adjust
     self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality, gap_adjust=gap_adjust)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
