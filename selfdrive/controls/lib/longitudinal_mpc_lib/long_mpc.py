@@ -94,6 +94,22 @@ def gap_t_follow_table(profile: int = 0) -> dict[int, float]:
   return {g: round(max(mid + (v - mid) * spread + shift, MIN_T_FOLLOW), 3)
           for g, v in TESLA_GAP_T_FOLLOW.items()}
 
+# Gap profiles, selectable at runtime. The knob has 7 positions either way; these change what
+# following time each position asks for, so the whole range shifts or spreads together.
+GAP_PROFILES = {
+  0: ("표준", 0.0, 1.0),
+  1: ("가깝게", -0.15, 1.0),
+  2: ("멀게", 0.15, 1.0),
+  3: ("넓게", 0.0, 1.4),
+}
+
+
+def gap_t_follow_table(profile: int = 0) -> dict[int, float]:
+  """Shift and/or spread the base table around its midpoint (gap 4)."""
+  _, shift, spread = GAP_PROFILES.get(profile, GAP_PROFILES[0])
+  mid = TESLA_GAP_T_FOLLOW[4]
+  return {g: round(mid + (v - mid) * spread + shift, 3) for g, v in TESLA_GAP_T_FOLLOW.items()}
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
