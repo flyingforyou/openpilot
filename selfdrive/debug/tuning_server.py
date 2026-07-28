@@ -8,7 +8,8 @@ right, so a run can be set up and its effect watched without stopping to SSH in.
   PYTHONPATH=/data/openpilot python3 selfdrive/debug/tuning_server.py
   # then open http://<device-ip>:8088 from anything on the same network
 
-Pages: / index, /live lead perception and settings, /can every decoded CAN signal.
+Pages: / index, /live lead perception and settings, /can every decoded CAN signal,
+/videos the recorded road video.
 
 Settings are saved whenever you press 반영, but radard and the longitudinal planner only
 re-read them while disengaged. So a change made mid-drive lands at the next engage rather than
@@ -23,6 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cereal.messaging as messaging
 from openpilot.common.params import Params
+from openpilot.selfdrive.debug import video_source
 from openpilot.selfdrive.debug.can_source import CanSource, list_routes
 
 # Options rather than free-form numbers: a typo in a text box goes straight into the braking
@@ -120,6 +122,7 @@ class Handler(BaseHTTPRequestHandler):
   state: State
   params: Params
   can: 'CanSource'
+  videos: 'video_source.Mp4Cache'
 
   def log_message(self, *a):
     pass  # don't spam the console on every poll
@@ -132,6 +135,47 @@ class Handler(BaseHTTPRequestHandler):
     self.send_header('Cache-Control', 'no-store')
     self.end_headers()
     self.wfile.write(payload)
+
+  def _send_file(self, path: str, ctype: str, download: str | None = None):
+    """Serve a file, honouring Range -- without it a <video> can't seek and Safari won't
+    play at all."""
+    size = os.path.getsize(path)
+    start, end = 0, size - 1
+    rng = self.headers.get('Range', '')
+    partial = rng.startswith('bytes=') and '-' in rng
+    if partial:
+      lo, _, hi = rng[6:].partition('-')
+      start = int(lo) if lo else 0
+      end = int(hi) if hi else size - 1
+      end = min(end, size - 1)
+      if start > end:
+        self.send_response(416)
+        self.send_header('Content-Range', f'bytes */{size}')
+        self.end_headers()
+        return
+
+    self.send_response(206 if partial else 200)
+    self.send_header('Content-Type', ctype)
+    self.send_header('Content-Length', str(end - start + 1))
+    self.send_header('Accept-Ranges', 'bytes')
+    if partial:
+      self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+    if download:
+      self.send_header('Content-Disposition', f'attachment; filename="{download}"')
+    self.end_headers()
+
+    remaining = end - start + 1
+    with open(path, 'rb') as f:
+      f.seek(start)
+      while remaining > 0:
+        chunk = f.read(min(256 * 1024, remaining))
+        if not chunk:
+          break
+        try:
+          self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+          return   # the player seeked away; nothing to report
+        remaining -= len(chunk)
 
   def do_GET(self):
     if self.path.startswith('/api/version'):
@@ -169,11 +213,37 @@ class Handler(BaseHTTPRequestHandler):
         'engaged': bool(self.state.get().get('engaged')),
       }))
 
+    if self.path.startswith('/api/videos'):
+      return self._send(200, json.dumps({'routes': video_source.list_videos()}))
+
     page = self.path.split('?')[0].rstrip('/')
+
+    # /v/<route>/<seg>.mp4 -- the road preview, remuxed so a browser will play it
+    if page.startswith('/v/'):
+      try:
+        route, seg = page[3:].rsplit('/', 1)
+        path = self.videos.get(route, int(seg.removesuffix('.mp4')))
+      except (ValueError, FileNotFoundError):
+        return self._send(404, '{}')
+      except Exception as e:
+        return self._send(500, json.dumps({'error': f'{type(e).__name__}: {e}'}))
+      return self._send_file(path, 'video/mp4')
+
+    # /dl/<route>/<seg>/<file> -- the originals, untouched
+    if page.startswith('/dl/'):
+      try:
+        route, seg, name = page[4:].rsplit('/', 2)
+        path = video_source.raw_path(route, int(seg), name)
+      except (ValueError, FileNotFoundError):
+        return self._send(404, '{}')
+      return self._send_file(path, 'application/octet-stream', f'{route}--{seg}-{name}')
+
     if page == '/live':
       return self._send(200, PAGE_LIVE, 'text/html; charset=utf-8')
     if page == '/can':
       return self._send(200, PAGE_CAN, 'text/html; charset=utf-8')
+    if page == '/videos':
+      return self._send(200, PAGE_VIDEO, 'text/html; charset=utf-8')
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
 
   def do_POST(self):
@@ -430,6 +500,13 @@ border:1px solid var(--line);color:var(--mut)}
   <div class="st"><span class="pill" id="p-can">–</span></div>
 </a>
 
+<a class="card" href="/videos">
+  <div class="t">영상 · 녹화된 주행</div>
+  <div class="d">디바이스에 저장된 주행 영상을 목록에서 골라 바로 재생합니다.
+    세그먼트가 끝나면 다음으로 이어지고, 원본 카메라 파일은 내려받을 수 있습니다.</div>
+  <div class="st"><span class="pill" id="p-vid">–</span></div>
+</a>
+
 <script>
 async function tick(){
   try{
@@ -449,7 +526,16 @@ async function tick(){
     p.className='pill'+(c.total?' on':'');
   }catch(e){}
 }
-tick();setInterval(tick,1000);
+async function once(){
+  try{
+    const d=await(await fetch('/api/videos')).json();
+    const n=(d.routes||[]).length,s=(d.routes||[]).reduce((a,r)=>a+r.count,0);
+    const p=document.getElementById('p-vid');
+    p.textContent=n?`주행 ${n}개 · 세그먼트 ${s}개`:'녹화 없음';
+    p.className='pill'+(n?' on':'');
+  }catch(e){}
+}
+once();tick();setInterval(tick,1000);
 </script></body></html>"""
 
 
@@ -608,6 +694,161 @@ loadRoutes();tick();setInterval(tick,400);
 </script></body></html>"""
 
 
+PAGE_VIDEO = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>openpilot 녹화 영상</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--ok:#4CC38A;--bad:#E5484D;
+--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--ok:#1B7F53;--bad:#C42B30}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);
+padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+h1{font-size:15px;margin:0 0 4px;letter-spacing:-.01em}
+.back{display:inline-block;font-family:var(--m);font-size:11px;color:var(--dim);
+text-decoration:none;margin-bottom:10px}.back:hover{color:var(--radar)}
+.sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:16px}
+.wrap{display:grid;gap:12px;grid-template-columns:1fr}
+@media(min-width:900px){.wrap{grid-template-columns:280px 1fr;align-items:start}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;
+margin-bottom:12px}
+.h{font-family:var(--m);font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+color:var(--dim);margin-bottom:12px}
+.rt{display:block;width:100%;text-align:left;background:transparent;color:inherit;
+border:1px solid var(--line);border-radius:10px;padding:11px 12px;margin-bottom:8px;
+cursor:pointer;font-family:inherit}
+.rt:hover,.rt:focus-visible{border-color:var(--radar);outline:none}
+.rt[aria-current="true"]{border-color:var(--radar);background:rgba(90,200,250,.08)}
+.rt .n{font-family:var(--m);font-size:12.5px;margin-bottom:3px}
+.rt .m{font-size:11px;color:var(--mut);font-variant-numeric:tabular-nums}
+video{width:100%;display:block;border-radius:10px;background:#000;aspect-ratio:526/330}
+.bar{display:flex;align-items:center;gap:10px;margin-top:12px;flex-wrap:wrap}
+.bar .now{font-family:var(--m);font-size:12px;font-variant-numeric:tabular-nums;color:var(--mut)}
+button.nav{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:9px;
+padding:8px 13px;font-size:13px;font-family:inherit;cursor:pointer}
+button.nav:hover:not([disabled]){border-color:var(--radar)}
+button.nav[disabled]{color:var(--dim);cursor:default}
+.segs{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.seg{min-width:34px;background:var(--bg);color:var(--mut);border:1px solid var(--line);
+border-radius:7px;padding:6px 0;font-family:var(--m);font-size:11.5px;cursor:pointer;
+font-variant-numeric:tabular-nums}
+.seg:hover{border-color:var(--radar)}
+.seg[aria-current="true"]{background:var(--radar);border-color:var(--radar);color:#04121b;font-weight:700}
+.dl{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.dl a{font-family:var(--m);font-size:11px;color:var(--mut);text-decoration:none;
+border:1px solid var(--line);border-radius:7px;padding:6px 9px}
+.dl a:hover{border-color:var(--radar);color:var(--radar)}
+.note{font-size:11.5px;color:var(--dim);line-height:1.5;margin-top:12px}
+.empty{font-size:13px;color:var(--mut);padding:8px 0}
+label.chk{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--mut);cursor:pointer}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}
+</style></head><body>
+<a class="back" href="/">← 메뉴</a>
+<h1>녹화 영상</h1>
+<div class="sub" id="sub">불러오는 중…</div>
+
+<div class="wrap">
+  <div class="card" style="margin:0">
+    <div class="h">주행 기록</div>
+    <div id="routes"><div class="empty">불러오는 중…</div></div>
+  </div>
+
+  <div class="card" style="margin:0">
+    <div class="h" id="title">재생</div>
+    <video id="v" controls playsinline preload="metadata"></video>
+    <div class="bar">
+      <button class="nav" id="prev">← 이전</button>
+      <button class="nav" id="next">다음 →</button>
+      <span class="now" id="now">주행 기록을 선택하세요</span>
+      <label class="chk"><input type="checkbox" id="auto" checked> 자동 연속 재생</label>
+    </div>
+    <div class="segs" id="segs"></div>
+    <div class="dl" id="dl"></div>
+    <div class="note">전방 카메라의 저해상도 미리보기(526&times;330)를 MP4로 변환해 재생합니다.
+      원본 전방·광각·운전자 카메라는 HEVC 원시 스트림이라 브라우저에서 재생되지 않아 내려받기만 제공합니다.</div>
+  </div>
+</div>
+
+<script>
+const $=i=>document.getElementById(i);
+const v=$('v');
+let routes=[],cur=null,seg=0;
+
+const mb=b=>b>=1073741824?(b/1073741824).toFixed(1)+' GB':Math.round(b/1048576)+' MB';
+const when=t=>new Date(t*1000).toLocaleString('ko-KR',
+  {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+const mins=n=>n>=60?`약 ${Math.floor(n/60)}시간 ${n%60}분`:`약 ${n}분`;
+
+function drawRoutes(){
+  const box=$('routes');
+  if(!routes.length){box.innerHTML='<div class="empty">녹화된 영상이 없습니다.</div>';return;}
+  box.innerHTML='';
+  routes.forEach(r=>{
+    const b=document.createElement('button');
+    b.className='rt';b.setAttribute('aria-current',cur&&r.name===cur.name);
+    b.innerHTML=`<div class="n">${r.name}</div>`+
+      `<div class="m">${when(r.mtime)} · ${r.count}개 · ${mins(r.count)} · ${mb(r.bytes)}</div>`;
+    b.onclick=()=>open_(r,0);
+    box.appendChild(b);
+  });
+}
+
+function drawSegs(){
+  const box=$('segs');box.innerHTML='';
+  if(!cur)return;
+  cur.segments.forEach((s,i)=>{
+    const b=document.createElement('button');
+    b.className='seg';b.textContent=s.seg;b.setAttribute('aria-current',i===seg);
+    b.onclick=()=>open_(cur,i);
+    box.appendChild(b);
+  });
+  const d=$('dl');d.innerHTML='';
+  (cur.segments[seg]?.downloads||[]).forEach(f=>{
+    const a=document.createElement('a');
+    a.href=`/dl/${cur.name}/${cur.segments[seg].seg}/${f.file}`;
+    a.textContent=`${f.label} ${mb(f.bytes)}`;a.download='';
+    d.appendChild(a);
+  });
+  $('prev').disabled=seg<=0;
+  $('next').disabled=seg>=cur.segments.length-1;
+  $('now').textContent=`세그먼트 ${seg+1}/${cur.segments.length}`;
+  $('title').textContent=cur.name;
+}
+
+function open_(r,i){
+  cur=r;seg=Math.max(0,Math.min(i,r.segments.length-1));
+  v.src=`/v/${r.name}/${r.segments[seg].seg}.mp4`;
+  v.play().catch(()=>{});   // autoplay may be blocked; controls still work
+  drawRoutes();drawSegs();
+}
+
+function step(d){if(cur&&cur.segments[seg+d])open_(cur,seg+d);}
+$('prev').onclick=()=>step(-1);
+$('next').onclick=()=>step(1);
+v.addEventListener('ended',()=>{if($('auto').checked)step(1);});
+v.addEventListener('error',()=>{$('now').textContent='이 세그먼트를 재생할 수 없습니다';});
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT')return;
+  if(e.key==='ArrowRight'&&e.shiftKey){step(1);e.preventDefault();}
+  if(e.key==='ArrowLeft'&&e.shiftKey){step(-1);e.preventDefault();}
+});
+
+(async()=>{
+  try{
+    const d=await(await fetch('/api/videos')).json();
+    routes=d.routes||[];
+    const segs=routes.reduce((a,r)=>a+r.count,0);
+    const bytes=routes.reduce((a,r)=>a+r.bytes,0);
+    $('sub').textContent=routes.length?`${routes.length}개 주행 · ${segs}개 세그먼트 · ${mb(bytes)}`
+                                      :'녹화된 영상이 없습니다';
+    drawRoutes();
+    if(routes.length)open_(routes[0],0);
+  }catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}
+})();
+</script></body></html>"""
+
+
 def main():
   ap = argparse.ArgumentParser()
   ap.add_argument('--port', type=int, default=8088)
@@ -616,6 +857,7 @@ def main():
   Handler.state = State()
   Handler.params = Params()
   Handler.can = CanSource(Handler.params)
+  Handler.videos = video_source.Mp4Cache()
 
   srv = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
   print(f"serving on http://0.0.0.0:{args.port}  (commit {GIT_COMMIT})")
