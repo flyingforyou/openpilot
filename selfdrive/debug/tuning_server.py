@@ -515,17 +515,19 @@ font-size:12px;border-bottom:1px solid var(--line)}
   <button class="tg" id="only" aria-pressed="false">변한 것만</button>
   <button class="tg" id="unseen" aria-pressed="true">미수신</button>
   <button class="tg" id="unknown" aria-pressed="true">DBC 외</button>
+  <button class="tg" id="radar" aria-pressed="false">레이더 포인트</button>
   <button class="tg" id="pause" aria-pressed="false">일시정지</button>
 </div>
 <div id="list"></div>
 
 <script>
 const $=i=>document.getElementById(i);
-const open=new Set(); let paused=false, onlyChanged=false, showUnseen=true, showUnknown=true;
+const open=new Set(); let paused=false, onlyChanged=false, showUnseen=true, showUnknown=true, showRadar=false;
 
 $('only').onclick=()=>{onlyChanged=!onlyChanged;$('only').setAttribute('aria-pressed',onlyChanged);};
 $('unseen').onclick=()=>{showUnseen=!showUnseen;$('unseen').setAttribute('aria-pressed',showUnseen);render(last);};
 $('unknown').onclick=()=>{showUnknown=!showUnknown;$('unknown').setAttribute('aria-pressed',showUnknown);render(last);};
+$('radar').onclick=()=>{showRadar=!showRadar;$('radar').setAttribute('aria-pressed',showRadar);render(last);};
 $('pause').onclick=()=>{paused=!paused;$('pause').setAttribute('aria-pressed',paused);};
 $('q').oninput=()=>render(last);
 
@@ -563,6 +565,7 @@ function render(d){
   let msgs=d.messages||[];
   if(!showUnseen) msgs=msgs.filter(m=>m.seen);
   if(!showUnknown) msgs=msgs.filter(m=>m.name);
+  if(!showRadar) msgs=msgs.filter(m=>!/RadarPoint/i.test(m.name||''));
   if(q) msgs=msgs.filter(m=>
     (m.name||'').toLowerCase().includes(q) ||
     String(m.address).includes(q) || m.address.toString(16).includes(q) ||
