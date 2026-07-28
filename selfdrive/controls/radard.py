@@ -25,6 +25,22 @@ V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
 RADAR_TO_CENTER = 2.7   # (deprecated) RADAR is ~ 2.7m ahead from center of car
 RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame
 
+# Stopped-lead matching. The vision model can read a stopped car as moving (18m/s seen in
+# logs against a radar track holding 0m/s), which fails vel_sane and drops us to a vision-only
+# lead with a badly wrong closing speed. Rather than loosen vel_sane -- which guards against
+# braking for stationary clutter -- require sustained agreement in distance and lateral offset
+# before trusting the radar track.
+STOPPED_LEAD_MAX_SPEED = 1.0        # m/s, treat the track as stopped below this
+STOPPED_LEAD_Y_GATE = 4.0           # m, lateral agreement between radar track and vision lead
+STOPPED_LEAD_COUNT_UP = 2           # evidence gained per frame while the pattern holds
+STOPPED_LEAD_COUNT_MAX = int(1.0 / DT_MDL)   # commit after ~0.5s of evidence (+2 per frame)
+STICKY_SELECTED_COUNT_MAX = int(2.0 / DT_MDL)
+
+# A track that jumps this much between frames isn't the same object; drop its evidence.
+TRACK_JUMP_D = 5.0   # m
+TRACK_JUMP_Y = 2.0   # m
+TRACK_JUMP_V = 7.0   # m/s
+
 
 class KalmanParams:
   def __init__(self, dt: float):
@@ -58,13 +74,34 @@ class Track:
     self.K_K = kalman_params.K
     self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
 
+    # evidence that this track is a stopped lead the vision model is misreading, and
+    # how long it has been the chosen match (see match_vision_to_track)
+    self.is_stopped_car_count = 0
+    self.selected_count = 0
+
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float):
+    prev = None if self.cnt == 0 else (self.dRel, self.yRel, self.vLead, self.measured)
+
     # relative values, copy
     self.dRel = d_rel   # LONG_DIST
     self.yRel = y_rel   # -LAT_DIST
     self.vRel = v_rel   # REL_SPEED
     self.vLead = v_lead
     self.measured = measured   # measured or estimate
+
+    # Only accumulate evidence across frames where this is plausibly the same object still
+    # being seen. An unmeasured or discontinuous track starts over.
+    if prev is not None:
+      prev_d, prev_y, prev_v, prev_measured = prev
+      discontinuous = prev_measured and (abs(self.dRel - prev_d) > TRACK_JUMP_D or
+                                         abs(self.yRel - prev_y) > TRACK_JUMP_Y or
+                                         abs(self.vLead - prev_v) > TRACK_JUMP_V)
+    else:
+      discontinuous = False
+
+    if not self.measured or discontinuous:
+      self.is_stopped_car_count = 0
+      self.selected_count = 0
 
     # computed velocity and accelerations
     if self.cnt > 0:
@@ -115,7 +152,8 @@ def laplacian_pdf(x: float, mu: float, b: float):
   return math.exp(-abs(x-mu)/b)
 
 
-def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track]):
+def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track],
+                          update_counters: bool = True):
   offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
 
   def prob(c):
@@ -133,9 +171,40 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.25, 5.0])
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
+    _update_match_counters(tracks, track, update_counters)
     return track
-  else:
-    return None
+
+  # Stopped lead the vision model is misreading as moving: distance and lateral offset agree,
+  # only the speed doesn't, and the track really is stopped. Committing to it immediately would
+  # mean braking for any stationary clutter that lines up, so require the pattern to hold --
+  # or that we were already using this track, in which case a momentary speed disagreement
+  # shouldn't drop us back to a vision-only lead.
+  y_sane = abs(track.yRel + lead.y[0]) < STOPPED_LEAD_Y_GATE
+  stopped = (v_ego + track.vRel) < STOPPED_LEAD_MAX_SPEED
+
+  if dist_sane and y_sane and stopped and track.measured:
+    sticky = track.selected_count > 0
+    if update_counters:
+      track.is_stopped_car_count += STOPPED_LEAD_COUNT_UP
+    if sticky or track.is_stopped_car_count > STOPPED_LEAD_COUNT_MAX:
+      _update_match_counters(tracks, track, update_counters)
+      return track
+
+  # Nothing matched: leave the counters alone. Zeroing selected_count here would defeat the
+  # stickiness above, since these are exactly the frames it exists to bridge. Evidence still
+  # decays when the track stops being measured or jumps (see Track.update).
+  return None
+
+
+def _update_match_counters(tracks: dict[int, Track], selected: Track, enabled: bool) -> None:
+  if not enabled:
+    return
+  for t in tracks.values():
+    if t is selected:
+      t.selected_count = min(t.selected_count + 1, STICKY_SELECTED_COUNT_MAX)
+    else:
+      t.selected_count = 0
+      t.is_stopped_car_count = max(0, t.is_stopped_car_count - 1)
 
 
 def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float):
@@ -157,10 +226,11 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
-             model_v_ego: float, low_speed_override: bool = True) -> dict[str, Any]:
+             model_v_ego: float, low_speed_override: bool = True,
+             update_counters: bool = True) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_msg.prob > .5:
-    track = match_vision_to_track(v_ego, lead_msg, tracks)
+    track = match_vision_to_track(v_ego, lead_msg, tracks, update_counters)
   else:
     track = None
 
@@ -240,7 +310,8 @@ class RadarD:
     leads_v3 = sm['modelV2'].leadsV3
     if len(leads_v3) > 1:
       self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, low_speed_override=True)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, low_speed_override=False)
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, low_speed_override=False,
+                                                 update_counters=False)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
