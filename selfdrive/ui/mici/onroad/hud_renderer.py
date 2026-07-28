@@ -225,7 +225,8 @@ class HudRenderer(Widget):
 
     self._draw_steering_wheel(rect)
 
-    if self._lead_d_rel is not None:
+    # Only while engaged, matching the lane lines and path in the model renderer
+    if self._engaged and self._lead_d_rel is not None:
       self._draw_lead_distance(rect)
 
     # Filters must run every frame, not just while showing, so the exit animates too.
@@ -356,7 +357,7 @@ class HudRenderer(Widget):
     rl.draw_rectangle_gradient_v(int(rect.x), int(rect.y + solid_height), int(rect.width),
                                  int(bg_height - solid_height), color, translucent)
 
-    text = f"gap {self._gap_adjust}"
+    text = f"Gap {self._gap_adjust}"
     text_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
     self._gap_label.set_text(text)
     self._gap_label.set_text_color(text_color)
