@@ -9,6 +9,7 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
+from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.common.filter_simple import FirstOrderFilter
 from cereal import log
 
@@ -21,6 +22,13 @@ CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
 METER_TO_FOOT = 3.28084
+
+# Gap popup, styled to match the lane change alerts in AlertRenderer.
+GAP_ALERT_MARGIN = 18                # AlertRenderer.ALERT_MARGIN
+GAP_ALERT_BG_HEIGHT_FRAC = 0.583     # AlertRenderer's "small alert" height
+GAP_ALERT_FONT_SIZE = 82             # what AlertRenderer picks for text this short
+GAP_ALERT_TEXT_Y = 11                # AlertRenderer's text1_y_offset for this font size
+GAP_POPUP_SECONDS = 2.0
 
 # Left column strip between the driver monitor icon (16,10 sized 60x60) and the
 # steering wheel (centered at x=46, y=height-39), used for the lead distance.
@@ -129,6 +137,9 @@ class HudRenderer(Widget):
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_display: rl.Font = gui_app.font(FontWeight.DISPLAY)
 
+    self._gap_label = UnifiedLabel(text="", font_size=GAP_ALERT_FONT_SIZE, font_weight=FontWeight.DISPLAY,
+                                   line_height=0.86)
+
     self._turn_intent = TurnIntent()
     self._torque_bar = TorqueBar()
 
@@ -191,7 +202,7 @@ class HudRenderer(Widget):
     if 1 <= gap_adjust <= 7:
       # Do not show a popup for the first valid value after UI startup.
       if self._last_gap_adjust != 0 and gap_adjust != self._last_gap_adjust:
-        self._gap_popup_until = time.monotonic() + 1.0
+        self._gap_popup_until = time.monotonic() + GAP_POPUP_SECONDS
       self._last_gap_adjust = gap_adjust
       self._gap_adjust = gap_adjust
     else:
@@ -213,7 +224,7 @@ class HudRenderer(Widget):
     if self._lead_d_rel is not None:
       self._draw_lead_distance(rect)
 
-    if self._gap_adjust != 0 and time.monotonic() < self._gap_popup_until:
+    if self._can_draw_top_icons and self._gap_adjust != 0 and time.monotonic() < self._gap_popup_until:
       self._draw_gap_popup(rect)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
@@ -316,26 +327,31 @@ class HudRenderer(Widget):
     rl.draw_text_ex(self._font_bold, text, rl.Vector2(x, y), LEAD_DIST_FONT_SIZE, 0, COLORS.WHITE)
 
   def _draw_gap_popup(self, rect: rl.Rectangle) -> None:
-    """Briefly show the Tesla gap setting after the driver changes it."""
-    text = f"GAP {self._gap_adjust}"
-    font_size = 30.0
-    height = 52.0
-    padding_x = 18.0
+    """Briefly show the Tesla gap setting after the driver changes it.
 
-    text_size = measure_text_cached(self._font_bold, text, font_size)
-    width = text_size.x + padding_x * 2
+    Styled like a lane change alert: same black-to-transparent top gradient, and the same
+    lowercase display font at the same margin, so it reads as part of the alert language
+    rather than a separate widget.
+    """
+    # Background: solid for the top fifth, then fade out. Matches AlertRenderer's
+    # small alert (0.583 of height) used by the lane change alerts.
+    bg_height = round(rect.height * GAP_ALERT_BG_HEIGHT_FRAC)
+    solid_height = round(bg_height * 0.2)
+    color = rl.Color(0, 0, 0, int(255 * 0.90))
+    translucent = rl.Color(0, 0, 0, 0)
 
-    # Centered horizontally; vertically placed to clear the set speed circle (top left, 162px)
-    # and the steering wheel (bottom left). The screen is only 240px tall.
-    x = rect.x + (rect.width - width) / 2
-    y = rect.y + 150
+    rl.draw_rectangle(int(rect.x), int(rect.y), int(rect.width), solid_height, color)
+    rl.draw_rectangle_gradient_v(int(rect.x), int(rect.y + solid_height), int(rect.width),
+                                 int(bg_height - solid_height), color, translucent)
 
-    popup_rect = rl.Rectangle(x, y, width, height)
-    rl.draw_rectangle_rounded(popup_rect, 0.4, 10, rl.Color(0, 0, 0, 210))
-    rl.draw_rectangle_rounded_lines_ex(popup_rect, 0.4, 10, 2, rl.Color(255, 255, 255, 100))
-
-    text_pos = rl.Vector2(x + (width - text_size.x) / 2, y + (height - text_size.y) / 2)
-    rl.draw_text_ex(self._font_bold, text, text_pos, font_size, 0, COLORS.WHITE)
+    text = f"gap {self._gap_adjust}"
+    text_color = rl.Color(255, 255, 255, int(255 * 0.9))
+    self._gap_label.set_text(text)
+    self._gap_label.set_text_color(text_color)
+    self._gap_label.set_font_size(GAP_ALERT_FONT_SIZE)
+    self._gap_label.set_alignment(rl.GuiTextAlignment.TEXT_ALIGN_LEFT)
+    self._gap_label.render(rl.Rectangle(rect.x + GAP_ALERT_MARGIN, rect.y + GAP_ALERT_TEXT_Y,
+                                        rect.width - GAP_ALERT_MARGIN, rect.height))
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""
