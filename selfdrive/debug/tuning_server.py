@@ -22,9 +22,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cereal.messaging as messaging
-from cereal import car
 from openpilot.common.params import Params
-from openpilot.selfdrive.debug.can_viewer import CanDecoder
+from openpilot.selfdrive.debug.can_source import CanSource, list_routes
 
 # Options rather than free-form numbers: a typo in a text box goes straight into the braking
 # path, and named choices are also what makes an A/B run reproducible afterwards.
@@ -120,7 +119,7 @@ class State:
 class Handler(BaseHTTPRequestHandler):
   state: State
   params: Params
-  can: 'LazyCan'
+  can: 'CanSource'
 
   def log_message(self, *a):
     pass  # don't spam the console on every poll
@@ -141,12 +140,17 @@ class Handler(BaseHTTPRequestHandler):
     if self.path.startswith('/api/state'):
       return self._send(200, json.dumps(self.state.get()))
 
+    if self.path.startswith('/api/routes'):
+      return self._send(200, json.dumps({'routes': list_routes(), **self.can.state()}))
+
     if self.path.startswith('/api/can'):
       dec = self.can.get()
       if dec is None:
-        return self._send(200, json.dumps({'messages': [], 'dbc': None, 'total': 0,
-                                           'error': '차량 인식 대기 중 (CarParams 없음)'}))
-      return self._send(200, json.dumps(dec.snapshot('changed=1' in self.path)))
+        return self._send(200, json.dumps({
+          'messages': [], 'dbc': None, 'total': 0, **self.can.state(),
+          'error': '차량 미연결 · 저장된 route를 재생해서 볼 수 있습니다'}))
+      return self._send(200, json.dumps({**dec.snapshot('changed=1' in self.path),
+                                         **self.can.state()}))
 
     if self.path.startswith('/api/settings'):
       out = {}
@@ -172,6 +176,23 @@ class Handler(BaseHTTPRequestHandler):
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
 
   def do_POST(self):
+    if self.path.startswith('/api/replay'):
+      n = int(self.headers.get('Content-Length', 0))
+      try:
+        req = json.loads(self.rfile.read(n) or b'{}')
+      except json.JSONDecodeError:
+        return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
+
+      route = req.get('route')
+      if not route:
+        self.can.stop_replay()
+        return self._send(200, json.dumps({'ok': True, **self.can.state()}))
+
+      err = self.can.start_replay(route)
+      if err:
+        return self._send(400, json.dumps({'error': err}))
+      return self._send(200, json.dumps({'ok': True, **self.can.state()}))
+
     if not self.path.startswith('/api/settings'):
       return self._send(404, '{}')
 
@@ -202,37 +223,6 @@ class Handler(BaseHTTPRequestHandler):
     return self._send(200, json.dumps({'ok': True, 'count': len(changes), 'engaged': engaged}))
 
 
-
-class LazyCan:
-  """CarParams only appears once the car has been identified, which is long after this server
-  starts at boot. Keep retrying instead of deciding at startup that there is no car."""
-
-  def __init__(self, params: Params):
-    self.params = params
-    self.decoder: CanDecoder | None = None
-    self.lock = threading.Lock()
-
-  def get(self) -> "CanDecoder | None":
-    if self.decoder is None:
-      with self.lock:
-        if self.decoder is None:
-          self.decoder = build_can_decoder(self.params)
-    return self.decoder
-
-
-def build_can_decoder(params: Params) -> "CanDecoder | None":
-  """Decode against whatever DBCs this car actually uses."""
-  raw = params.get("CarParams")
-  if raw is None:
-    return None
-  try:
-    cp = messaging.log_from_bytes(raw, car.CarParams)
-    from opendbc.car.values import PLATFORMS
-    platform = PLATFORMS.get(cp.carFingerprint)
-    names = sorted({v for v in (platform.config.dbc_dict or {}).values() if v}) if platform else []
-    return CanDecoder(names) if names else None
-  except Exception:
-    return None
 
 
 PAGE_LIVE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -478,6 +468,11 @@ h1{font-size:15px;margin:0 0 3px}
 .sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:12px}
 .bar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;position:sticky;top:0;
 background:var(--bg);padding:4px 0;z-index:5}
+.srcbar{display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap}
+.srcbar select{flex:1;min-width:170px;background:var(--card);color:var(--tx);
+border:1px solid var(--line);border-radius:9px;padding:9px 10px;font-size:13px;font-family:inherit}
+.srcbar select:focus-visible{outline:2px solid var(--radar);outline-offset:1px}
+button.tg.on{border-color:var(--radar);color:var(--radar)}
 input[type=search]{flex:1;min-width:150px;background:var(--card);color:var(--tx);
 border:1px solid var(--line);border-radius:9px;padding:9px 11px;font-size:14px}
 input:focus-visible,button:focus-visible{outline:2px solid var(--radar);outline-offset:1px}
@@ -508,6 +503,10 @@ font-size:12px;border-bottom:1px solid var(--line)}
 </style></head><body>
 <a class="back" href="/">← 메뉴</a>
 <h1>CAN 신호 뷰어</h1><div class="sub" id="sub">연결 중…</div>
+<div class="srcbar">
+  <select id="route" aria-label="신호 소스"><option value="">라이브 (차량 연결)</option></select>
+  <button class="tg" id="play">재생</button>
+</div>
 <div class="bar">
   <input type="search" id="q" placeholder="메시지·신호 이름 또는 주소" aria-label="검색">
   <button class="tg" id="only" aria-pressed="false">변한 것만</button>
@@ -522,6 +521,30 @@ const open=new Set(); let paused=false, onlyChanged=false;
 $('only').onclick=()=>{onlyChanged=!onlyChanged;$('only').setAttribute('aria-pressed',onlyChanged);};
 $('pause').onclick=()=>{paused=!paused;$('pause').setAttribute('aria-pressed',paused);};
 $('q').oninput=()=>render(last);
+
+async function loadRoutes(){
+  const d=await(await fetch('/api/routes')).json();
+  const sel=$('route');
+  sel.innerHTML='<option value="">라이브 (차량 연결)</option>'+
+    (d.routes||[]).map(r=>`<option value="${r.name}">${r.name} · ${r.segments}개</option>`).join('');
+  if(d.mode==='replay'&&d.route) sel.value=d.route;
+  setPlay(d.mode==='replay');
+}
+function setPlay(on){
+  const b=$('play');
+  b.textContent=on?'정지':'재생';
+  b.classList.toggle('on',on);
+}
+$('play').onclick=async()=>{
+  const route=$('route').value;
+  const playing=$('play').classList.contains('on');
+  const body=JSON.stringify({route:playing?null:route});
+  const r=await fetch('/api/replay',{method:'POST',
+    headers:{'Content-Type':'application/json'},body});
+  const d=await r.json();
+  if(!r.ok){$('sub').textContent=d.error||'재생을 시작할 수 없습니다';return;}
+  setPlay(d.mode==='replay');
+};
 
 let last={messages:[]};
 function key(m){return m.bus+':'+m.address;}
@@ -561,11 +584,13 @@ async function tick(){
   if(paused) return;
   try{
     const d=await(await fetch('/api/can'+(onlyChanged?'?changed=1':''))).json();
-    $('sub').textContent=d.dbc?`${d.total}개 메시지 · ${d.dbc}`:(d.error||'DBC를 찾을 수 없습니다');
+    const src=d.mode==='replay'?`재생: ${d.route} · ${d.status}`:'라이브';
+    $('sub').textContent=d.dbc?`${d.total}개 메시지 · ${d.dbc} · ${src}`
+                              :(d.error||'DBC를 찾을 수 없습니다');
     render(d);
   }catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}
 }
-tick();setInterval(tick,400);
+loadRoutes();tick();setInterval(tick,400);
 </script></body></html>"""
 
 
@@ -576,7 +601,7 @@ def main():
 
   Handler.state = State()
   Handler.params = Params()
-  Handler.can = LazyCan(Handler.params)
+  Handler.can = CanSource(Handler.params)
 
   srv = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
   print(f"serving on http://0.0.0.0:{args.port}  (commit {GIT_COMMIT})")
