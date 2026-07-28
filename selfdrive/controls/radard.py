@@ -153,7 +153,8 @@ def laplacian_pdf(x: float, mu: float, b: float):
 
 
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track],
-                          update_counters: bool = True):
+                          update_counters: bool = True, stopped_lead_enabled: bool = True,
+                          stopped_lead_count_max: int = STOPPED_LEAD_COUNT_MAX):
   offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
 
   def prob(c):
@@ -182,11 +183,11 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   y_sane = abs(track.yRel + lead.y[0]) < STOPPED_LEAD_Y_GATE
   stopped = (v_ego + track.vRel) < STOPPED_LEAD_MAX_SPEED
 
-  if dist_sane and y_sane and stopped and track.measured:
+  if stopped_lead_enabled and dist_sane and y_sane and stopped and track.measured:
     sticky = track.selected_count > 0
     if update_counters:
       track.is_stopped_car_count += STOPPED_LEAD_COUNT_UP
-    if sticky or track.is_stopped_car_count > STOPPED_LEAD_COUNT_MAX:
+    if sticky or track.is_stopped_car_count > stopped_lead_count_max:
       _update_match_counters(tracks, track, update_counters)
       return track
 
@@ -227,10 +228,12 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, low_speed_override: bool = True,
-             update_counters: bool = True) -> dict[str, Any]:
+             update_counters: bool = True, stopped_lead_enabled: bool = True,
+             stopped_lead_count_max: int = STOPPED_LEAD_COUNT_MAX) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_msg.prob > .5:
-    track = match_vision_to_track(v_ego, lead_msg, tracks, update_counters)
+    track = match_vision_to_track(v_ego, lead_msg, tracks, update_counters,
+                                  stopped_lead_enabled, stopped_lead_count_max)
   else:
     track = None
 
@@ -253,11 +256,19 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
 
 
 class RadarD:
+  # Re-read tuning params about twice a second. Params.get() hits disk, so this must not run
+  # every frame in a realtime process.
+  PARAM_REFRESH_FRAMES = int(0.5 / DT_MDL)
+
   def __init__(self, delay: float = 0.0):
     self.current_time = 0.0
 
     self.tracks: dict[int, Track] = {}
     self.kalman_params = KalmanParams(DT_MDL)
+
+    self.params = Params()
+    self.frame = 0
+    self.refresh_tuning()
 
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
@@ -268,9 +279,20 @@ class RadarD:
 
     self.ready = False
 
+  def refresh_tuning(self) -> None:
+    """Pick up live tuning changes so options can be A/B'd between runs without a rebuild."""
+    self.stopped_lead_enabled = self.params.get_bool("StoppedLeadMatchEnabled")
+    hold_ms = self.params.get("StoppedLeadHoldMs", return_default=True) or 500
+    # +STOPPED_LEAD_COUNT_UP of evidence per frame, so the threshold is half the frame count
+    self.stopped_lead_count_max = max(1, int((hold_ms / 1000.0) / DT_MDL))
+
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
     self.current_time = 1e-9*max(sm.logMonoTime.values())
+
+    self.frame += 1
+    if self.frame % self.PARAM_REFRESH_FRAMES == 0:
+      self.refresh_tuning()
 
     if sm.recv_frame['carState'] != self.last_v_ego_frame:
       self.v_ego = sm['carState'].vEgo
@@ -309,9 +331,14 @@ class RadarD:
       model_v_ego = self.v_ego
     leads_v3 = sm['modelV2'].leadsV3
     if len(leads_v3) > 1:
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, low_speed_override=True)
+      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
+                                         low_speed_override=True,
+                                         stopped_lead_enabled=self.stopped_lead_enabled,
+                                         stopped_lead_count_max=self.stopped_lead_count_max)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, low_speed_override=False,
-                                                 update_counters=False)
+                                                 update_counters=False,
+                                                 stopped_lead_enabled=self.stopped_lead_enabled,
+                                                 stopped_lead_count_max=self.stopped_lead_count_max)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None

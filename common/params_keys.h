@@ -114,6 +114,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RouteCount", {PERSISTENT, INT, "0"}},
     {"SnoozeUpdate", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"SshEnabled", {PERSISTENT, BOOL}},
+    {"StoppedLeadHoldMs", {PERSISTENT, INT, "500"}},
+    {"StoppedLeadMatchEnabled", {PERSISTENT, BOOL, "1"}},
     {"TeslaLastGapAdjust", {PERSISTENT, INT, "0"}},
     {"UbloxAvailable", {PERSISTENT, BOOL}},
     {"UpdateAvailable", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
