@@ -17,6 +17,7 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.debug.can_viewer import CanDecoder
 
 REALDATA = '/data/media/0/realdata'
+SCRATCH = '/data/tmp'   # /tmp is a small tmpfs on this device
 MAX_SLEEP = 0.2   # don't stall on gaps between segments
 
 
@@ -51,14 +52,25 @@ def _segments(route: str, base: str = REALDATA) -> list[str]:
 
 
 def _read_events(path: str):
-  """Stream the segment. Materializing a decompressed rlog costs a couple hundred MB, which
-  was enough to get this process killed and restarted mid-replay."""
-  with open(path, 'rb') as f:
-    stream = zstandard.ZstdDecompressor().stream_reader(f)
-    try:
-      yield from capnp_log.Event.read_multiple(stream)
-    except capnp.KjException:
-      pass  # segments truncated by power loss end mid-message
+  """Decompress to disk and read from there.
+
+  Handing capnp the whole decompressed segment as bytes costs a couple hundred MB per segment;
+  its streaming reader wants a real fd, which zstandard's stream reader doesn't provide. /tmp is
+  a 150MB tmpfs here, so stage it on /data.
+  """
+  os.makedirs(SCRATCH, exist_ok=True)
+  tmp = os.path.join(SCRATCH, f'replay-{os.getpid()}-{threading.get_ident()}.rlog')
+  try:
+    with open(path, 'rb') as src, open(tmp, 'wb') as dst:
+      zstandard.ZstdDecompressor().copy_stream(src, dst)
+    with open(tmp, 'rb') as f:
+      try:
+        yield from capnp_log.Event.read_multiple(f)
+      except capnp.KjException:
+        pass  # segments truncated by power loss end mid-message
+  finally:
+    if os.path.exists(tmp):
+      os.remove(tmp)
 
 
 def dbcs_for_fingerprint(fingerprint: str) -> list[str]:
