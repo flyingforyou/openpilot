@@ -1,3 +1,5 @@
+import time
+
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -107,6 +109,10 @@ class HudRenderer(Widget):
     self.v_ego_cluster_seen: bool = False
     self._engaged: bool = False
 
+    self._gap_adjust: int = 0
+    self._last_gap_adjust: int = 0
+    self._gap_popup_until: float = 0.0
+
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
 
@@ -146,6 +152,9 @@ class HudRenderer(Widget):
       self.is_cruise_set = False
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
+      self._gap_adjust = 0
+      self._last_gap_adjust = 0
+      self._gap_popup_until = 0.0
       return
 
     controls_state = sm['controlsState']
@@ -169,6 +178,16 @@ class HudRenderer(Widget):
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
 
+    gap_adjust = int(car_state.cruiseState.gapAdjust)
+    if 1 <= gap_adjust <= 7:
+      # Do not show a popup for the first valid value after UI startup.
+      if self._last_gap_adjust != 0 and gap_adjust != self._last_gap_adjust:
+        self._gap_popup_until = time.monotonic() + 1.0
+      self._last_gap_adjust = gap_adjust
+      self._gap_adjust = gap_adjust
+    else:
+      self._gap_adjust = 0
+
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
 
@@ -178,6 +197,9 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_steering_wheel(rect)
+
+    if self._gap_adjust != 0 and time.monotonic() < self._gap_popup_until:
+      self._draw_gap_popup(rect)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
@@ -262,6 +284,28 @@ class HudRenderer(Widget):
       0,
       max_color,
     )
+
+  def _draw_gap_popup(self, rect: rl.Rectangle) -> None:
+    """Briefly show the Tesla gap setting after the driver changes it."""
+    text = f"GAP {self._gap_adjust}"
+    font_size = 30.0
+    height = 52.0
+    padding_x = 18.0
+
+    text_size = measure_text_cached(self._font_bold, text, font_size)
+    width = text_size.x + padding_x * 2
+
+    # Centered horizontally; vertically placed to clear the set speed circle (top left, 162px)
+    # and the steering wheel (bottom left). The screen is only 240px tall.
+    x = rect.x + (rect.width - width) / 2
+    y = rect.y + 150
+
+    popup_rect = rl.Rectangle(x, y, width, height)
+    rl.draw_rectangle_rounded(popup_rect, 0.4, 10, rl.Color(0, 0, 0, 210))
+    rl.draw_rectangle_rounded_lines_ex(popup_rect, 0.4, 10, 2, rl.Color(255, 255, 255, 100))
+
+    text_pos = rl.Vector2(x + (width - text_size.x) / 2, y + (height - text_size.y) / 2)
+    rl.draw_text_ex(self._font_bold, text, text_pos, font_size, 0, COLORS.WHITE)
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""
