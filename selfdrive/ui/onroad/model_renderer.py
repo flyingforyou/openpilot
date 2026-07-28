@@ -8,8 +8,9 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.system.ui.lib.application import gui_app
+from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 
 CLIP_MARGIN = 500
@@ -54,6 +55,7 @@ class ModelRenderer(Widget):
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
     self._left_blindspot = False
     self._right_blindspot = False
+    self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._path_offset_z = HEIGHT_INIT[0]
 
@@ -328,13 +330,16 @@ class ModelRenderer(Widget):
       if lead.source:
         apex_x, apex_y = lead.chevron[1]
         chevron_height = max(lead.chevron[0][1] - apex_y, 1.0)
-        font_size = int(np.clip(chevron_height * 0.52, 24, 34))
-        text_width = rl.measure_text(lead.source, font_size)
-        text_x = int(apex_x - text_width / 2)
-        text_y = int(apex_y + chevron_height * 0.43)
+        # Use an explicitly loaded font: raylib's built-in default font isn't available here,
+        # so rl.draw_text() would silently draw nothing.
+        font_size = float(np.clip(chevron_height * 0.52, 24, 34))
+        text_size = measure_text_cached(self._font_bold, lead.source, font_size)
+        text_x = apex_x - text_size.x / 2
+        text_y = apex_y + chevron_height * 0.43
         source_color = rl.Color(80, 200, 255, 255) if lead.source == "R" else rl.Color(255, 190, 50, 255)
-        rl.draw_text(lead.source, text_x + 2, text_y + 2, font_size, rl.Color(0, 0, 0, 220))
-        rl.draw_text(lead.source, text_x, text_y, font_size, source_color)
+        rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x + 2, text_y + 2), font_size, 0,
+                        rl.Color(0, 0, 0, 220))
+        rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x, text_y), font_size, 0, source_color)
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_distance: float) -> int:
