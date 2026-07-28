@@ -10,10 +10,9 @@ right, so a run can be set up and its effect watched without stopping to SSH in.
 
 Pages: / index, /live lead perception and settings, /can every decoded CAN signal.
 
-Control settings are refused while openpilot is engaged -- changing how the car decides to
-brake while it is actively braking is a different risk than changing it with the driver in
-control. Disengaged is fine, so options can be swapped at a light without shutting anything
-down. Pass --allow-engaged to lift that; the page will say so.
+Settings are saved whenever you press 반영, but radard and the longitudinal planner only
+re-read them while disengaged. So a change made mid-drive lands at the next engage rather than
+moving the target distance under a car that is already following one.
 """
 import argparse
 import json
@@ -27,15 +26,43 @@ from cereal import car
 from openpilot.common.params import Params
 from openpilot.selfdrive.debug.can_viewer import CanDecoder
 
-# name -> (type, label, help). Kept small on purpose: an A/B switch you can reason about beats
-# a form full of raw floats you can typo into the braking path.
+# Options rather than free-form numbers: a typo in a text box goes straight into the braking
+# path, and named choices are also what makes an A/B run reproducible afterwards.
 SETTINGS = {
-  "StoppedLeadMatchEnabled": ("bool", "정지차 매칭 보정",
-                              "비전이 정지차를 달리는 차로 오독할 때 레이더 트랙을 유지"),
-  "StoppedLeadHoldMs": ("int", "확정 대기 시간 (ms)",
-                        "거리·횡방향이 일치하는 상태가 이만큼 지속되면 정지차로 확정"),
-  "LongitudinalPersonality": ("int", "Driving personality",
-                              "0 aggressive · 1 standard · 2 relaxed"),
+  "StoppedLeadMatchEnabled": {
+    "label": "정지차 매칭 보정", "type": "bool",
+    "help": "비전이 정지차를 달리는 차로 오독할 때 레이더 트랙을 유지합니다.",
+    "options": [(1, "사용"), (0, "미사용")],
+  },
+  "StoppedLeadHoldMs": {
+    "label": "정지차 확정 대기", "type": "int",
+    "help": "거리·횡방향이 일치하는 상태가 이만큼 지속되면 정지차로 확정합니다. "
+            "짧으면 빨리 반응하고, 길면 오검출에 보수적입니다.",
+    "options": [(300, "빠르게 0.3초"), (500, "표준 0.5초"), (800, "신중히 0.8초"), (1200, "매우 신중 1.2초")],
+  },
+  "StopDistanceCm": {
+    "label": "정지 시 앞차 간격", "type": "int",
+    "help": "앞차 뒤에 멈출 때 남기는 거리입니다. 모든 속도의 추종 거리에 같은 값이 더해집니다.",
+    "options": [(450, "가깝게 4.5m"), (500, "조금 가깝게 5.0m"), (600, "표준 6.0m"),
+                (700, "여유 7.0m"), (800, "넓게 8.0m")],
+  },
+  "GapProfile": {
+    "label": "차간거리 프로파일", "type": "int",
+    "help": "스티어링 휠 Gap 1~7이 각각 몇 초 간격을 요구할지 정합니다.",
+    "options": [(0, "표준 1.10~1.75초"), (1, "가깝게 0.95~1.60초"),
+                (2, "멀게 1.25~1.90초"), (3, "넓게 0.98~1.89초")],
+  },
+  "TFollowRiseRatePct": {
+    "label": "Gap 확대 반영 속도", "type": "int",
+    "help": "Gap을 크게 바꿨을 때 목표 거리가 늘어나는 속도입니다. 빠르면 즉각적이지만 "
+            "감속이 급해질 수 있습니다. 줄일 때는 항상 즉시 반영됩니다.",
+    "options": [(5, "느리게 0.05초/초"), (10, "표준 0.10초/초"), (20, "빠르게 0.20초/초")],
+  },
+  "LongitudinalPersonality": {
+    "label": "Driving personality", "type": "int",
+    "help": "Gap 신호가 없을 때의 기본 추종 시간입니다.",
+    "options": [(0, "aggressive"), (1, "standard"), (2, "relaxed")],
+  },
 }
 
 STATE_SERVICES = ['carState', 'radarState', 'selfdriveState', 'longitudinalPlan', 'deviceState']
@@ -94,7 +121,6 @@ class Handler(BaseHTTPRequestHandler):
   state: State
   params: Params
   can: 'LazyCan'
-  allow_engaged: bool
 
   def log_message(self, *a):
     pass  # don't spam the console on every poll
@@ -124,15 +150,19 @@ class Handler(BaseHTTPRequestHandler):
 
     if self.path.startswith('/api/settings'):
       out = {}
-      for k, (kind, label, help_) in SETTINGS.items():
+      for k, cfg in SETTINGS.items():
         try:
           # not get_bool(): it ignores the declared default and reads False until first write
           v = self.params.get(k, return_default=True)
-          v = bool(v) if kind == 'bool' else v
+          v = int(bool(v)) if cfg['type'] == 'bool' else int(v)
         except Exception:
           v = None
-        out[k] = {'value': v, 'type': kind, 'label': label, 'help': help_}
-      return self._send(200, json.dumps({'settings': out, 'allowEngaged': self.allow_engaged}))
+        out[k] = {'value': v, 'label': cfg['label'], 'help': cfg['help'],
+                  'options': [{'v': ov, 'label': ol} for ov, ol in cfg['options']]}
+      return self._send(200, json.dumps({
+        'settings': out,
+        'engaged': bool(self.state.get().get('engaged')),
+      }))
 
     page = self.path.split('?')[0].rstrip('/')
     if page == '/live':
@@ -151,22 +181,25 @@ class Handler(BaseHTTPRequestHandler):
     except json.JSONDecodeError:
       return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
 
-    key, value = req.get('key'), req.get('value')
-    if key not in SETTINGS:
-      return self._send(400, json.dumps({'error': f'알 수 없는 설정: {key}'}))
+    changes = req.get('changes') or {}
+    unknown = [k for k in changes if k not in SETTINGS]
+    if unknown:
+      return self._send(400, json.dumps({'error': f'알 수 없는 설정: {", ".join(unknown)}'}))
 
-    if self.state.get().get('engaged') and not self.allow_engaged:
-      return self._send(409, json.dumps({
-        'error': 'openpilot이 제어 중일 때는 변경할 수 없습니다. 해제 후 다시 시도하세요.'}))
+    for key, value in changes.items():
+      cfg = SETTINGS[key]
+      if value not in [v for v, _ in cfg['options']]:
+        return self._send(400, json.dumps({'error': f'{cfg["label"]}: 허용되지 않은 값'}))
+      try:
+        # Params is typed: BOOL wants a real bool and INT a real int, not their string forms
+        self.params.put(key, bool(value) if cfg['type'] == 'bool' else int(value))
+      except (TypeError, ValueError) as e:
+        return self._send(400, json.dumps({'error': f'{cfg["label"]} 저장 실패: {e}'}))
 
-    kind = SETTINGS[key][0]
-    try:
-      # Params is typed: BOOL wants a real bool and INT a real int, not their string forms
-      self.params.put(key, bool(value) if kind == 'bool' else int(value))
-    except (TypeError, ValueError) as e:
-      return self._send(400, json.dumps({'error': f'저장 실패: {e}'}))
-
-    return self._send(200, json.dumps({'ok': True, 'key': key, 'value': value}))
+    # Written either way. radard and the planner only re-read while disengaged, so a change
+    # made mid-drive takes effect at the next engage instead of moving under the driver.
+    engaged = bool(self.state.get().get('engaged'))
+    return self._send(200, json.dumps({'ok': True, 'count': len(changes), 'engaged': engaged}))
 
 
 
@@ -232,19 +265,16 @@ border-radius:8px;font-family:var(--m);font-weight:700;font-size:16px}
 .row{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:12px 0;
 border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}
 .row .lab{font-size:14px;margin-bottom:3px}.row .hlp{font-size:11.5px;color:var(--mut);line-height:1.45}
-.sw{position:relative;width:50px;height:29px;flex:0 0 auto;border:0;border-radius:15px;
-background:var(--line);cursor:pointer;transition:background .15s}
-.sw[aria-checked=true]{background:var(--ok)}
-.sw::after{content:"";position:absolute;top:3px;left:3px;width:23px;height:23px;border-radius:50%;
-background:#fff;transition:transform .15s}
-.sw[aria-checked=true]::after{transform:translateX(21px)}
-.sw:focus-visible{outline:2px solid var(--radar);outline-offset:2px}
-input[type=number]{width:88px;background:var(--bg);color:var(--tx);border:1px solid var(--line);
-border-radius:8px;padding:8px;font-family:var(--m);font-size:14px;text-align:right}
-input:focus-visible{outline:2px solid var(--radar);outline-offset:1px}
-.pill{display:inline-block;font-family:var(--m);font-size:10px;padding:3px 8px;border-radius:99px;
-border:1px solid var(--line);color:var(--mut)}
-.pill.on{border-color:var(--ok);color:var(--ok)}.pill.off{border-color:var(--dim)}
+select{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:9px;
+padding:9px 10px;font-size:13.5px;font-family:inherit;max-width:190px}
+select:focus-visible{outline:2px solid var(--radar);outline-offset:1px}
+select.dirty{border-color:var(--hot,#F5B942)}
+.applybar{position:sticky;bottom:0;background:var(--bg);padding:12px 0 4px;
+display:flex;gap:10px;align-items:center}
+button.apply{flex:1;background:var(--ok);color:#04140c;border:0;border-radius:10px;
+padding:13px;font-size:14.5px;font-weight:600;cursor:pointer;font-family:inherit}
+button.apply[disabled]{background:var(--line);color:var(--dim);cursor:default}
+.dirtynote{font-size:12px;color:var(--mut)}
 #msg{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));
 background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 14px;
 font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none}
@@ -275,12 +305,17 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
   </div>
 </div>
 
-<div class="card"><div class="h">Settings</div><div id="settings"></div></div>
+<div class="card"><div class="h">Settings</div><div id="settings"></div>
+  <div class="applybar">
+    <button class="apply" id="apply" disabled>반영</button>
+    <span class="dirtynote" id="dirty"></span>
+  </div>
+</div>
 <div id="msg"></div>
 
 <script>
 const $=i=>document.getElementById(i);
-let engaged=false, allowEngaged=false;
+let engaged=false;
 
 function toast(t,err){const m=$('msg');m.textContent=t;m.className='show'+(err?' err':'');
   clearTimeout(m._t);m._t=setTimeout(()=>m.className='',2600);}
@@ -310,41 +345,57 @@ async function poll(){
   }catch(e){$('conn').textContent='디바이스에 연결할 수 없습니다';}
 }
 
-async function loadSettings(){
-  const d=await(await fetch('/api/settings')).json();
-  allowEngaged=d.allowEngaged;
+let cfg={}, staged={};
+
+function renderSettings(){
   const box=$('settings');box.innerHTML='';
-  for(const[k,c]of Object.entries(d.settings)){
+  for(const[k,c]of Object.entries(cfg)){
     const row=document.createElement('div');row.className='row';
     const left=document.createElement('div');
     left.innerHTML=`<div class="lab">${c.label}</div><div class="hlp">${c.help}</div>`;
     row.appendChild(left);
-    if(c.type==='bool'){
-      const b=document.createElement('button');
-      b.className='sw';b.setAttribute('role','switch');
-      b.setAttribute('aria-checked',!!c.value);b.setAttribute('aria-label',c.label);
-      b.onclick=()=>save(k,b.getAttribute('aria-checked')!=='true',b);
-      row.appendChild(b);
-    }else{
-      const i=document.createElement('input');
-      i.type='number';i.value=c.value??0;i.setAttribute('aria-label',c.label);
-      i.onchange=()=>save(k,parseInt(i.value,10),i);
-      row.appendChild(i);
-    }
+    const sel=document.createElement('select');
+    sel.setAttribute('aria-label',c.label);
+    const cur=(k in staged)?staged[k]:c.value;
+    c.options.forEach(o=>{
+      const op=document.createElement('option');
+      op.value=o.v;op.textContent=o.label;op.selected=(o.v===cur);
+      sel.appendChild(op);
+    });
+    if(k in staged && staged[k]!==c.value) sel.classList.add('dirty');
+    sel.onchange=()=>{
+      const v=parseInt(sel.value,10);
+      if(v===c.value) delete staged[k]; else staged[k]=v;
+      renderSettings();updateApply();
+    };
+    row.appendChild(sel);
     box.appendChild(row);
   }
 }
 
-async function save(key,value,el){
-  if(engaged&&!allowEngaged){toast('제어 중에는 변경할 수 없습니다. 해제 후 시도하세요.',1);
-    loadSettings();return;}
-  const r=await fetch('/api/settings',{method:'POST',
-    headers:{'Content-Type':'application/json'},body:JSON.stringify({key,value})});
-  const d=await r.json();
-  if(!r.ok){toast(d.error||'저장에 실패했습니다',1);loadSettings();return;}
-  if(el.classList.contains('sw'))el.setAttribute('aria-checked',!!value);
-  toast('저장됨 · 약 0.5초 내 반영');
+function updateApply(){
+  const n=Object.keys(staged).length;
+  $('apply').disabled=!n;
+  $('dirty').textContent=n?`${n}개 변경 대기`:
+    (engaged?'제어 중 · 변경 시 다음 engage부터 적용':'');
 }
+
+async function loadSettings(){
+  const d=await(await fetch('/api/settings')).json();
+  cfg=d.settings;engaged=d.engaged;
+  renderSettings();updateApply();
+}
+
+$('apply').onclick=async()=>{
+  const body=JSON.stringify({changes:staged});
+  const r=await fetch('/api/settings',{method:'POST',
+    headers:{'Content-Type':'application/json'},body});
+  const d=await r.json();
+  if(!r.ok){toast(d.error||'저장에 실패했습니다',1);return;}
+  staged={};
+  await loadSettings();
+  toast(d.engaged?'저장됨 · 다음 engage부터 적용됩니다':'저장됨 · 약 0.5초 내 반영');
+};
 
 loadSettings();poll();setInterval(poll,300);
 </script></body></html>"""
@@ -520,19 +571,14 @@ tick();setInterval(tick,400);
 def main():
   ap = argparse.ArgumentParser()
   ap.add_argument('--port', type=int, default=8088)
-  ap.add_argument('--allow-engaged', action='store_true',
-                  help='허용 시 openpilot 제어 중에도 설정 변경 가능 (권장하지 않음)')
   args = ap.parse_args()
 
   Handler.state = State()
   Handler.params = Params()
-  Handler.allow_engaged = args.allow_engaged
   Handler.can = LazyCan(Handler.params)
 
   srv = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
-  print(f"serving on http://0.0.0.0:{args.port}"
-        + ("  (writes allowed while ENGAGED)" if args.allow_engaged
-           else "  (writes blocked while engaged)"))
+  print(f"serving on http://0.0.0.0:{args.port}  (commit {GIT_COMMIT})")
   srv.serve_forever()
 
 

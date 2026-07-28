@@ -22,6 +22,7 @@ A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
+PARAM_REFRESH_FRAMES = int(0.5 / DT_MDL)  # params hit disk; don't read every frame
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 # Lookup table for turns
@@ -74,6 +75,17 @@ class LongitudinalPlanner:
     self.params = Params()
     self.tesla_last_gap_adjust = self.params.get("TeslaLastGapAdjust", return_default=True) if CP.brand == "tesla" else 0
 
+    self.frame = 0
+    self.refresh_tuning()
+
+  def refresh_tuning(self) -> None:
+    """Only called while disengaged, so a change made mid-drive lands at the next engage
+    rather than shifting the target distance under the car that is already following."""
+    gap_profile = int(self.params.get("GapProfile", return_default=True) or 0)
+    rise_pct = int(self.params.get("TFollowRiseRatePct", return_default=True) or 10)
+    stop_cm = int(self.params.get("StopDistanceCm", return_default=True) or 600)
+    self.mpc.set_tuning(gap_profile, rise_pct / 100.0, stop_cm / 100.0)
+
   @staticmethod
   def parse_model(model_msg):
     if (len(model_msg.position.x) == ModelConstants.IDX_N and
@@ -104,6 +116,10 @@ class LongitudinalPlanner:
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
     v_cruise_initialized = sm['carState'].vCruise != V_CRUISE_UNSET
+
+    self.frame += 1
+    if not sm['selfdriveState'].enabled and self.frame % PARAM_REFRESH_FRAMES == 0:
+      self.refresh_tuning()
 
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
     force_slow_decel = sm['controlsState'].forceDecel

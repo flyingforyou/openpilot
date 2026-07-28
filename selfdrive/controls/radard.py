@@ -292,8 +292,10 @@ class RadarD:
     self.ready = sm.seen['modelV2']
     self.current_time = 1e-9*max(sm.logMonoTime.values())
 
+    # Only while disengaged, so a change made mid-drive lands at the next engage instead of
+    # altering lead selection under the car that is already following one.
     self.frame += 1
-    if self.frame % self.PARAM_REFRESH_FRAMES == 0:
+    if not sm['selfdriveState'].enabled and self.frame % self.PARAM_REFRESH_FRAMES == 0:
       self.refresh_tuning()
 
     if sm.recv_frame['carState'] != self.last_v_ego_frame:
@@ -361,7 +363,7 @@ def main() -> None:
   cloudlog.info("radard got CarParams")
 
   # *** setup messaging
-  sm = messaging.SubMaster(['modelV2', 'carState', 'liveTracks'], poll='modelV2')
+  sm = messaging.SubMaster(['modelV2', 'carState', 'liveTracks', 'selfdriveState'], poll='modelV2')
   pm = messaging.PubMaster(['radarState'])
 
   RD = RadarD(CP.radarDelay)

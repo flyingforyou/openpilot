@@ -70,6 +70,22 @@ TESLA_GAP_T_FOLLOW = {
 }
 T_FOLLOW_RISE_RATE = 0.10  # seconds of tFollow per real second
 
+# Gap profiles, selectable at runtime. The knob has 7 positions either way; these change what
+# following time each position asks for, so the whole range shifts or spreads together.
+GAP_PROFILES = {
+  0: ("표준", 0.0, 1.0),
+  1: ("가깝게", -0.15, 1.0),
+  2: ("멀게", 0.15, 1.0),
+  3: ("넓게", 0.0, 1.4),
+}
+
+
+def gap_t_follow_table(profile: int = 0) -> dict[int, float]:
+  """Shift and/or spread the base table around its midpoint (gap 4)."""
+  _, shift, spread = GAP_PROFILES.get(profile, GAP_PROFILES[0])
+  mid = TESLA_GAP_T_FOLLOW[4]
+  return {g: round(mid + (v - mid) * spread + shift, 3) for g, v in TESLA_GAP_T_FOLLOW.items()}
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -81,9 +97,9 @@ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
     raise NotImplementedError("Longitudinal personality not supported")
 
 
-def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard, gap_adjust=0):
+def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard, gap_adjust=0, gap_profile=0):
   if gap_adjust in TESLA_GAP_T_FOLLOW:
-    return TESLA_GAP_T_FOLLOW[gap_adjust]
+    return gap_t_follow_table(gap_profile)[gap_adjust]
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.75
   elif personality==log.LongitudinalPersonality.standard:
@@ -93,17 +109,18 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard, gap_adjust=0)
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
-def limit_t_follow_increase(current: float, target: float, dt: float) -> float:
+def limit_t_follow_increase(current: float, target: float, dt: float,
+                            rise_rate: float = T_FOLLOW_RISE_RATE) -> float:
   """Apply target immediately when decreasing, rate limit only increases."""
   if target > current:
-    return min(target, current + T_FOLLOW_RISE_RATE * dt)
+    return min(target, current + rise_rate * dt)
   return target
 
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
-def get_safe_obstacle_distance(v_ego, t_follow):
-  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + STOP_DISTANCE
+def get_safe_obstacle_distance(v_ego, t_follow, stop_distance=STOP_DISTANCE):
+  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + stop_distance
 
 def gen_long_model():
   model = AcadosModel()
@@ -240,6 +257,10 @@ class LongitudinalMpc:
     # "first valid gap", which would apply a pending tFollow increase in a single step.
     self.t_follow = get_T_FOLLOW()
     self.gap_adjust_initialized = False
+    # live tunables; the planner refreshes these from params while disengaged
+    self.gap_profile = 0
+    self.rise_rate = T_FOLLOW_RISE_RATE
+    self.stop_distance = STOP_DISTANCE
     self.reset()
     self.source = LongitudinalPlanSource.cruise
 
@@ -297,19 +318,24 @@ class LongitudinalMpc:
     constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     self.set_cost_weights(cost_weights, constraint_cost_weights)
 
+  def set_tuning(self, gap_profile: int, rise_rate: float, stop_distance: float) -> None:
+    self.gap_profile = gap_profile
+    self.rise_rate = rise_rate
+    self.stop_distance = stop_distance
+
   def update_t_follow(self, personality, gap_adjust: int) -> float:
     if gap_adjust not in TESLA_GAP_T_FOLLOW:
       self.t_follow = get_T_FOLLOW(personality)
       self.gap_adjust_initialized = False
       return self.t_follow
 
-    target_t_follow = get_T_FOLLOW(personality, gap_adjust)
+    target_t_follow = get_T_FOLLOW(personality, gap_adjust, self.gap_profile)
     # First valid vehicle gap should be applied immediately.
     if not self.gap_adjust_initialized:
       self.t_follow = target_t_follow
       self.gap_adjust_initialized = True
     else:
-      self.t_follow = limit_t_follow_increase(self.t_follow, target_t_follow, self.dt)
+      self.t_follow = limit_t_follow_increase(self.t_follow, target_t_follow, self.dt, self.rise_rate)
     return self.t_follow
 
   def set_cur_state(self, v, a):
@@ -362,8 +388,12 @@ class LongitudinalMpc:
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
     # and then treat that as a stopped car/obstacle at this new distance.
-    lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
-    lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
+    # STOP_DISTANCE is compiled into the generated solver's cost function, so it can't be
+    # changed at runtime. Shifting the obstacle by the difference is equivalent: pushing it
+    # further away makes the car settle that much closer to the real lead.
+    stop_offset = STOP_DISTANCE - self.stop_distance
+    lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1]) + stop_offset
+    lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1]) + stop_offset
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.
@@ -371,7 +401,7 @@ class LongitudinalMpc:
     # TODO does this make sense when max_a is negative?
     v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
-    cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
+    cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow, self.stop_distance)
 
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
     self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]
