@@ -11,6 +11,7 @@ from openpilot.common.params import Params
 from openpilot.common.stat_live import RunningStatFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.hardware import HARDWARE
+from openpilot.common.swaglog import cloudlog
 
 EventName = log.OnroadEvent.EventName
 
@@ -172,10 +173,43 @@ class DriverMonitoring:
 
     self.params = Params()
     self.too_distracted = self.params.get_bool("DriverTooDistracted")
+    self.bypass = False
+    self.bypass_logged = False
+    self.frame = 0
+    self._refresh_bypass()
 
     self._reset_awareness()
     self._set_timers(active_monitoring=True)
     self._reset_events()
+
+  def _refresh_bypass(self) -> None:
+    was = self.bypass
+    self.bypass = bool(self.params.get("DriverMonitorBypass", return_default=True))
+    if self.bypass and not self.bypass_logged:
+      cloudlog.warning("driver monitoring bypassed: attention is not being monitored")
+      self.bypass_logged = True
+    if was and not self.bypass:
+      self.bypass_logged = False
+
+  def _apply_bypass(self) -> None:
+    """Report an attentive driver whatever the model saw.
+
+    Setting only face_detected/driver_distracted/awareness isn't enough: _update_events also
+    alerts off driver_distraction_filter (certainly_distracted) and hi_stds (maybe_distracted),
+    and awareness only holds while pose.low_std. Clear the lot, or alerts still fire.
+
+    The model and driver camera keep running, so recording is unaffected -- this suppresses the
+    assessment, not the capture, and saves no power.
+    """
+    self.face_detected = True
+    self.driver_distracted = False
+    self.driver_distraction_filter.x = 0.
+    self.hi_stds = 0
+    self.is_model_uncertain = False
+    self.pose.low_std = True
+    self.awareness = self.awareness_active = self.awareness_passive = 1.
+    self.terminal_alert_cnt = 0
+    self.terminal_time = 0
 
   def _reset_awareness(self):
     self.awareness = 1.
@@ -452,6 +486,12 @@ class DriverMonitoring:
       standstill=standstill,
       demo_mode=demo,
     )
+
+    self.frame += 1
+    if self.frame % int(1.0 / self.settings._DT_DMON) == 0:
+      self._refresh_bypass()
+    if self.bypass:
+      self._apply_bypass()
 
     # Update distraction events
     self._update_events(
