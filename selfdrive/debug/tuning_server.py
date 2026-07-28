@@ -127,9 +127,9 @@ class Handler(BaseHTTPRequestHandler):
 
     kind = SETTINGS[key][0]
     try:
-      self.params.put(key, '1' if value else '0') if kind == 'bool' else \
-        self.params.put(key, str(int(value)))
-    except Exception as e:
+      # Params is typed: BOOL wants a real bool and INT a real int, not their string forms
+      self.params.put(key, bool(value) if kind == 'bool' else int(value))
+    except (TypeError, ValueError) as e:
       return self._send(400, json.dumps({'error': f'저장 실패: {e}'}))
 
     return self._send(200, json.dumps({'ok': True, 'key': key, 'value': value}))
