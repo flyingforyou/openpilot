@@ -17,6 +17,8 @@ down. Pass --allow-engaged to lift that; the page will say so.
 """
 import argparse
 import json
+import os
+import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -37,6 +39,17 @@ SETTINGS = {
 }
 
 STATE_SERVICES = ['carState', 'radarState', 'selfdriveState', 'longitudinalPlan', 'deviceState']
+
+def _git_commit() -> str:
+  """Which build is actually serving. Stale processes are hard to spot otherwise."""
+  try:
+    return subprocess.run(['git', 'rev-parse', '--short', 'HEAD'], cwd=os.path.dirname(__file__),
+                          capture_output=True, text=True, timeout=3).stdout.strip() or 'unknown'
+  except Exception:
+    return 'unknown'
+
+
+GIT_COMMIT = _git_commit()
 
 
 class State:
@@ -96,6 +109,9 @@ class Handler(BaseHTTPRequestHandler):
     self.wfile.write(payload)
 
   def do_GET(self):
+    if self.path.startswith('/api/version'):
+      return self._send(200, json.dumps({'commit': GIT_COMMIT}))
+
     if self.path.startswith('/api/state'):
       return self._send(200, json.dumps(self.state.get()))
 
