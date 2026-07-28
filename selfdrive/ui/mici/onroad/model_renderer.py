@@ -385,19 +385,20 @@ class ModelRenderer(Widget):
         continue
 
       # Perception source of this lead: R = matched to a radar track, V = vision only.
-      # Chevrons here are only 15-30px tall, so the label sits just below the chevron base
-      # rather than inside it. Use a loaded font: rl.draw_text() would draw nothing, since
-      # raylib's built-in default font isn't populated in this app.
+      # The label sits below the chevron rather than inside it: chevrons here are only
+      # 15-30px tall, so at this size the text is wider than the chevron itself. Use a
+      # loaded font: rl.draw_text() would draw nothing, since raylib's built-in default
+      # font isn't populated in this app.
       apex_x, apex_y = lead.chevron[1]
       chevron_height = max(lead.chevron[0][1] - apex_y, 1.0)
-      font_size = float(np.clip(chevron_height * 0.62, 13, 18))
+      font_size = float(np.clip(chevron_height * 2.48, 52, 72))
       text_size = measure_text_cached(self._font_bold, lead.source, font_size)
 
       text_x = np.clip(apex_x - text_size.x / 2, 2.0, max(self._rect.width - text_size.x - 2.0, 2.0))
       text_y = np.clip(apex_y + chevron_height + 3.0, 2.0, max(self._rect.height - text_size.y - 2.0, 2.0))
 
       color = rl.Color(80, 200, 255, 255) if lead.source == "R" else rl.Color(255, 190, 50, 255)
-      rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x + 1, text_y + 1), font_size, 0,
+      rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x + 3, text_y + 3), font_size, 0,
                       rl.Color(0, 0, 0, 220))
       rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x, text_y), font_size, 0, color)
 
