@@ -35,6 +35,13 @@ static bool tesla_legacy_stock_autopark = false;
 // reach this hook, and making a 2Hz status message required to engage is not worth it.
 static bool tesla_legacy_autopark_steering = false;  // stock ANGLE_CONTROL on the camera bus
 static bool tesla_legacy_autopark_active = false;    // DAS_accState in the APC range
+// Held for a whole maneuver rather than decided per frame. A per-frame gate let 2 of the stock
+// module's 6 APC_BACKWARD frames through and openpilot's own DAS_control fill the gaps, which
+// put two counter sequences on one arbitration id and got the maneuver aborted. The stock
+// module needs the channel continuously, so once it starts it keeps it until it stops asking.
+#define TESLA_AUTOPARK_TIMEOUT 1000000U  // us of stock silence before handing the bus back
+static uint32_t tesla_legacy_autopark_ts = 0;
+static bool tesla_legacy_autopark_ts_valid = false;
 
 static void tesla_legacy_rx_hook(const CANPacket_t *msg) {
 
@@ -114,8 +121,19 @@ static void tesla_legacy_rx_hook(const CANPacket_t *msg) {
 
     // Never hand the car over mid-drive: openpilot wins while it is engaged, and the stock
     // module only gets the bus back once controls are no longer allowed.
+    const bool asking = tesla_legacy_autopark_steering || tesla_legacy_autopark_active;
+    const uint32_t now = microsecond_timer_get();
+    if (asking) {
+      tesla_legacy_autopark_ts = now;
+      tesla_legacy_autopark_ts_valid = true;
+    }
+    const bool recent = tesla_legacy_autopark_ts_valid &&
+                        (safety_get_ts_elapsed(now, tesla_legacy_autopark_ts) < TESLA_AUTOPARK_TIMEOUT);
+    if (controls_allowed || !recent) {
+      tesla_legacy_autopark_ts_valid = false;
+    }
     tesla_legacy_stock_autopark = tesla_legacy_allow_stock_autopark && !controls_allowed &&
-                                  (tesla_legacy_autopark_steering || tesla_legacy_autopark_active);
+                                  tesla_legacy_autopark_ts_valid;
   }
 }
 
@@ -272,6 +290,8 @@ static safety_config tesla_legacy_init(uint16_t param) {
   tesla_legacy_stock_autopark = false;
   tesla_legacy_autopark_steering = false;
   tesla_legacy_autopark_active = false;
+  tesla_legacy_autopark_ts = 0;
+  tesla_legacy_autopark_ts_valid = false;
   chassis_bus = 0U;
   di_torque1_msg = 0x106U;
 

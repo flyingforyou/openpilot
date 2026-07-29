@@ -22,6 +22,11 @@ TESLA_DTR_RAW_TO_GAP = {
 }
 
 
+# Panda hands the bus back 1.0s after the stock module stops asking; openpilot has to stay quiet
+# at least that long, so hold a little past it. carState runs at 100Hz.
+STOCK_AUTOPARK_HOLD_FRAMES = 120
+
+
 def decode_tesla_gap(raw_gap: int) -> int:
   """Convert Tesla legacy DTR_Dist_Rq raw value to a gap level.
 
@@ -91,6 +96,7 @@ class CarState(CarStateBase):
 
     self.hands_on_level = 0
     self.high_angle_rate_safety = False
+    self.stock_autopark_frames = 0
     self.das_control = None
     self.cruise_gap = 0
 
@@ -332,7 +338,8 @@ class CarState(CarStateBase):
     ret.stockAeb = cp_ap_pt.vl["DAS_control"]["DAS_aebEvent"] == 1
 
     # LKAS
-    ret.stockLkas = cp_ap_party.vl["DAS_steeringControl"]["DAS_steeringControlType"] == 2  # LANE_KEEP_ASSIST
+    stock_steer_type = int(cp_ap_party.vl["DAS_steeringControl"]["DAS_steeringControlType"])
+    ret.stockLkas = stock_steer_type == 2  # LANE_KEEP_ASSIST
 
     # Stock Autosteer should be off (includes FSD)
     # ret.invalidLkasSetting = cp_ap_party.vl["DAS_settings"]["DAS_autosteerEnabled"] != 0
@@ -341,6 +348,16 @@ class CarState(CarStateBase):
 
     # Messages needed by carcontroller
     self.das_control = copy.copy(cp_ap_pt.vl["DAS_control"])
+
+    # Stock autopark needs DAS_control and DAS_steeringControl to itself for the whole maneuver.
+    # Held for a while after the module goes quiet, to match the panda's forwarding latch --
+    # openpilot must stop transmitting for at least as long as panda opens the gate, or the two
+    # command streams collide on the same arbitration id and the maneuver aborts.
+    stock_acc_state = int(cp_ap_pt.vl["DAS_control"]["DAS_accState"])
+    if 5 <= stock_acc_state <= 11 or ret.stockLkas or stock_steer_type == 1:  # APC range / ANGLE_CONTROL
+      self.stock_autopark_frames = STOCK_AUTOPARK_HOLD_FRAMES
+    else:
+      self.stock_autopark_frames = max(self.stock_autopark_frames - 1, 0)
 
     return ret
 
