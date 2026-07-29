@@ -43,38 +43,24 @@ class LegacySteerState(NamedTuple):
   high_angle_rate_safety: bool
 
 
-def legacy_steer_state(hands_on_level: float, eac_status: str | None, eac_error_code: str | None,
-                       torque_pressed: bool, coop_steer: bool) -> LegacySteerState:
+def legacy_steer_state(hands_on_level: float, eac_status: str | None,
+                       eac_error_code: str | None, torque_pressed: bool) -> LegacySteerState:
   """How a driver's hands on the wheel are reported to the rest of openpilot.
 
-  Default: a takeover is a disengage. steeringDisengage becomes EventName.steerDisengage, which
-  is an ET.USER_DISABLE, so nudging the wheel drops longitudinal too and cancels Tesla ACC.
+  Upstream behaviour, deliberately unchanged: a hard takeover is a disengage. steeringDisengage
+  becomes EventName.steerDisengage, an ET.USER_DISABLE, and openpilot drops out.
 
-  Cooperative steering reports the same takeover as steeringPressed instead. That is an
-  ET.OVERRIDE_LATERAL, which moves the state machine to State.overriding -- still in
-  ACTIVE_STATES, so CC.enabled and CC.longActive hold and cruiseControl.cancel stays false.
-  Lateral actually stopping is the car controller's job, not this flag's.
-
-  The high-angle-rate inhibit needs the same treatment for a second reason: reporting it as a
-  temporary fault raises ET.SOFT_DISABLE, and State.overriding has no other exit, so a soft
-  disable would take the car down three seconds into a turn the driver is still making.
+  Cooperative steering does not touch this. It works by keeping the driver from ever having to
+  push hard enough to get here -- see coop_steering.py -- so this stays as the fallback for a
+  driver who overpowers it anyway, which is the path that has always worked on this car.
   """
   high_angle_rate_safety = (eac_status == "EAC_INHIBITED" and
                             eac_error_code == "EAC_ERROR_HIGH_ANGLE_RATE_SAFETY")
   driver_override = hands_on_level >= 3
 
-  if coop_steer:
-    pressed = torque_pressed or driver_override or high_angle_rate_safety
-    disengage = False
-    # every other EAC_INHIBITED reason is a real fault and still stops lateral
-    fault_temporary = eac_status == "EAC_INHIBITED" and not high_angle_rate_safety
-  else:
-    pressed = torque_pressed
-    disengage = driver_override or high_angle_rate_safety
-    fault_temporary = eac_status == "EAC_INHIBITED"
-
-  return LegacySteerState(pressed, disengage, fault_temporary,
-                          eac_status == "EAC_FAULT", high_angle_rate_safety)
+  return LegacySteerState(torque_pressed, driver_override or high_angle_rate_safety,
+                          eac_status == "EAC_INHIBITED", eac_status == "EAC_FAULT",
+                          high_angle_rate_safety)
 
 
 class CarState(CarStateBase):
@@ -268,8 +254,7 @@ class CarState(CarStateBase):
     # FSD disengages using union of handsOnLevel (slow overrides) and high angle rate faults (fast overrides, high speed)
     eac_error_code = self.can_defines["EPAS_sysStatus"]["EPAS_eacErrorCode"].get(int(epas_status["EPAS_eacErrorCode"]), None)
 
-    steer = legacy_steer_state(self.hands_on_level, eac_status, eac_error_code, torque_pressed,
-                               bool(self.CP.flags & TeslaFlags.COOP_STEER))
+    steer = legacy_steer_state(self.hands_on_level, eac_status, eac_error_code, torque_pressed)
     ret.steeringPressed = steer.pressed
     ret.steeringDisengage = steer.disengage
     ret.steerFaultTemporary = steer.fault_temporary
