@@ -119,6 +119,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SshEnabled", {PERSISTENT, BOOL}},
     {"StoppedLeadHoldMs", {PERSISTENT, INT, "500"}},
     {"StoppedLeadMatchEnabled", {PERSISTENT, BOOL, "1"}},
+    {"TFollowRiseRatePct", {PERSISTENT, INT, "10"}},
+    {"TeslaCoopSteer", {PERSISTENT, BOOL, "0"}},
     {"TeslaLastGapAdjust", {PERSISTENT, INT, "0"}},
     {"TeslaStockLong", {PERSISTENT, BOOL, "0"}},
     {"UbloxAvailable", {PERSISTENT, BOOL}},

@@ -1,4 +1,6 @@
 import copy
+from typing import NamedTuple
+
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, structs
 from opendbc.car.carlog import carlog
@@ -26,6 +28,48 @@ def decode_tesla_gap(raw_gap: int) -> int:
   Returns 1 through 7 for a valid Tesla gap, or 0 for SNA/an unknown value.
   """
   return TESLA_DTR_RAW_TO_GAP.get(int(raw_gap), 0)
+
+
+class LegacySteerState(NamedTuple):
+  pressed: bool
+  disengage: bool
+  fault_temporary: bool
+  fault_permanent: bool
+  high_angle_rate_safety: bool
+
+
+def legacy_steer_state(hands_on_level: float, eac_status: str | None, eac_error_code: str | None,
+                       torque_pressed: bool, coop_steer: bool) -> LegacySteerState:
+  """How a driver's hands on the wheel are reported to the rest of openpilot.
+
+  Default: a takeover is a disengage. steeringDisengage becomes EventName.steerDisengage, which
+  is an ET.USER_DISABLE, so nudging the wheel drops longitudinal too and cancels Tesla ACC.
+
+  Cooperative steering reports the same takeover as steeringPressed instead. That is an
+  ET.OVERRIDE_LATERAL, which moves the state machine to State.overriding -- still in
+  ACTIVE_STATES, so CC.enabled and CC.longActive hold and cruiseControl.cancel stays false.
+  Lateral actually stopping is the car controller's job, not this flag's.
+
+  The high-angle-rate inhibit needs the same treatment for a second reason: reporting it as a
+  temporary fault raises ET.SOFT_DISABLE, and State.overriding has no other exit, so a soft
+  disable would take the car down three seconds into a turn the driver is still making.
+  """
+  high_angle_rate_safety = (eac_status == "EAC_INHIBITED" and
+                            eac_error_code == "EAC_ERROR_HIGH_ANGLE_RATE_SAFETY")
+  driver_override = hands_on_level >= 3
+
+  if coop_steer:
+    pressed = torque_pressed or driver_override or high_angle_rate_safety
+    disengage = False
+    # every other EAC_INHIBITED reason is a real fault and still stops lateral
+    fault_temporary = eac_status == "EAC_INHIBITED" and not high_angle_rate_safety
+  else:
+    pressed = torque_pressed
+    disengage = driver_override or high_angle_rate_safety
+    fault_temporary = eac_status == "EAC_INHIBITED"
+
+  return LegacySteerState(pressed, disengage, fault_temporary,
+                          eac_status == "EAC_FAULT", high_angle_rate_safety)
 
 
 class CarState(CarStateBase):
@@ -60,6 +104,7 @@ class CarState(CarStateBase):
     self.suspected_fsd14 = False
 
     self.hands_on_level = 0
+    self.high_angle_rate_safety = False
     self.das_control = None
     self.cruise_gap = 0
 
@@ -211,16 +256,20 @@ class CarState(CarStateBase):
     ret.steeringTorque = -epas_status["EPAS_torsionBarTorque"]
 
     # stock handsOnLevel uses >0.5 for 0.25s, but is too slow
-    ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > STEER_THRESHOLD, 5)
+    torque_pressed = self.update_steering_pressed(abs(ret.steeringTorque) > STEER_THRESHOLD, 5)
 
     eac_status = self.can_defines["EPAS_sysStatus"]["EPAS_eacStatus"].get(int(epas_status["EPAS_eacStatus"]), None)
-    ret.steerFaultPermanent = eac_status == "EAC_FAULT"
-    ret.steerFaultTemporary = eac_status == "EAC_INHIBITED"
-
     # FSD disengages using union of handsOnLevel (slow overrides) and high angle rate faults (fast overrides, high speed)
     eac_error_code = self.can_defines["EPAS_sysStatus"]["EPAS_eacErrorCode"].get(int(epas_status["EPAS_eacErrorCode"]), None)
-    ret.steeringDisengage = self.hands_on_level >= 3 or (eac_status == "EAC_INHIBITED" and
-                                                         eac_error_code == "EAC_ERROR_HIGH_ANGLE_RATE_SAFETY")
+
+    steer = legacy_steer_state(self.hands_on_level, eac_status, eac_error_code, torque_pressed,
+                               bool(self.CP.flags & TeslaFlags.COOP_STEER))
+    ret.steeringPressed = steer.pressed
+    ret.steeringDisengage = steer.disengage
+    ret.steerFaultTemporary = steer.fault_temporary
+    ret.steerFaultPermanent = steer.fault_permanent
+    # read by the car controller to drop the angle command while the driver is turning
+    self.high_angle_rate_safety = steer.high_angle_rate_safety
 
     # Cruise state
     cruise_state = self.can_defines["DI_state"]["DI_cruiseState"].get(int(cp_chassis.vl["DI_state"]["DI_cruiseState"]), None)

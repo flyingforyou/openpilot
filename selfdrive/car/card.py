@@ -17,7 +17,7 @@ from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
-from opendbc.car.tesla.values import TeslaSafetyFlags
+from opendbc.car.tesla.values import TeslaFlags, TeslaSafetyFlags
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 
@@ -129,6 +129,12 @@ class Car:
       self.CP.openpilotLongitudinalControl = False
       for cfg in self.CP.safetyConfigs:
         cfg.safetyParam &= ~TeslaSafetyFlags.LONG_CONTROL.value
+
+    # Cooperative steering: a wheel takeover pauses lateral instead of disengaging everything.
+    # CarState reads CP.flags every frame and CarState holds this same object, so setting it
+    # here reaches the car port; it is also what gets serialized to the CarParams param below.
+    if self.CP.brand == "tesla" and self.params.get_bool("TeslaCoopSteer"):
+      self.CP.flags |= TeslaFlags.COOP_STEER.value
 
     if self.CP.secOcRequired:
       # Copy user key if available

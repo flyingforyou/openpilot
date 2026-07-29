@@ -223,6 +223,9 @@ class TeslaFlags(IntFlag):
   LONG_CONTROL = 1
   FSD_14 = 2
   MISSING_DAS_SETTINGS = 4
+  # 8 rather than the next free bit in this enum: TeslaLegacyParams shares CP.flags and already
+  # claims 1, so the two enums have to be read as one bit space.
+  COOP_STEER = 8
 
 
 DBC = CAR.create_dbc_map()
