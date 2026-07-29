@@ -33,7 +33,11 @@ static bool tesla_legacy_autopark_active = false;    // DAS_accState in the APC 
 // module's 6 APC_BACKWARD frames through and openpilot's own DAS_control fill the gaps, which
 // put two counter sequences on one arbitration id and got the maneuver aborted. The stock
 // module needs the channel continuously, so once it starts it keeps it until it stops asking.
-#define TESLA_AUTOPARK_TIMEOUT 1000000U  // us of stock silence before handing the bus back
+// Sized off the recorded maneuver: the stock module asks at roughly 30Hz and the largest gap
+// between two of its requests was 44ms, so this is ~4.5x margin. It was 1s at first, which was
+// 23x more than needed -- and every millisecond of it is a millisecond where neither module is
+// feeding DAS_control, which the car expects continuously.
+#define TESLA_AUTOPARK_TIMEOUT 200000U  // us of stock silence before handing the bus back
 static uint32_t tesla_legacy_autopark_ts = 0;
 static bool tesla_legacy_autopark_ts_valid = false;
 
