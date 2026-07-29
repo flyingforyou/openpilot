@@ -66,7 +66,10 @@ class CanDecoder:
         value = raw * sig.factor + sig.offset
       except Exception:
         continue
-      enum = (dv.get(msg.address) or {}).get(sig.name, {}).get(int(value)) if dv else None
+      # VAL_ tables key off the raw value, not the scaled one. Same thing for the many signals
+      # with factor 1 and no offset, but not for e.g. AirTemp_Outsd, where raw 255 "SNA" scales
+      # to 87.5 and the label silently never matched.
+      enum = (dv.get(msg.address) or {}).get(sig.name, {}).get(raw) if dv else None
       out[sig.name] = {'v': round(value, 4), 'raw': raw, 'enum': enum,
                        'noise': is_noise_signal(sig)}
     return out

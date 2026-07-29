@@ -35,6 +35,7 @@ BS_:
 
 BU_:
 	NEO
+	EAS
 	MCU
 	GTW
 	EPAS
@@ -216,6 +217,16 @@ BO_ 341 ESP_B: 8 ESP
  SG_ ESP_wheelPulseCountFrR : 15|8@0+ (1,0) [0|254] ""  NEO,EPAS
  SG_ ESP_wheelPulseCountReL : 23|8@0+ (1,0) [0|254] ""  NEO,EPAS
  SG_ ESP_wheelPulseCountReR : 31|8@0+ (1,0) [0|254] ""  NEO,EPAS
+
+BO_ 267 ASD_A1: 5 EAS
+ SG_ FL_Lvl : 0|8@1+ (1,-100) [-100|153] "mm"  NEO
+ SG_ FR_Lvl : 8|8@1+ (1,-100) [-100|153] "mm"  NEO
+ SG_ RL_Lvl : 16|8@1+ (1,-100) [-100|153] "mm"  NEO
+ SG_ RR_Lvl : 24|8@1+ (1,-100) [-100|153] "mm"  NEO
+ SG_ FL_Lvl_Adj : 32|1@1+ (1,0) [0|1] ""  NEO
+ SG_ FR_Lvl_Adj : 33|1@1+ (1,0) [0|1] ""  NEO
+ SG_ RL_Lvl_Adj : 34|1@1+ (1,0) [0|1] ""  NEO
+ SG_ RR_Lvl_Adj : 35|1@1+ (1,0) [0|1] ""  NEO
 
 BO_ 513 SDM1: 5 GTW
  SG_ SDM_bcklPassStatus : 3|2@0+ (1,0) [0|3] "" NEO
@@ -806,6 +817,10 @@ VAL_ 264 DI_torqueMotor -4096 "SNA" ;
 VAL_ 264 DI_soptState 7 "SOPT_TEST_SNA" 4 "SOPT_TEST_NOT_RUN" 3 "SOPT_TEST_PASSED" 2 "SOPT_TEST_FAILED" 1 "SOPT_TEST_IN_PROGRESS" 0 "SOPT_PRE_TEST" ;
 VAL_ 264 DI_motorRPM -32768 "SNA" ;
 VAL_ 264 DI_pedalPos 255 "SNA" ;
+VAL_ 267 FL_Lvl 255 "SNA" 254 "Init" ;
+VAL_ 267 FR_Lvl 255 "SNA" 254 "Init" ;
+VAL_ 267 RL_Lvl 255 "SNA" 254 "Init" ;
+VAL_ 267 RR_Lvl 255 "SNA" 254 "Init" ;
 VAL_ 280 DI_torqueEstimate -2048 "SNA" ;
 VAL_ 280 DI_gear 7 "DI_GEAR_SNA" 4 "DI_GEAR_D" 3 "DI_GEAR_N" 2 "DI_GEAR_R" 1 "DI_GEAR_P" 0 "DI_GEAR_INVALID" ;
 VAL_ 280 DI_brakePedal 1 "Applied" 0 "Not_applied" ;

@@ -54,6 +54,30 @@ def test_decodes_against_dbc_with_enum_labels():
   assert sig['enum'] == 'ACC_DIST_4'
 
 
+def test_decodes_air_suspension_ride_height():
+  dec = _decoder()
+  # ASD_A1: one byte per corner, raw - 100 = mm. Bytes chosen to match what the recorded
+  # route actually carries (FL -26, FR -20, RL -9, RR -29), with FR mid-adjustment.
+  dec.ingest([FakeFrame(0, 267, bytes([74, 80, 91, 71, 0b0010]))], now=0.0)
+  msg = dec.snapshot(now=0.0)['messages'][0]
+  sigs = {s['name']: s for s in msg['signals']}
+
+  assert msg['name'] == 'ASD_A1'
+  assert [sigs[n]['v'] for n in ('FL_Lvl', 'FR_Lvl', 'RL_Lvl', 'RR_Lvl')] == [-26, -20, -9, -29]
+  assert [sigs[n]['v'] for n in ('FL_Lvl_Adj', 'FR_Lvl_Adj', 'RL_Lvl_Adj', 'RR_Lvl_Adj')] == [0, 1, 0, 0]
+
+
+def test_enum_labels_come_from_the_raw_value():
+  dec = _decoder()
+  # A corner with no reading sends 255, which scales to 155mm -- only the raw value says SNA.
+  dec.ingest([FakeFrame(0, 267, bytes([255, 254, 91, 71, 0]))], now=0.0)
+  sigs = {s['name']: s for s in dec.snapshot(now=0.0)['messages'][0]['signals']}
+
+  assert sigs['FL_Lvl']['enum'] == 'SNA'
+  assert sigs['FR_Lvl']['enum'] == 'INIT'   # the DBC reader upper-cases VAL_ labels
+  assert sigs['RL_Lvl']['enum'] is None
+
+
 def test_unknown_address_still_listed_with_raw_bytes():
   dec = _decoder()
   dec.ingest([FakeFrame(0, 0x7FF, b'\xde\xad')], now=0.0)
