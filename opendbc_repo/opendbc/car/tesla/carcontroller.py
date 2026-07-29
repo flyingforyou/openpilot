@@ -43,7 +43,10 @@ class CarController(CarControllerBase):
     # Tesla EPS enforces disabling steering on heavy lateral override force.
     # When enabling in a tight curve, we wait until user reduces steering force to start steering.
     # Canceling is done on rising edge and is handled generically with CC.cruiseControl.cancel
-    lat_active = CC.latActive and CS.hands_on_level < 3
+    # With cooperative steering the takeover no longer disengages, so this is the only thing
+    # stopping openpilot from fighting the driver for the wheel -- including on the high angle
+    # rate inhibit, which no longer arrives here as a temporary fault.
+    lat_active = CC.latActive and CS.hands_on_level < 3 and not CS.high_angle_rate_safety
 
     if self.frame % 2 == 0:
       # Angular rate limit based on speed
