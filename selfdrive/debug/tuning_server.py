@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cereal.messaging as messaging
 from openpilot.common.params import Params
-from openpilot.selfdrive.debug import video_source
+from openpilot.selfdrive.debug import vehicle_state, video_source
 from openpilot.selfdrive.debug.can_source import CanSource, list_routes
 
 # Options rather than free-form numbers: a typo in a text box goes straight into the braking
@@ -210,6 +210,9 @@ class Handler(BaseHTTPRequestHandler):
                           include_unseen='unseen=0' not in self.path)
       return self._send(200, json.dumps({**snap, **self.can.state()}))
 
+    if self.path.startswith('/api/vehicle'):
+      return self._send(200, json.dumps({**vehicle_state.build(self.can.get()), **self.can.state()}))
+
     if self.path.startswith('/api/settings'):
       out = {}
       for k, cfg in SETTINGS.items():
@@ -255,6 +258,8 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, PAGE_LIVE, 'text/html; charset=utf-8')
     if page == '/can':
       return self._send(200, PAGE_CAN, 'text/html; charset=utf-8')
+    if page == '/vehicle':
+      return self._send(200, PAGE_VEHICLE, 'text/html; charset=utf-8')
     if page == '/videos':
       return self._send(200, PAGE_VIDEO, 'text/html; charset=utf-8')
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
@@ -506,6 +511,13 @@ border:1px solid var(--line);color:var(--mut)}
   <div class="st"><span class="pill" id="p-eng">–</span><span class="pill" id="p-lead">–</span></div>
 </a>
 
+<a class="card" href="/vehicle">
+  <div class="t">차량 · 상태 한눈에</div>
+  <div class="d">기어·속도·문·안전벨트·서스펜션 차고처럼 지금 차가 어떤 상태인지를
+    골라서 보여줍니다. 나머지 신호는 "그 외" 탭에 있습니다.</div>
+  <div class="st"><span class="pill" id="p-veh">–</span></div>
+</a>
+
 <a class="card" href="/can">
   <div class="t">CAN · 전체 신호 뷰어</div>
   <div class="d">차량이 보내는 모든 CAN 메시지를 DBC로 디코딩해서 보여줍니다.
@@ -538,6 +550,13 @@ async function tick(){
     p.textContent=c.dbc?`${c.total} msg · ${c.dbc}`:(c.error||'DBC 없음');
     p.className='pill'+(c.total?' on':'');
   }catch(e){}
+  try{
+    const v=await(await fetch('/api/vehicle')).json();
+    const p=document.getElementById('p-veh');
+    const n=v.error?0:(v.total-v.missing);
+    p.textContent=v.error?'차량 미연결':`${n}/${v.total} 신호 수신`;
+    p.className='pill'+(n?' on':'');
+  }catch(e){}
 }
 async function once(){
   try{
@@ -549,6 +568,84 @@ async function once(){
   }catch(e){}
 }
 once();tick();setInterval(tick,1000);
+</script></body></html>"""
+
+
+PAGE_VEHICLE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>차량 상태</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--hot:#F5B942;--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--hot:#9A6210}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);
+padding:18px;padding-bottom:calc(18px + env(safe-area-inset-bottom))}
+a.back{color:var(--dim);font-family:var(--m);font-size:11px;text-decoration:none}
+h1{font-size:17px;margin:8px 0 3px}
+.sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:16px}
+.tabs{display:flex;gap:8px;margin-bottom:14px}
+.tab{flex:1;font-size:13px;padding:9px;border-radius:9px;border:1px solid var(--line);
+background:var(--card);color:var(--mut);cursor:pointer}
+.tab[aria-selected=true]{border-color:var(--radar);color:var(--radar)}
+.grp{background:var(--card);border:1px solid var(--line);border-radius:11px;
+margin-bottom:11px;overflow:hidden}
+.grp.warn{border-color:var(--hot)}
+.gt{font-size:12px;color:var(--mut);padding:10px 13px;border-bottom:1px solid var(--line)}
+.grp.warn .gt{color:var(--hot)}
+.row{display:flex;align-items:baseline;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:none}
+.lb{font-size:13px;flex:1;min-width:0}
+.vl{font-family:var(--m);font-size:13px;text-align:right;white-space:nowrap}
+.vl.w{color:var(--hot)}
+.vl.na{color:var(--dim)}
+.sg{font-family:var(--m);font-size:9.5px;color:var(--dim);white-space:nowrap}
+.hint{font-size:12px;color:var(--mut);line-height:1.6;background:var(--card);
+border:1px solid var(--line);border-radius:11px;padding:13px;margin-bottom:11px}
+</style></head><body>
+<a class="back" href="/">← 홈</a>
+<h1>차량 상태</h1><div class="sub" id="sub">연결 중…</div>
+<div class="tabs">
+  <button class="tab" id="t-core" aria-selected="true">중요</button>
+  <button class="tab" id="t-more" aria-selected="false">그 외</button>
+</div>
+<div id="out"></div>
+<script>
+const $=i=>document.getElementById(i);
+let sec='core',last=null,showSig=false;
+for(const id of ['core','more']) $('t-'+id).onclick=()=>{
+  sec=id;for(const o of ['core','more'])$('t-'+o).setAttribute('aria-selected',o===id);render(last);};
+
+function render(d){
+  if(!d) return;
+  const out=$('out');
+  if(d.error){out.innerHTML='<div class="hint">'+d.error+'</div>';return;}
+  const s=(d.sections||[]).find(x=>x.id===sec);
+  if(!s){out.innerHTML='';return;}
+  let h='';
+  for(const g of s.groups){
+    h+='<div class="grp'+(g.warn?' warn':'')+'"><div class="gt">'+g.title+'</div>';
+    for(const r of g.rows){
+      const na=r.value===null;
+      h+='<div class="row"><span class="lb">'+r.label+'</span>'
+        +(showSig?'<span class="sg">'+r.addr+' '+r.signal+'</span>':'')
+        +'<span class="vl'+(r.warn?' w':'')+(na?' na':'')+'">'+(na?'–':r.value)+'</span></div>';
+    }
+    h+='</div>';
+  }
+  out.innerHTML=h;
+}
+$('sub').onclick=()=>{showSig=!showSig;render(last);};
+
+async function tick(){
+  try{
+    const d=await(await fetch('/api/vehicle')).json();last=d;
+    const mode=d.mode==='replay'?('재생 · '+(d.route||'')):'실시간';
+    $('sub').textContent=d.error?mode:(mode+' · '+(d.total-d.missing)+'/'+d.total+' 신호 수신 · 탭하면 주소 표시');
+    render(d);
+  }catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}
+}
+tick();setInterval(tick,500);
 </script></body></html>"""
 
 
