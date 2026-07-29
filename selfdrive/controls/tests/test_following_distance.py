@@ -4,6 +4,9 @@ from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
 
+from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+from openpilot.selfdrive.controls.lib.longitudinal_planner import (get_max_accel, A_CRUISE_MAX_VALS,
+                                                                    A_CRUISE_MAX_BP)
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (LongitudinalMpc, get_safe_obstacle_distance,
                                                                           get_stopped_equivalence_factor, get_T_FOLLOW,
                                                                           limit_t_follow_increase, gap_t_follow_table,
@@ -47,6 +50,33 @@ def test_t_follow_increase_is_rate_limited():
 def test_default_rise_rate_crosses_the_range_in_a_few_seconds():
   table = gap_t_follow_table(0)
   assert (table[7] - table[1]) / T_FOLLOW_RISE_RATE < 4.0, "gap 1 to 7 should not take 9 seconds"
+
+
+def test_launch_accel_default_is_unchanged():
+  assert get_max_accel(0.0) == pytest.approx(A_CRUISE_MAX_VALS[0])
+  for v, expected in zip(A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS, strict=True):
+    assert get_max_accel(v) == pytest.approx(expected)
+
+
+def test_launch_accel_raises_only_the_low_speed_end():
+  raised = 2.0
+  assert get_max_accel(0.0, raised) == pytest.approx(raised)
+  assert get_max_accel(10.0, raised) > get_max_accel(10.0), "sub-10m/s scales with it"
+  # the highway end is somebody else's tuning
+  assert get_max_accel(25.0, raised) == pytest.approx(A_CRUISE_MAX_VALS[2])
+  assert get_max_accel(40.0, raised) == pytest.approx(A_CRUISE_MAX_VALS[3])
+
+
+def test_launch_accel_never_exceeds_what_panda_allows():
+  # tesla_legacy.h caps DAS_control at 2.0 m/s^2; asking for more just gets the command rejected
+  for v in (0.0, 5.0, 10.0, 25.0, 40.0):
+    assert get_max_accel(v, 5.0) <= ACCEL_MAX + 1e-9
+
+
+def test_launch_accel_leaves_braking_alone():
+  # the complaint was acceleration only; ACCEL_MIN is not a function of this knob
+  assert get_max_accel(0.0, 2.0) > get_max_accel(0.0)
+  assert ACCEL_MIN == pytest.approx(-3.5)
 
 
 def test_gap_range_is_worth_turning_the_knob():

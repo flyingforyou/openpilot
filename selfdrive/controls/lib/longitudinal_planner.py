@@ -29,8 +29,18 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
 
-def get_max_accel(v_ego):
-  return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
+def get_max_accel(v_ego, launch_accel: float = A_CRUISE_MAX_VALS[0]):
+  """Ceiling on requested acceleration, by speed.
+
+  launch_accel raises the standstill end of the curve, scaling the sub-10m/s points with it and
+  leaving the highway end alone. Pulling away from a stop is where the stock table felt slow:
+  1.6 m/s^2 against 3.5 of braking authority, and panda allows 2.0. Deceleration is untouched --
+  the two are separate knobs on purpose, since only acceleration was the complaint.
+  """
+  scale = launch_accel / A_CRUISE_MAX_VALS[0]
+  vals = [min(v * scale, ACCEL_MAX) if bp <= 10.0 else v
+          for v, bp in zip(A_CRUISE_MAX_VALS, A_CRUISE_MAX_BP, strict=True)]
+  return float(np.interp(v_ego, A_CRUISE_MAX_BP, vals))
 
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
@@ -76,6 +86,7 @@ class LongitudinalPlanner:
     self.tesla_last_gap_adjust = self.params.get("TeslaLastGapAdjust", return_default=True) if CP.brand == "tesla" else 0
 
     self.frame = 0
+    self.launch_accel = A_CRUISE_MAX_VALS[0]
     self.refresh_tuning()
 
   def refresh_tuning(self) -> None:
@@ -84,6 +95,8 @@ class LongitudinalPlanner:
     gap_profile = int(self.params.get("GapProfile", return_default=True) or 0)
     rise_pct = int(self.params.get("TFollowRiseRatePct", return_default=True) or 35)
     stop_cm = int(self.params.get("StopDistanceCm", return_default=True) or 600)
+    launch_cms = int(self.params.get("LaunchAccelCms", return_default=True) or 160)
+    self.launch_accel = min(launch_cms / 100.0, ACCEL_MAX)
     self.mpc.set_tuning(gap_profile, rise_pct / 100.0, stop_cm / 100.0)
 
   @staticmethod
@@ -132,7 +145,7 @@ class LongitudinalPlanner:
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
-    accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
+    accel_clip = [ACCEL_MIN, get_max_accel(v_ego, self.launch_accel)]
     steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
     accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
 
