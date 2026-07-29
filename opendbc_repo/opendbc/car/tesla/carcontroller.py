@@ -1,6 +1,6 @@
 import numpy as np
 from opendbc.can import CANPacker
-from opendbc.car import Bus
+from opendbc.car import Bus, structs
 from opendbc.car.lateral import apply_steer_angle_limits_vm
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.tesla.teslacan import TeslaCAN
@@ -83,17 +83,25 @@ class CarController(CarControllerBase):
       cntr = (self.frame // 10) % 16
       can_sends.append(self.tesla_can.create_steering_allowed(cntr))
 
+    # Never cancel cruise openpilot could not have been driving anyway. The stock park module
+    # borrows the ACC channel, so the car reports cruise enabled as soon as autopark starts and
+    # controlsd asks to cancel it; sending that is what ended the recorded maneuver. Out of D
+    # while disengaged is the same case more generally -- there is nothing to take over from.
+    cancel = CC.cruiseControl.cancel and not (
+      CS.stock_autopark_offered or
+      (not CC.enabled and CS.out.gearShifter != structs.CarState.GearShifter.drive))
+
     # Longitudinal control
     if self.CP.openpilotLongitudinalControl:
       if self.frame % 4 == 0:
-        state = 13 if CC.cruiseControl.cancel else 4  # 4=ACC_ON, 13=ACC_CANCEL_GENERIC_SILENT
+        state = 13 if cancel else 4  # 4=ACC_ON, 13=ACC_CANCEL_GENERIC_SILENT
         accel = float(np.clip(actuators.accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
         cntr = (self.frame // 4) % 8
         can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive, CS.out.gasPressed))
 
     elif self.CP.carFingerprint not in LEGACY_CARS:
       # Increment counter so cancel is prioritized even without openpilot longitudinal
-      if CC.cruiseControl.cancel:
+      if cancel:
         cntr = (CS.das_control["DAS_controlCounter"] + 1) % 8
         can_sends.append(self.tesla_can.create_longitudinal_command(13, 0, cntr, CS.out.vEgo, False, CS.out.gasPressed))
     # Legacy cars with stock ACC: the factory module owns DAS_control and panda forwards its

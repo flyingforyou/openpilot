@@ -103,23 +103,30 @@ def test_coop_steer_flag_does_not_collide():
 # ---- stock autopark: openpilot has to go silent, not just let panda block it ----
 
 class _FakeOut:
-  steeringAngleDeg = 12.5
-  vEgo = 0.0
-  vEgoRaw = 0.0
-  gasPressed = False
+  def __init__(self):
+    from opendbc.car import structs as _s
+    self.steeringAngleDeg = 12.5
+    self.vEgo = 0.0
+    self.vEgoRaw = 0.0
+    self.gasPressed = False
+    self.gearShifter = _s.CarState.GearShifter.drive
 
 
 class _FakeCS:
-  def __init__(self, autopark_frames=0):
+  def __init__(self, autopark_frames=0, autopark_offered=False, gear=None):
+    from opendbc.car import structs as _s
     self.hands_on_level = 0
     self.high_angle_rate_safety = False
     self.stock_autopark_frames = autopark_frames
+    self.stock_autopark_offered = autopark_offered or autopark_frames > 0
     self.out = _FakeOut()
+    self.out.gearShifter = _s.CarState.GearShifter.drive if gear is None else gear
     self.das_control = {"DAS_controlCounter": 0}
 
 
 class _FakeCruise:
-  cancel = False
+  def __init__(self):
+    self.cancel = False
 
 
 class _FakeActuators:
@@ -131,12 +138,14 @@ class _FakeActuators:
 
 
 class _FakeCC:
-  def __init__(self, enabled=False):
+  def __init__(self, enabled=False, cancel=False):
     self.enabled = enabled
+    self._cancel = cancel
     self.latActive = False
     self.longActive = False
     self.actuators = _FakeActuators()
     self.cruiseControl = _FakeCruise()
+    self.cruiseControl.cancel = cancel
 
 
 def _carcontroller():
@@ -179,5 +188,55 @@ def test_engaged_openpilot_keeps_the_bus():
 def test_angle_resumes_from_the_wheel_the_stock_module_left():
   cc, _ = _carcontroller()
   cc.apply_angle_last = -300.0
-  cc.update(_FakeCC(enabled=False), _FakeCS(autopark_frames=120), 0)
-  assert cc.apply_angle_last == _FakeOut.steeringAngleDeg, "no step when openpilot takes back over"
+  CS = _FakeCS(autopark_frames=120)
+  cc.update(_FakeCC(enabled=False), CS, 0)
+  assert cc.apply_angle_last == CS.out.steeringAngleDeg, "no step when openpilot takes back over"
+
+
+# ---- openpilot must not cancel cruise it could not have been driving ----
+
+def _long_states(cc, CC, CS, frames=8):
+  """The DAS_control acc_state byte openpilot actually put on the bus."""
+  out = []
+  for _ in range(frames):
+    _, sends = cc.update(CC, CS, 0)
+    for addr, dat, _bus in sends:
+      if addr == 0x2B9:
+        out.append((dat[1] >> 4) & 0x0F)
+  return out
+
+
+def test_cancel_is_sent_normally():
+  cc, _ = _carcontroller()
+  states = _long_states(cc, _FakeCC(enabled=False, cancel=True), _FakeCS())
+  assert 13 in states, "ACC_CANCEL_GENERIC_SILENT when there is something to cancel"
+
+
+def test_cancel_is_held_back_while_autopark_is_offered():
+  # the cancel ended the recorded maneuver 0.45s after the stock module got the steering
+  cc, _ = _carcontroller()
+  states = _long_states(cc, _FakeCC(enabled=False, cancel=True), _FakeCS(autopark_offered=True))
+  assert 13 not in states and 4 in states, "keep feeding the channel, just never cancel"
+
+
+def test_cancel_is_held_back_out_of_drive_while_disengaged():
+  from opendbc.car import structs as _s
+  cc, _ = _carcontroller()
+  states = _long_states(cc, _FakeCC(enabled=False, cancel=True),
+                        _FakeCS(gear=_s.CarState.GearShifter.reverse))
+  assert 13 not in states
+
+
+def test_engaged_openpilot_can_still_cancel_out_of_drive():
+  from opendbc.car import structs as _s
+  cc, _ = _carcontroller()
+  states = _long_states(cc, _FakeCC(enabled=True, cancel=True),
+                        _FakeCS(gear=_s.CarState.GearShifter.reverse))
+  assert 13 in states, "only the disengaged case is the one with nothing to take over from"
+
+
+def test_channel_is_still_fed_while_autopark_is_merely_offered():
+  # full silence for the whole offer window would starve a 25Hz channel; it was 22s in the log
+  cc, _ = _carcontroller()
+  states = _long_states(cc, _FakeCC(enabled=False), _FakeCS(autopark_offered=True))
+  assert len(states) > 0 and set(states) == {4}
