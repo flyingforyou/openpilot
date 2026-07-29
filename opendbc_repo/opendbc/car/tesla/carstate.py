@@ -97,6 +97,7 @@ class CarState(CarStateBase):
     self.hands_on_level = 0
     self.high_angle_rate_safety = False
     self.stock_autopark_frames = 0
+    self.stock_autopark_offered = False
     self.das_control = None
     self.cruise_gap = 0
 
@@ -326,10 +327,13 @@ class CarState(CarStateBase):
 
     das_left_blindspot = False
     das_right_blindspot = False
+    autopark_offered = False
     if self.CP.carFingerprint != CAR.TESLA_MODEL_S_HW3:
       autopilot_status = cp_ap_party.vl["AutopilotStatus"]
       das_left_blindspot = int(autopilot_status["DAS_blindSpotRearLeft"]) in (1, 2)
       das_right_blindspot = int(autopilot_status["DAS_blindSpotRearRight"]) in (1, 2)
+      autopark_offered = (int(autopilot_status["DAS_autoparkReady"]) == 1 or
+                          int(autopilot_status["DAS_autoparkWaitingForBrake"]) == 1)
 
     ret.leftBlindspot = park_left_blindspot or das_left_blindspot
     ret.rightBlindspot = park_right_blindspot or das_right_blindspot
@@ -358,6 +362,14 @@ class CarState(CarStateBase):
       self.stock_autopark_frames = STOCK_AUTOPARK_HOLD_FRAMES
     else:
       self.stock_autopark_frames = max(self.stock_autopark_frames - 1, 0)
+
+    # Deliberately wider than the silence window above, and used only to hold back the cancel.
+    # Autopark drives the car through the ACC channel, so the car reports cruise enabled the
+    # moment it starts and controlsd asks to cancel it -- that cancel ended the recorded
+    # maneuver 0.45s after the stock module had finally taken the steering. Going fully silent
+    # for the whole time autopark is merely on offer would be worse: it was 22s in that
+    # recording, and DAS_control is a channel the car expects fed at 25Hz.
+    self.stock_autopark_offered = autopark_offered or self.stock_autopark_frames > 0
 
     return ret
 
