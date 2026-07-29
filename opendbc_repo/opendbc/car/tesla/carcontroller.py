@@ -5,7 +5,8 @@ from opendbc.car.lateral import apply_steer_angle_limits_vm
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.tesla.teslacan import TeslaCAN
 from opendbc.car.tesla.teslacan_legacy import TeslaCANRaven
-from opendbc.car.tesla.values import CarControllerParams, CANBUS, LEGACY_CARS, CAR
+from opendbc.car.tesla.coop_steering import CoopSteeringCarController
+from opendbc.car.tesla.values import CarControllerParams, CANBUS, LEGACY_CARS, CAR, TeslaFlags
 from opendbc.car.vehicle_model import VehicleModel
 
 
@@ -20,6 +21,9 @@ class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
     self.apply_angle_last = 0
+    # Follow the driver's hands rather than letting go of the wheel. Off unless opted in.
+    self.coop_steering = bool(CP.flags & TeslaFlags.COOP_STEER) and CP.carFingerprint in LEGACY_CARS
+    self.coop_steer = CoopSteeringCarController()
     self.packer = CANPacker(dbc_names[Bus.party])
     self.tesla_can = TeslaCAN(CP, self.packer)
 
@@ -43,20 +47,26 @@ class CarController(CarControllerBase):
     # Tesla EPS enforces disabling steering on heavy lateral override force.
     # When enabling in a tight curve, we wait until user reduces steering force to start steering.
     # Canceling is done on rising edge and is handled generically with CC.cruiseControl.cancel
-    # With cooperative steering the takeover no longer disengages, so this is the only thing
-    # stopping openpilot from fighting the driver for the wheel -- including on the high angle
-    # rate inhibit, which no longer arrives here as a temporary fault.
+    # Cooperative steering shifts the commanded angle toward the driver instead of relying on
+    # this gate, so a takeover should never get as far as handsOnLevel 3. This stays as the
+    # backstop for one that does.
     lat_active = CC.latActive and CS.hands_on_level < 3 and not CS.high_angle_rate_safety
 
     if self.frame % 2 == 0:
       # Angular rate limit based on speed
       self.apply_angle_last = apply_steer_angle_limits_vm(actuators.steeringAngleDeg, self.apply_angle_last, CS.out.vEgoRaw, CS.out.steeringAngleDeg,
                                                           lat_active, CarControllerParams, self.VM)
+      angle_cmd = self.apply_angle_last
+      if self.coop_steering:
+        # shifts the target by the driver's torque instead of dropping lateral, and resumes from
+        # the measured angle with a ramped rate limit
+        angle_cmd = self.coop_steer.update(self.apply_angle_last, lat_active, CS, self.VM).steeringAngleDeg
+
       if self.CP.carFingerprint in LEGACY_CARS:
         cntr = (self.frame // 2) % 16
-        can_sends.append(self.tesla_can.create_steering_control(cntr, self.apply_angle_last, lat_active))
+        can_sends.append(self.tesla_can.create_steering_control(cntr, angle_cmd, lat_active))
       else:
-        can_sends.append(self.tesla_can.create_steering_control(self.apply_angle_last, lat_active))
+        can_sends.append(self.tesla_can.create_steering_control(angle_cmd, lat_active))
 
     if self.frame % 10 == 0 and self.CP.carFingerprint not in (CAR.TESLA_MODEL_S_HW1, CAR.TESLA_MODEL_X_HW1, ):
       cntr = (self.frame // 10) % 16
