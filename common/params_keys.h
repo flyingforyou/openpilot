@@ -119,7 +119,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"StopDistanceCm", {PERSISTENT, INT, "600"}},
     {"StoppedLeadHoldMs", {PERSISTENT, INT, "500"}},
     {"StoppedLeadMatchEnabled", {PERSISTENT, BOOL, "1"}},
-    {"TFollowRiseRatePct", {PERSISTENT, INT, "10"}},
+    {"TFollowRiseRatePct", {PERSISTENT, INT, "35"}},
     {"TeslaCoopSteer", {PERSISTENT, BOOL, "0"}},
     {"TeslaLastGapAdjust", {PERSISTENT, INT, "0"}},
     {"TeslaStockAutopark", {PERSISTENT, BOOL, "0"}},

@@ -6,7 +6,8 @@ from cereal import log
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (LongitudinalMpc, get_safe_obstacle_distance,
                                                                           get_stopped_equivalence_factor, get_T_FOLLOW,
-                                                                          limit_t_follow_increase)
+                                                                          limit_t_follow_increase, gap_t_follow_table,
+                                                                          GAP_PROFILES, MIN_T_FOLLOW, T_FOLLOW_RISE_RATE)
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
@@ -17,12 +18,12 @@ def desired_follow_distance(v_ego, v_lead, t_follow=None):
 
 
 @pytest.mark.parametrize("gap, expected", [
-  (1, 1.10),
-  (2, 1.20),
-  (3, 1.30),
-  (4, 1.40),
-  (5, 1.50),
-  (6, 1.60),
+  (1, 0.80),
+  (2, 0.96),
+  (3, 1.12),
+  (4, 1.28),
+  (5, 1.43),
+  (6, 1.59),
   (7, 1.75),
 ])
 def test_tesla_gap_t_follow(gap, expected):
@@ -38,7 +39,41 @@ def test_t_follow_decrease_is_immediate():
 
 
 def test_t_follow_increase_is_rate_limited():
-  assert limit_t_follow_increase(1.10, 1.75, 0.05) == pytest.approx(1.105)
+  # rate passed explicitly so this keeps testing the limiter, not whatever the default is
+  assert limit_t_follow_increase(1.10, 1.75, 0.05, 0.10) == pytest.approx(1.105)
+  assert limit_t_follow_increase(1.10, 1.75, 0.05, 0.50) == pytest.approx(1.125)
+
+
+def test_default_rise_rate_crosses_the_range_in_a_few_seconds():
+  table = gap_t_follow_table(0)
+  assert (table[7] - table[1]) / T_FOLLOW_RISE_RATE < 4.0, "gap 1 to 7 should not take 9 seconds"
+
+
+def test_gap_range_is_worth_turning_the_knob():
+  """The old table moved 18m between the extremes at 100km/h, under 3m a step, which is why
+  running the knob end to end barely changed anything."""
+  table = gap_t_follow_table(0)
+  v = 100 / 3.6
+  assert (table[7] - table[1]) * v > 25, "1 to 7 was only worth 18m before"
+
+  steps = [(table[g + 1] - table[g]) * v for g in range(1, 7)]
+  assert min(steps) > 4.0, "every step should be a car length or more at 100km/h"
+  assert max(steps) - min(steps) < 0.5, "evenly spaced, as chosen"
+
+
+def test_gap_7_is_unchanged():
+  # the far end was the one setting that already felt right
+  assert gap_t_follow_table(0)[7] == pytest.approx(1.75)
+
+
+@pytest.mark.parametrize("profile", list(GAP_PROFILES))
+def test_no_profile_goes_below_the_floor(profile):
+  # 'closer' and 'wider' both shift gap 1 down, and the base is already deliberately close
+  assert min(gap_t_follow_table(profile).values()) >= MIN_T_FOLLOW
+
+
+def test_profiles_still_move_the_table():
+  assert gap_t_follow_table(2)[4] > gap_t_follow_table(0)[4], "'further' must still be further"
 
 
 def test_no_gap_falls_back_to_personality():
@@ -51,11 +86,12 @@ def test_gap_slew_survives_solver_reset():
   # A solver reset must not re-arm the "first valid gap applies immediately" path, otherwise a
   # pending tFollow increase lands in one step and brakes the car.
   mpc = LongitudinalMpc()
-  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 1) == pytest.approx(1.10)
-  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 7) == pytest.approx(1.105)
+  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 1) == pytest.approx(0.80)
+  step = T_FOLLOW_RISE_RATE * mpc.dt
+  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 7) == pytest.approx(0.80 + step)
 
   mpc.reset()
-  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 7) == pytest.approx(1.11)
+  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 7) == pytest.approx(0.80 + 2 * step)
 
 
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):

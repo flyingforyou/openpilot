@@ -59,16 +59,23 @@ CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
 
+# Evenly spaced from gap 1 to gap 7. The old table only spanned 1.10-1.75s, which is 18m
+# between the extremes at 100km/h and under 3m per step -- turning the knob the whole way
+# barely changed the distance. Gap 7 is unchanged; the range was opened downward instead,
+# because that end is what did not match the car: stock gap 1 sits much closer than 1.10s.
 TESLA_GAP_T_FOLLOW = {
-  1: 1.10,
-  2: 1.20,
-  3: 1.30,
-  4: 1.40,
-  5: 1.50,
-  6: 1.60,
+  1: 0.80,
+  2: 0.96,
+  3: 1.12,
+  4: 1.28,
+  5: 1.43,
+  6: 1.59,
   7: 1.75,
 }
-T_FOLLOW_RISE_RATE = 0.10  # seconds of tFollow per real second
+# No profile may ask for less than this. Gap 1 is already deliberately close, and the shift and
+# spread below would otherwise take it to 0.61s, which is a car length at 100km/h.
+MIN_T_FOLLOW = 0.80
+T_FOLLOW_RISE_RATE = 0.35  # seconds of tFollow per real second
 
 # Gap profiles, selectable at runtime. The knob has 7 positions either way; these change what
 # following time each position asks for, so the whole range shifts or spreads together.
@@ -81,10 +88,11 @@ GAP_PROFILES = {
 
 
 def gap_t_follow_table(profile: int = 0) -> dict[int, float]:
-  """Shift and/or spread the base table around its midpoint (gap 4)."""
+  """Shift and/or spread the base table around its midpoint (gap 4), never below MIN_T_FOLLOW."""
   _, shift, spread = GAP_PROFILES.get(profile, GAP_PROFILES[0])
   mid = TESLA_GAP_T_FOLLOW[4]
-  return {g: round(mid + (v - mid) * spread + shift, 3) for g, v in TESLA_GAP_T_FOLLOW.items()}
+  return {g: round(max(mid + (v - mid) * spread + shift, MIN_T_FOLLOW), 3)
+          for g, v in TESLA_GAP_T_FOLLOW.items()}
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:

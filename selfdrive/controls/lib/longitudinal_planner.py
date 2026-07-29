@@ -82,7 +82,7 @@ class LongitudinalPlanner:
     """Only called while disengaged, so a change made mid-drive lands at the next engage
     rather than shifting the target distance under the car that is already following."""
     gap_profile = int(self.params.get("GapProfile", return_default=True) or 0)
-    rise_pct = int(self.params.get("TFollowRiseRatePct", return_default=True) or 10)
+    rise_pct = int(self.params.get("TFollowRiseRatePct", return_default=True) or 35)
     stop_cm = int(self.params.get("StopDistanceCm", return_default=True) or 600)
     self.mpc.set_tuning(gap_profile, rise_pct / 100.0, stop_cm / 100.0)
 
