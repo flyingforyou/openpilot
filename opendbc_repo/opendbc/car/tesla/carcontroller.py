@@ -48,6 +48,17 @@ class CarController(CarControllerBase):
     # rate inhibit, which no longer arrives here as a temporary fault.
     lat_active = CC.latActive and CS.hands_on_level < 3 and not CS.high_angle_rate_safety
 
+    # Stock autopark drives the car through the same two message ids openpilot uses. Panda opens
+    # the forwarding gate for the maneuver, but that is not enough on its own: openpilot sends
+    # DAS_control at 25Hz and DAS_steeringControl at 50Hz whether or not it is engaged, so the
+    # car would receive both modules' frames interleaved on one arbitration id, with two
+    # independent counters. That is what aborted the recorded attempt. Go silent instead.
+    yield_to_stock_autopark = CS.stock_autopark_frames > 0 and not CC.enabled
+    if yield_to_stock_autopark:
+      self.apply_angle_last = CS.out.steeringAngleDeg  # resume from where the stock module left it
+      self.frame += 1
+      return actuators.as_builder(), []
+
     if self.frame % 2 == 0:
       # Angular rate limit based on speed
       self.apply_angle_last = apply_steer_angle_limits_vm(actuators.steeringAngleDeg, self.apply_angle_last, CS.out.vEgoRaw, CS.out.steeringAngleDeg,

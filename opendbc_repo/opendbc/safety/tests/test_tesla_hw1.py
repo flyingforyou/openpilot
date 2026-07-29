@@ -386,6 +386,57 @@ class TestTeslaHW1StockAutoparkSafety(TestTeslaHW1Safety):
         self._rx(self._long_control_msg(0, acc_state=self.acc_states[state], bus=2))
         self._assert_ap1_forwarded(False)
 
+  def _quiet_stock_msg(self):
+    """A frame from the stock module that is not asking for the bus."""
+    return self._long_control_msg(0, acc_state=self.acc_states['ACC_CANCEL_GENERIC'], bus=2)
+
+  def test_gate_stays_open_across_gaps_in_the_stock_stream(self):
+    """The whole point of the latch. A per-frame gate passed 2 of 6 recorded APC_BACKWARD frames
+    and let openpilot's own DAS_control fill the gaps, which aborted the maneuver."""
+    self.safety.set_timer(0)
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_BACKWARD'], bus=2))
+    self._assert_ap1_forwarded(True)
+
+    # the module keeps sending on the id, but not every frame carries an APC state
+    for us in (20_000, 100_000, 500_000, 900_000):
+      self.safety.set_timer(us)
+      self._rx(self._quiet_stock_msg())
+      self._assert_ap1_forwarded(True)
+
+  def test_gate_closes_once_the_stock_module_goes_quiet(self):
+    self.safety.set_timer(0)
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_BACKWARD'], bus=2))
+    self._assert_ap1_forwarded(True)
+
+    self.safety.set_timer(1_000_001)
+    self._rx(self._quiet_stock_msg())
+    self._assert_ap1_forwarded(False)
+
+  def test_a_refresh_extends_the_session(self):
+    self.safety.set_timer(0)
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_FORWARD'], bus=2))
+    self.safety.set_timer(900_000)
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_FORWARD'], bus=2))
+
+    # without the refresh this would already be past the timeout
+    self.safety.set_timer(1_500_000)
+    self._rx(self._quiet_stock_msg())
+    self._assert_ap1_forwarded(True)
+
+  def test_engaging_closes_the_session_even_mid_maneuver(self):
+    self.safety.set_timer(0)
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_BACKWARD'], bus=2))
+    self._assert_ap1_forwarded(True)
+
+    self.safety.set_controls_allowed(True)
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_BACKWARD'], bus=2))
+    self._assert_ap1_forwarded(False)
+
+    # and it does not silently resume when the driver disengages again
+    self.safety.set_controls_allowed(False)
+    self._rx(self._quiet_stock_msg())
+    self._assert_ap1_forwarded(False)
+
   def test_openpilot_engaged_takes_the_bus_back(self):
     self._rx(self._stock_steering_msg())
     self._assert_ap1_forwarded(True)

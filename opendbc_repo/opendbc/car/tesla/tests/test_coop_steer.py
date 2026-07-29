@@ -98,3 +98,86 @@ def test_coop_steer_flag_does_not_collide():
   used = {f.value for f in TeslaFlags if f is not TeslaFlags.COOP_STEER}
   used |= {f.value for f in TeslaLegacyParams}
   assert TeslaFlags.COOP_STEER.value not in used
+
+
+# ---- stock autopark: openpilot has to go silent, not just let panda block it ----
+
+class _FakeOut:
+  steeringAngleDeg = 12.5
+  vEgo = 0.0
+  vEgoRaw = 0.0
+  gasPressed = False
+
+
+class _FakeCS:
+  def __init__(self, autopark_frames=0):
+    self.hands_on_level = 0
+    self.high_angle_rate_safety = False
+    self.stock_autopark_frames = autopark_frames
+    self.out = _FakeOut()
+    self.das_control = {"DAS_controlCounter": 0}
+
+
+class _FakeCruise:
+  cancel = False
+
+
+class _FakeActuators:
+  steeringAngleDeg = 0.0
+  accel = 0.0
+
+  def as_builder(self):
+    return self
+
+
+class _FakeCC:
+  def __init__(self, enabled=False):
+    self.enabled = enabled
+    self.latActive = False
+    self.longActive = False
+    self.actuators = _FakeActuators()
+    self.cruiseControl = _FakeCruise()
+
+
+def _carcontroller():
+  from opendbc.car import Bus
+  from opendbc.car.tesla.carcontroller import CarController
+  from opendbc.car.tesla.interface import CarInterface
+  from opendbc.car.tesla.values import DBC
+  CP = CarInterface.get_non_essential_params("TESLA_MODEL_X_HW1")
+  return CarController(DBC[CP.carFingerprint], CP), CP
+
+
+def _addrs_over(frames, cc, CC, CS):
+  seen = set()
+  for _ in range(frames):
+    _, sends = cc.update(CC, CS, 0)
+    seen |= {m[0] for m in sends}
+  return seen
+
+
+def test_openpilot_normally_owns_both_command_ids():
+  cc, _ = _carcontroller()
+  seen = _addrs_over(8, cc, _FakeCC(enabled=False), _FakeCS())
+  assert 0x488 in seen, "DAS_steeringControl is sent even disengaged"
+  assert 0x2B9 in seen, "DAS_control is sent even disengaged -- this is what collided"
+
+
+def test_openpilot_goes_silent_during_a_stock_autopark_session():
+  cc, _ = _carcontroller()
+  seen = _addrs_over(8, cc, _FakeCC(enabled=False), _FakeCS(autopark_frames=120))
+  assert seen == set(), "two counter sequences on one id is what aborted the maneuver"
+
+
+def test_engaged_openpilot_keeps_the_bus():
+  # panda closes the gate the moment controls are allowed; openpilot must not go quiet then
+  cc, _ = _carcontroller()
+  seen = _addrs_over(8, cc, _FakeCC(enabled=True), _FakeCS(autopark_frames=120))
+  assert 0x488 in seen and 0x2B9 in seen
+
+
+def test_angle_resumes_from_the_wheel_the_stock_module_left():
+  cc, _ = _carcontroller()
+  cc.apply_angle_last = -300.0
+  cc.update(_FakeCC(enabled=False), _FakeCS(autopark_frames=120), 0)
+  assert cc.apply_angle_last == _FakeOut.steeringAngleDeg, "no step when openpilot takes back over"
