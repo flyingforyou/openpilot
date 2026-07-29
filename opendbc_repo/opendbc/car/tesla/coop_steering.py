@@ -43,14 +43,13 @@ STEERING_DEG_PHASE_LEAD_COEFF = 8.0
 # angle override
 STEER_OVERRIDE_MIN_TORQUE = 0.5   # Nm - measured hands-off noise floor is 0.2-0.3Nm
 STEER_OVERRIDE_MAX_TORQUE = 2.5   # Nm - handsOnLevel hits 3 at a median of 3.2Nm on this car
-STEER_OVERRIDE_MAX_LAT_ACCEL = 1.5              # m/s^2 - like Tesla's comfort steering mode
+STEER_OVERRIDE_MAX_LAT_ACCEL = 1.5              # m/s^2 - like Tesla's comfort steering mode, tunable
 STEER_OVERRIDE_LAT_ACCEL_GAIN_LIMIT = 10        # deg/Nm - stability at low speed
 
 # angle ramping
 STEER_OVERRIDE_MAX_LAT_JERK = 2.0               # m/s^3 - how fast the offset builds
 STEER_OVERRIDE_MAX_LAT_JERK_CENTERING = CoopSteeringCarControllerParams.ANGLE_LIMITS.MAX_LATERAL_JERK
 STEER_OVERRIDE_LAT_JERK_GAIN_LIMIT = 100        # deg/s/Nm
-STEER_OVERRIDE_TORQUE_RANGE = STEER_OVERRIDE_MAX_TORQUE - STEER_OVERRIDE_MIN_TORQUE
 
 # on resume, ramp the allowed angle rate up from zero instead of stepping to the limit
 STEER_RESUME_RATE_LIMIT_RAMP_RATE = 500  # deg/s^2
@@ -71,18 +70,20 @@ def apply_deadzone(signal: float, deadzone: float) -> float:
   return signal - apply_bounds(signal, deadzone)
 
 
-def calc_override_angle_limited(torque: float, v_ego: float, VM: VehicleModel, lat_accel: float) -> float:
-  torque_to_angle = get_steer_from_lat_accel(lat_accel, v_ego, VM) / STEER_OVERRIDE_TORQUE_RANGE
+def calc_override_angle_limited(torque: float, v_ego: float, VM: VehicleModel, lat_accel: float,
+                                torque_range: float) -> float:
+  torque_to_angle = get_steer_from_lat_accel(lat_accel, v_ego, VM) / torque_range
   return torque * min(torque_to_angle, STEER_OVERRIDE_LAT_ACCEL_GAIN_LIMIT)
 
 
-def calc_override_angle_delta_limited(torque: float, v_ego: float, VM: VehicleModel, lat_jerk: float) -> float:
+def calc_override_angle_delta_limited(torque: float, v_ego: float, VM: VehicleModel, lat_jerk: float,
+                                      torque_range: float) -> float:
   # prevents windup in the car controller's rate limiter
   lat_jerk = min(lat_jerk, CoopSteeringCarControllerParams.ANGLE_LIMITS.MAX_LATERAL_JERK)
 
-  torque_to_angle = get_steer_from_lat_accel(lat_jerk, v_ego, VM) / STEER_OVERRIDE_TORQUE_RANGE
+  torque_to_angle = get_steer_from_lat_accel(lat_jerk, v_ego, VM) / torque_range
   gain_limit = min(STEER_OVERRIDE_LAT_JERK_GAIN_LIMIT,
-                   CarControllerParams.ANGLE_LIMITS.MAX_ANGLE_RATE / DT_CTRL / STEER_OVERRIDE_TORQUE_RANGE)
+                   CarControllerParams.ANGLE_LIMITS.MAX_ANGLE_RATE / DT_CTRL / torque_range)
   override_angle_rate = torque * min(torque_to_angle, gain_limit)
 
   return apply_bounds(override_angle_rate * DT_LAT_CTRL,
@@ -104,11 +105,25 @@ class SteerRateLimiter:
 
 class CoopSteeringCarController:
   def __init__(self):
+    # Both settable from the tuning page; see set_tuning. Defaults are the measured-safe values.
+    self.max_torque = STEER_OVERRIDE_MAX_TORQUE
+    self.max_lat_accel = STEER_OVERRIDE_MAX_LAT_ACCEL
     self.coop_apply_angle_last = 0.0
     self.coop_apply_angle_last_sat = 0.0
     self.override_angle_accu = 0.0
     self.resume_rate_limiter_delta = SteerRateLimiter()
     self.resume_rate_limiter = SteerRateLimiter()
+
+  def set_tuning(self, max_torque: float, max_lat_accel: float) -> None:
+    """max_torque: how far the driver can push before the follow saturates. Above the ~3.2Nm
+    where handsOnLevel trips there is no point, and no margin.
+    max_lat_accel: how much angle the same push buys, i.e. how light the wheel feels."""
+    self.max_torque = max(max_torque, STEER_OVERRIDE_MIN_TORQUE + 0.1)
+    self.max_lat_accel = max(max_lat_accel, 0.1)
+
+  @property
+  def torque_range(self) -> float:
+    return self.max_torque - STEER_OVERRIDE_MIN_TORQUE
 
   def apply_override_angle_direct(self, lat_active: bool, driver_torque: float, v_ego: float,
                                   VM: VehicleModel) -> float:
@@ -116,7 +131,7 @@ class CoopSteeringCarController:
     if not lat_active:
       return 0.0
     torque = apply_deadzone(driver_torque, STEER_OVERRIDE_MIN_TORQUE)
-    return calc_override_angle_limited(torque, v_ego, VM, STEER_OVERRIDE_MAX_LAT_ACCEL)
+    return calc_override_angle_limited(torque, v_ego, VM, self.max_lat_accel, self.torque_range)
 
   def apply_override_angle_relative(self, lat_active: bool, driver_torque: float, v_ego: float,
                                     VM: VehicleModel, unwind_weight: float = 1.0) -> float:
@@ -144,7 +159,8 @@ class CoopSteeringCarController:
     building = (torque_biased * self.override_angle_accu) > 0
     delta = calc_override_angle_delta_limited(
       torque_biased, v_ego, VM,
-      STEER_OVERRIDE_MAX_LAT_JERK if building else STEER_OVERRIDE_MAX_LAT_JERK_CENTERING)
+      STEER_OVERRIDE_MAX_LAT_JERK if building else STEER_OVERRIDE_MAX_LAT_JERK_CENTERING,
+      self.torque_range)
 
     new_accu = self.override_angle_accu + delta
     # snap to zero rather than crawl past it once the driver is back inside the deadzone
@@ -161,9 +177,9 @@ class CoopSteeringCarController:
       return 0.0
 
     # how much of the wanted lateral accel the direct map can actually reach at this speed
-    direct_capability = (calc_override_angle_limited(STEER_OVERRIDE_TORQUE_RANGE, v_ego, VM,
-                                                    STEER_OVERRIDE_MAX_LAT_ACCEL) /
-                         get_steer_from_lat_accel(STEER_OVERRIDE_MAX_LAT_ACCEL, v_ego, VM))
+    direct_capability = (calc_override_angle_limited(self.torque_range, v_ego, VM,
+                                                    self.max_lat_accel, self.torque_range) /
+                         get_steer_from_lat_accel(self.max_lat_accel, v_ego, VM))
     relative_weight = 1.0 - direct_capability
 
     direct = self.apply_override_angle_direct(lat_active, driver_torque, v_ego, VM)

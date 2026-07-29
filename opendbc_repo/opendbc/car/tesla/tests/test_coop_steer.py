@@ -133,6 +133,32 @@ def test_resume_starts_from_the_wheel_not_the_old_target():
   assert out < first, "target should still be converging"
 
 
+def test_tuning_changes_how_far_the_same_push_goes():
+  vm = _vm()
+  light = CoopSteeringCarController()
+  light.set_tuning(STEER_OVERRIDE_MAX_TORQUE, 2.0)
+  heavy = CoopSteeringCarController()
+  heavy.set_tuning(STEER_OVERRIDE_MAX_TORQUE, 1.0)
+
+  assert _settle(light, vm, torque=1.5) > _settle(heavy, vm, torque=1.5), \
+    "more lateral accel per Nm should feel lighter"
+
+
+def test_tuning_cannot_collapse_the_torque_range():
+  # a max at or under the deadzone would divide by ~zero in the gain calculation
+  coop = CoopSteeringCarController()
+  coop.set_tuning(STEER_OVERRIDE_MIN_TORQUE, 1.5)
+  assert coop.torque_range > 0
+  coop.set_tuning(-5.0, -5.0)
+  assert coop.torque_range > 0 and coop.max_lat_accel > 0
+
+
+def test_defaults_are_the_measured_values():
+  coop = CoopSteeringCarController()
+  assert coop.max_torque == pytest.approx(STEER_OVERRIDE_MAX_TORQUE)
+  assert coop.torque_range == pytest.approx(STEER_OVERRIDE_MAX_TORQUE - STEER_OVERRIDE_MIN_TORQUE)
+
+
 # ---- stock autopark: openpilot has to go silent, not just let panda block it ----
 
 class _FakeOut:

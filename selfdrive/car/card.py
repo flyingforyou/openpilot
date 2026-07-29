@@ -125,11 +125,17 @@ class Car:
         if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
           cfg.safetyParam |= TeslaSafetyFlags.STOCK_AUTOPARK.value
 
-    # Cooperative steering: a wheel takeover pauses lateral instead of disengaging everything.
-    # CarState reads CP.flags every frame and CarState holds this same object, so setting it
-    # here reaches the car port; it is also what gets serialized to the CarParams param below.
+    # Cooperative steering: openpilot shifts its angle target toward the driver instead of
+    # letting go of the wheel, so a takeover never has to push hard enough for the EPS to
+    # inhibit. CarState reads CP.flags every frame off this same object.
     if self.CP.brand == "tesla" and self.params.get_bool("TeslaCoopSteer"):
       self.CP.flags |= TeslaFlags.COOP_STEER.value
+      # the two numbers are read here rather than in the car port, which has no access to params
+      if self.CI.CC is not None and hasattr(self.CI.CC, "coop_steer"):
+        self.CI.CC.coop_steering = True
+        self.CI.CC.coop_steer.set_tuning(
+          int(self.params.get("TeslaCoopMaxTorqueCNm", return_default=True) or 250) / 100.0,
+          int(self.params.get("TeslaCoopLatAccelCms", return_default=True) or 150) / 100.0)
 
     if self.CP.secOcRequired:
       # Copy user key if available
