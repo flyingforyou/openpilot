@@ -24,6 +24,18 @@ static bool tesla_legacy_longitudinal = false;
 static bool tesla_legacy_stock_lkas = false;
 static bool tesla_legacy_stock_lkas_prev = false;
 
+// Stock autopark (HW1). Off unless the car port opts in, since letting the stock module steer
+// means opening the forwarding gate on DAS_steeringControl for a system we can't bound.
+static bool tesla_legacy_allow_stock_autopark = false;
+static bool tesla_legacy_stock_autopark = false;
+// The maneuver is announced late: on a recorded attempt DAS_steeringControl went to
+// ANGLE_CONTROL a full 2.0s before DAS_accState ever reached an APC state, so waiting for the
+// APC state would swallow that entire opening. The steering command itself is the early signal,
+// and unlike AutopilotStatus it is already an rx-checked message -- only whitelisted addresses
+// reach this hook, and making a 2Hz status message required to engage is not worth it.
+static bool tesla_legacy_autopark_steering = false;  // stock ANGLE_CONTROL on the camera bus
+static bool tesla_legacy_autopark_active = false;    // DAS_accState in the APC range
+
 static void tesla_legacy_rx_hook(const CANPacket_t *msg) {
 
   // Steering angle: (0.1 * val) - 819.2 in deg.
@@ -76,7 +88,12 @@ static void tesla_legacy_rx_hook(const CANPacket_t *msg) {
     if ((tesla_external_panda || tesla_hw1) && msg->addr == das_control_msg) {
       // "AEB_ACTIVE"
       tesla_legacy_stock_aeb = (msg->data[2] & 0x03U) == 1U;
+
+      // DAS_accState, APC_BACKWARD through APC_SELFPARK_START
+      const int das_acc_state = (msg->data[1] >> 4) & 0x0FU;
+      tesla_legacy_autopark_active = (das_acc_state >= 5) && (das_acc_state <= 11);
     }
+
 
     // DAS_steeringControl
     if (!tesla_external_panda && msg->addr == 0x488U) {
@@ -91,7 +108,14 @@ static void tesla_legacy_rx_hook(const CANPacket_t *msg) {
         tesla_legacy_stock_lkas = false;
       }
       tesla_legacy_stock_lkas_prev = tesla_legacy_stock_lkas_now;
+
+      tesla_legacy_autopark_steering = steering_control_type == 1;  // "ANGLE_CONTROL"
     }
+
+    // Never hand the car over mid-drive: openpilot wins while it is engaged, and the stock
+    // module only gets the bus back once controls are no longer allowed.
+    tesla_legacy_stock_autopark = tesla_legacy_allow_stock_autopark && !controls_allowed &&
+                                  (tesla_legacy_autopark_steering || tesla_legacy_autopark_active);
   }
 }
 
@@ -141,6 +165,12 @@ static bool tesla_legacy_tx_hook(const CANPacket_t *msg) {
       // Don't allow any steering commands when stock LKAS is active
       violation = true;
     }
+
+    if (tesla_legacy_stock_autopark) {
+      // The stock module is steering the car through the maneuver; two angle sources on the
+      // bus at once is worse than neither
+      violation = true;
+    }
   }
 
   // DAS_control: longitudinal control message
@@ -161,6 +191,11 @@ static bool tesla_legacy_tx_hook(const CANPacket_t *msg) {
 
     // Don't send long/cancel messages when the stock AEB system is active
     if (tesla_legacy_stock_aeb) {
+      violation = true;
+    }
+
+    // Same for autopark, which drives the car longitudinally through the maneuver
+    if (tesla_legacy_stock_autopark) {
       violation = true;
     }
 
@@ -194,7 +229,7 @@ static bool tesla_legacy_fwd_hook(int bus_num, int addr) {
     }
 
     // DAS_steeringControl
-    if (!tesla_external_panda && (addr == 0x488U) && !tesla_legacy_stock_lkas) {
+    if (!tesla_external_panda && (addr == 0x488U) && !tesla_legacy_stock_lkas && !tesla_legacy_stock_autopark) {
       block_msg = true;
     }
 
@@ -202,9 +237,11 @@ static bool tesla_legacy_fwd_hook(int bus_num, int addr) {
     // DAS_control. Only openpilot longitudinal replaces this message; otherwise the factory ACC
     // module's frames must reach the car, or it loses TACC and Autopilot along with it. Scoped to
     // HW1: the external-panda configs drive longitudinal through the second panda without ever
-    // carrying TESLA_FLAG_LONG_CONTROL, so they must keep blocking unconditionally.
+    // carrying TESLA_FLAG_LONG_CONTROL, so they must keep blocking unconditionally. Stock autopark
+    // borrows the same id for the maneuver, so it opens the gate too.
     const bool op_owns_das_control = tesla_external_panda || (tesla_hw1 && tesla_legacy_longitudinal);
-    if (op_owns_das_control && (addr == das_control_msg) && !tesla_legacy_stock_aeb) {
+    if (op_owns_das_control && (addr == das_control_msg) &&
+        !tesla_legacy_stock_aeb && !tesla_legacy_stock_autopark) {
       block_msg = true;
     }
   }
@@ -218,6 +255,7 @@ static safety_config tesla_legacy_init(uint16_t param) {
   const int TESLA_FLAG_HW1 = 8;
   const int TESLA_FLAG_HW2 = 16;
   const int TESLA_FLAG_HW3 = 32;
+  const int TESLA_FLAG_STOCK_AUTOPARK = 64;
 
   // Extract flags
   tesla_legacy_longitudinal = GET_FLAG(param, TESLA_FLAG_LONG_CONTROL);
@@ -225,11 +263,15 @@ static safety_config tesla_legacy_init(uint16_t param) {
   tesla_hw1 = GET_FLAG(param, TESLA_FLAG_HW1);
   tesla_hw2 = GET_FLAG(param, TESLA_FLAG_HW2);
   tesla_hw3 = GET_FLAG(param, TESLA_FLAG_HW3);
+  tesla_legacy_allow_stock_autopark = GET_FLAG(param, TESLA_FLAG_STOCK_AUTOPARK) && tesla_hw1;
 
   // Initialize state variables
   tesla_legacy_stock_aeb = false;
   tesla_legacy_stock_lkas = false;
   tesla_legacy_stock_lkas_prev = false;
+  tesla_legacy_stock_autopark = false;
+  tesla_legacy_autopark_steering = false;
+  tesla_legacy_autopark_active = false;
   chassis_bus = 0U;
   di_torque1_msg = 0x106U;
 

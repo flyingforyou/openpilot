@@ -220,6 +220,18 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
     self.assertEqual(0, self.safety.safety_fwd_hook(2, aeb_msg_cam.addr))
     self.assertFalse(self._tx(no_aeb_msg))
 
+  def _stock_steering_msg(self):
+    """The stock module commanding angle on the camera bus, as it does through autopark."""
+    return self._angle_cmd_msg(0, state=self.steer_control_types['ANGLE_CONTROL'], bus=2)
+
+  def test_stock_autopark_blocked_unless_opted_in(self):
+    # Default HW1 config has no autopark flag, so the stock module stays gated exactly as before
+    self._rx(self._stock_steering_msg())
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_SELFPARK_START'], bus=2))
+
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_Control_HW1))
+
   def test_prevent_reverse(self):
     # Test reverse prevention logic - use the same test as modern Tesla
     self.safety.set_controls_allowed(True)
@@ -310,6 +322,92 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
 
         # Recover
         self.assertTrue(self._tx(self._angle_cmd_msg(0, True)))
+
+
+class TestTeslaHW1StockAutoparkSafety(TestTeslaHW1Safety):
+  """HW1 with the stock autopark opt-in. Inherits the whole suite so enabling it has to leave
+  every other safety property intact."""
+
+  def setUp(self):
+    super().setUp()
+    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy,
+                                 int(TeslaSafetyFlags.FLAG_HW1 | TeslaSafetyFlags.LONG_CONTROL |
+                                     TeslaSafetyFlags.STOCK_AUTOPARK))
+    self.safety.init_tests()
+
+  def _assert_ap1_forwarded(self, forwarded: bool):
+    expected = 0 if forwarded else -1
+    self.assertEqual(expected, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self.assertEqual(expected, self.safety.safety_fwd_hook(2, MSG_DAS_Control_HW1))
+
+  def test_stock_autopark_blocked_unless_opted_in(self):
+    # Overrides the base case: this class is the opted-in one, so the same traffic opens the gate
+    self._rx(self._stock_steering_msg())
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_SELFPARK_START'], bus=2))
+    self._assert_ap1_forwarded(True)
+
+  def test_stock_lkas_passthrough(self):
+    # Same intent as the base test, but it uses state=True -- which is ANGLE_CONTROL, the very
+    # command autopark steers with -- to stand for "idle". Once opted in that is no longer idle,
+    # so the quiet case has to be a genuine NONE.
+    # Stays disengaged throughout: the stock LKAS latch only arms on a rising edge while
+    # controls are not allowed.
+    op_msg = self._angle_cmd_msg(0, state=self.steer_control_types['NONE'])
+    idle_cam = self._angle_cmd_msg(0, state=self.steer_control_types['NONE'], bus=2)
+    lkas_cam = self._angle_cmd_msg(0, state=self.steer_control_types['LANE_KEEP_ASSIST'], bus=2)
+
+    self.assertEqual(1, self._rx(idle_cam))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, idle_cam.addr))
+    self.assertTrue(self._tx(op_msg))
+
+    self.assertEqual(1, self._rx(lkas_cam))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, lkas_cam.addr))
+    self.assertFalse(self._tx(op_msg))
+
+  def test_idle_stock_system_is_still_gated(self):
+    self._rx(self._angle_cmd_msg(0, state=self.steer_control_types['NONE'], bus=2))
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['ACC_CANCEL_GENERIC'], bus=2))
+    self._assert_ap1_forwarded(False)
+
+  def test_steering_before_apc_state_opens_the_gate(self):
+    # Why the APC state alone is not enough: on a recorded attempt the stock module steered for
+    # 2.0s while DAS_accState still read a non-APC value. Gating on APC would drop all of it.
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['ACC_CANCEL_GENERIC'], bus=2))
+    self._rx(self._stock_steering_msg())
+    self._assert_ap1_forwarded(True)
+
+  def test_apc_states_open_the_gate(self):
+    for state in ('APC_BACKWARD', 'APC_FORWARD', 'APC_COMPLETE', 'APC_ABORT', 'APC_PAUSE',
+                  'APC_UNPARK_COMPLETE', 'APC_SELFPARK_START'):
+      with self.subTest(state=state):
+        self._rx(self._angle_cmd_msg(0, state=self.steer_control_types['NONE'], bus=2))
+        self._rx(self._long_control_msg(0, acc_state=self.acc_states[state], bus=2))
+        self._assert_ap1_forwarded(True)
+
+  def test_non_apc_acc_states_keep_the_gate_shut(self):
+    for state in ('ACC_CANCEL_GENERIC', 'ACC_HOLD', 'ACC_ON', 'ACC_CANCEL_GENERIC_SILENT', 'FAULT_SNA'):
+      with self.subTest(state=state):
+        self._rx(self._angle_cmd_msg(0, state=self.steer_control_types['NONE'], bus=2))
+        self._rx(self._long_control_msg(0, acc_state=self.acc_states[state], bus=2))
+        self._assert_ap1_forwarded(False)
+
+  def test_openpilot_engaged_takes_the_bus_back(self):
+    self._rx(self._stock_steering_msg())
+    self._assert_ap1_forwarded(True)
+
+    # engaging must close the gate again on the next stock message
+    self.safety.set_controls_allowed(True)
+    self._rx(self._stock_steering_msg())
+    self._assert_ap1_forwarded(False)
+
+  def test_openpilot_cannot_command_during_stock_autopark(self):
+    self._rx(self._stock_steering_msg())
+    self.safety.set_controls_allowed(True)
+
+    # controls_allowed alone doesn't clear the flag until a stock message re-evaluates it, and
+    # for as long as it is set openpilot must not add a second command to the bus
+    self.assertFalse(self._tx(self._angle_cmd_msg(0, state=self.steer_control_types['ANGLE_CONTROL'])))
+    self.assertFalse(self._tx(self._long_control_msg(10, accel_limits=(0, 0))))
 
 
 class TestTeslaHW1StockLongSafety(TestTeslaHW1Safety):

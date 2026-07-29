@@ -136,6 +136,13 @@ class Car:
     if self.CP.brand == "tesla" and self.params.get_bool("TeslaCoopSteer"):
       self.CP.flags |= TeslaFlags.COOP_STEER.value
 
+    # Let the stock HW1 autopark module drive while openpilot is disengaged. Panda ignores the
+    # flag on anything but teslaLegacy HW1, but the toggle is only meaningful there anyway.
+    if not self.CP.passive and self.params.get_bool("TeslaStockAutopark"):
+      for cfg in self.CP.safetyConfigs:
+        if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
+          cfg.safetyParam |= TeslaSafetyFlags.STOCK_AUTOPARK.value
+
     if self.CP.secOcRequired:
       # Copy user key if available
       try:
