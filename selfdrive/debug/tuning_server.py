@@ -65,6 +65,13 @@ SETTINGS = {
             "카메라와 모델은 그대로 돌아가므로 녹화는 유지되고, 전력 절감 효과는 없습니다.",
     "options": [(0, "사용 안 함 (기본)"), (1, "우회")],
   },
+  "TeslaStockAutopark": {
+    "label": "순정 오토파크 허용", "type": "bool",
+    "help": "openpilot이 해제된 동안 순정 AP1의 조향·가감속 메시지를 차로 통과시킵니다. "
+            "오토파크가 동작하게 되지만, 순정 오토스티어 조향도 함께 통과합니다. "
+            "openpilot이 작동 중일 때는 항상 차단됩니다. 변경 후 재시동이 필요합니다.",
+    "options": [(0, "차단 (기본)"), (1, "통과")],
+  },
   "LongitudinalPersonality": {
     "label": "Driving personality", "type": "int",
     "help": "Gap 신호가 없을 때의 기본 추종 시간입니다.",

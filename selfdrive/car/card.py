@@ -17,6 +17,7 @@ from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
+from opendbc.car.tesla.values import TeslaSafetyFlags
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 
@@ -116,6 +117,13 @@ class Car:
       safety_config = structs.CarParams.SafetyConfig()
       safety_config.safetyModel = structs.CarParams.SafetyModel.noOutput
       self.CP.safetyConfigs = [safety_config]
+
+    # Let the stock HW1 autopark module drive while openpilot is disengaged. Panda ignores the
+    # flag on anything but teslaLegacy HW1, but the toggle is only meaningful there anyway.
+    if not self.CP.passive and self.params.get_bool("TeslaStockAutopark"):
+      for cfg in self.CP.safetyConfigs:
+        if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
+          cfg.safetyParam |= TeslaSafetyFlags.STOCK_AUTOPARK.value
 
     if self.CP.secOcRequired:
       # Copy user key if available
