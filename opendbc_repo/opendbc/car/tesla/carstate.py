@@ -22,9 +22,9 @@ TESLA_DTR_RAW_TO_GAP = {
 }
 
 
-# Panda hands the bus back 1.0s after the stock module stops asking; openpilot has to stay quiet
+# Panda hands the bus back 200ms after the stock module stops asking; openpilot has to stay quiet
 # at least that long, so hold a little past it. carState runs at 100Hz.
-STOCK_AUTOPARK_HOLD_FRAMES = 120
+STOCK_AUTOPARK_HOLD_FRAMES = 30
 
 
 def decode_tesla_gap(raw_gap: int) -> int:

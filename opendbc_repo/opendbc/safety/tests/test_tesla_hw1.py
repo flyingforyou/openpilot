@@ -402,8 +402,9 @@ class TestTeslaHW1StockAutoparkSafety(TestTeslaHW1Safety):
     self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_BACKWARD'], bus=2))
     self._assert_ap1_forwarded(True)
 
-    # the module keeps sending on the id, but not every frame carries an APC state
-    for us in (20_000, 100_000, 500_000, 900_000):
+    # the module keeps sending on the id, but not every frame carries an APC state. The largest
+    # recorded gap between two of its requests was 44ms.
+    for us in (20_000, 60_000, 120_000, 190_000):
       self.safety.set_timer(us)
       self._rx(self._quiet_stock_msg())
       self._assert_ap1_forwarded(True)
@@ -413,18 +414,26 @@ class TestTeslaHW1StockAutoparkSafety(TestTeslaHW1Safety):
     self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_BACKWARD'], bus=2))
     self._assert_ap1_forwarded(True)
 
-    self.safety.set_timer(1_000_001)
+    self.safety.set_timer(200_001)
     self._rx(self._quiet_stock_msg())
     self._assert_ap1_forwarded(False)
+
+  def test_timeout_has_real_margin_over_the_recorded_gaps(self):
+    # 44ms was the worst gap; anything near that would fragment the session again
+    self.safety.set_timer(0)
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_FORWARD'], bus=2))
+    self.safety.set_timer(150_000)
+    self._rx(self._quiet_stock_msg())
+    self._assert_ap1_forwarded(True)
 
   def test_a_refresh_extends_the_session(self):
     self.safety.set_timer(0)
     self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_FORWARD'], bus=2))
-    self.safety.set_timer(900_000)
+    self.safety.set_timer(180_000)
     self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_FORWARD'], bus=2))
 
     # without the refresh this would already be past the timeout
-    self.safety.set_timer(1_500_000)
+    self.safety.set_timer(300_000)
     self._rx(self._quiet_stock_msg())
     self._assert_ap1_forwarded(True)
 
