@@ -101,8 +101,10 @@ class CarState(CarStateBase):
     self.das_control = None
     self.cruise_gap = 0
 
-  def update_autopark_state(self, autopark_state: str, cruise_enabled: bool):
-    autopark_now = autopark_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED")
+  def update_autopark_state(self, autopark_now: bool, cruise_enabled: bool):
+    # Takes the decoded "the park module has the car" boolean rather than the signal it came
+    # from, so both car generations can share the latch. Model 3/Y read DI_autoparkState off
+    # DI_state; the legacy DI_state has no such field, so HW1 derives it from AutopilotStatus.
     if autopark_now and not self.autopark_prev and not self.cruise_enabled_prev:
       self.autopark = True
     if not autopark_now:
@@ -154,7 +156,7 @@ class CarState(CarStateBase):
 
     autopark_state = self.can_define.dv["DI_state"]["DI_autoparkState"].get(int(cp_party.vl["DI_state"]["DI_autoparkState"]), None)
     cruise_enabled = cruise_state in ("ENABLED", "STANDSTILL", "OVERRIDE", "PRE_FAULT", "PRE_CANCEL")
-    self.update_autopark_state(autopark_state, cruise_enabled)
+    self.update_autopark_state(autopark_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED"), cruise_enabled)
 
     # Match panda safety cruise engaged logic
     ret.cruiseState.enabled = cruise_enabled and not self.autopark
@@ -263,14 +265,28 @@ class CarState(CarStateBase):
     # read by the car controller to drop the angle command while the driver is turning
     self.high_angle_rate_safety = steer.high_angle_rate_safety
 
+    # Stock autopark, read before cruise because it gates it. Model 3/Y get DI_autoparkState
+    # straight off DI_state; the legacy DI_state carries no autopark field at all, so the
+    # closest equivalent is the park module's own offer on AutopilotStatus. Raven (Model S HW3)
+    # uses a party DBC without that message, so it never reports the maneuver.
+    autopark_offered = False
+    if self.CP.carFingerprint != CAR.TESLA_MODEL_S_HW3:
+      autopilot_status = cp_ap_party.vl["AutopilotStatus"]
+      autopark_offered = (int(autopilot_status["DAS_autoparkReady"]) == 1 or
+                          int(autopilot_status["DAS_autoparkWaitingForBrake"]) == 1)
+
     # Cruise state
     cruise_state = self.can_defines["DI_state"]["DI_cruiseState"].get(int(cp_chassis.vl["DI_state"]["DI_cruiseState"]), None)
     speed_units = self.can_defines["DI_state"]["DI_speedUnits"].get(int(cp_chassis.vl["DI_state"]["DI_speedUnits"]), None)
 
     cruise_enabled = cruise_state in ("ENABLED", "STANDSTILL", "OVERRIDE", "PRE_FAULT", "PRE_CANCEL")
+    self.update_autopark_state(autopark_offered, cruise_enabled)
 
-    # Match panda safety cruise engaged logic
-    ret.cruiseState.enabled = cruise_enabled
+    # Match panda safety cruise engaged logic. Autopark drives the car through the ACC channel,
+    # so the car reports cruise enabled the moment the maneuver starts. Taking that at face value
+    # made openpilot ask to cancel the cruise the park module was using and try to engage itself
+    # in reverse; both came off this one signal.
+    ret.cruiseState.enabled = cruise_enabled and not self.autopark
     if speed_units == "KPH":
       ret.cruiseState.speed = max(cp_chassis.vl["DI_state"]["DI_digitalSpeed"] * CV.KPH_TO_MS, 1e-3)
     elif speed_units == "MPH":
@@ -327,13 +343,9 @@ class CarState(CarStateBase):
 
     das_left_blindspot = False
     das_right_blindspot = False
-    autopark_offered = False
     if self.CP.carFingerprint != CAR.TESLA_MODEL_S_HW3:
-      autopilot_status = cp_ap_party.vl["AutopilotStatus"]
       das_left_blindspot = int(autopilot_status["DAS_blindSpotRearLeft"]) in (1, 2)
       das_right_blindspot = int(autopilot_status["DAS_blindSpotRearRight"]) in (1, 2)
-      autopark_offered = (int(autopilot_status["DAS_autoparkReady"]) == 1 or
-                          int(autopilot_status["DAS_autoparkWaitingForBrake"]) == 1)
 
     ret.leftBlindspot = park_left_blindspot or das_left_blindspot
     ret.rightBlindspot = park_right_blindspot or das_right_blindspot
