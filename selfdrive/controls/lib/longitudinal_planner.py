@@ -12,7 +12,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
-from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
+from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, MAX_LATERAL_ACCEL_NO_ROLL
 from openpilot.selfdrive.controls.lib.curve_speed.curve_speed_controller import CurveSpeedController
 from openpilot.selfdrive.controls.lib.curve_speed.lateral_load_governor import LateralLoadGovernor
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -98,6 +98,15 @@ class LongitudinalPlanner:
     launch_cms = int(self.params.get("LaunchAccelCms", return_default=True) or 160)
     self.launch_accel = min(launch_cms / 100.0, ACCEL_MAX)
     self.mpc.set_tuning(gap_profile, rise_pct / 100.0, stop_cm / 100.0)
+
+    # Curve-speed lateral-accel budget: how hard the car loads the steering in curves. Clamped
+    # below the LateralLoadGovernor ceiling (MAX_LATERAL_ACCEL_NO_ROLL = 3.0) so the reactive
+    # backstop keeps its headroom regardless of what the driver picks. A value <= 0 turns the whole
+    # curve-speed feature off -- both the feedforward profile and the reactive lateral-load governor.
+    curve_cms = int(self.params.get("CurveSpeedLatAccelCms", return_default=True) or 220)
+    curve_on = curve_cms > 0
+    self.curve.set_tuning(min(max(curve_cms, 1) / 100.0, MAX_LATERAL_ACCEL_NO_ROLL - 0.4), enabled=curve_on)
+    self.governor.set_enabled(curve_on)
 
   @staticmethod
   def parse_model(model_msg):

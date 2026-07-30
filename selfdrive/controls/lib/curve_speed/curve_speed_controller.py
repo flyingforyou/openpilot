@@ -42,6 +42,7 @@ class CurveState(IntEnum):
 
 class CurveSpeedController:
   def __init__(self):
+    self.enabled = True    # feature toggle (CurveSpeedLatAccelCms == 0 turns it off); see set_tuning()
     self.long_enabled = False
     self.long_override = False
     self.is_enabled = False
@@ -53,6 +54,7 @@ class CurveSpeedController:
     self.v_cruise_setpoint = V_UNSET
     self.v_target = V_UNSET
     self.a_lat_max = A_LAT_MAX
+    self.a_lat_max_cfg = A_LAT_MAX  # tunable budget (CurveSpeedLatAccelCms); see set_tuning()
 
     self.output_v_target = V_UNSET
     self.output_a_target = 0.
@@ -97,6 +99,14 @@ class CurveSpeedController:
     active = self.state in (CurveState.slowing, CurveState.curve)
     return enabled, active
 
+  def set_tuning(self, a_lat_max: float, enabled: bool = True) -> None:
+    """Set the lateral-accel budget the feedforward plans to. Higher lets the car carry more speed
+    through curves (slows later/less); lower slows earlier/more. Kept below the governor ceiling
+    (MAX_LATERAL_ACCEL_NO_ROLL) by the caller so the reactive backstop still has room. enabled=False
+    turns the feedforward off entirely -- it stops constraining speed (returns V_UNSET)."""
+    self.a_lat_max_cfg = a_lat_max
+    self.enabled = enabled
+
   def get_v_target_from_control(self) -> float:
     return self.v_target if self.is_active else V_UNSET
 
@@ -113,7 +123,16 @@ class CurveSpeedController:
     self.a_ego = a_ego
     self.v_cruise_setpoint = v_cruise if v_cruise > 0 else V_UNSET
 
-    self.a_lat_max = A_LAT_MAX
+    if not self.enabled:
+      self.v_target = V_UNSET
+      self.state = CurveState.disabled
+      self.is_enabled = False
+      self.is_active = False
+      self.output_v_target = V_UNSET
+      self.output_a_target = a_ego
+      return
+
+    self.a_lat_max = self.a_lat_max_cfg
     if self.long_enabled:
       self._plan(sm)
     else:

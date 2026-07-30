@@ -36,6 +36,7 @@ V_TARGET_FLOOR = 2.0    # m/s
 class LateralLoadGovernor:
   def __init__(self):
     self.ceiling = A_LAT_CEILING
+    self.enabled = True    # feature toggle; set False to disable the reactive backstop entirely
 
     self.long_enabled = False
     self.long_override = False
@@ -66,11 +67,14 @@ class LateralLoadGovernor:
 
     return a_lat, saturated
 
+  def set_enabled(self, enabled: bool) -> None:
+    self.enabled = enabled
+
   def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float) -> None:
     self.long_enabled = long_enabled
     self.long_override = long_override
 
-    if not long_enabled or long_override:
+    if not self.enabled or not long_enabled or long_override:
       self.is_active = False
       self.output_v_target = V_UNSET
       self.load = 0.
@@ -94,7 +98,7 @@ class LateralLoadGovernor:
   def throttle_scale(self) -> float:
     """[0, 1] multiplier the planner applies to any *positive* a_target: fade throttle as load nears
     the limit, hard-zero while actually running wide."""
-    if not self.long_enabled or self.long_override:
+    if not self.enabled or not self.long_enabled or self.long_override:
       return 1.0
     if self.running_wide:
       return 0.0
