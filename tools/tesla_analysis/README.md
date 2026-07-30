@@ -33,6 +33,7 @@ so they cannot be piped.
 | `window.py <from> <to> <seg>...` | Everything that happened between two timestamps, in order. The workhorse for pinning down a 0.1s cause |
 | `who_sends.py <from> <to> <route>` | Which module put which frames on which bus. Finds two masters writing one arbitration id |
 | `scan_can.py <seg>...` | Every (bus, address) seen, with rates. Start here on an unfamiliar bus |
+| `find_battery.py <seg>...` | Brute-forces every bit field on a bus looking for pack current/voltage (they track motor torque) and SOC/energy (slow one-way drift). For when no DBC names the BMS |
 | `torque_measure.py <route>...` | Driver torque distribution against handsOnLevel, and the torque at which the EPS trips |
 | `inhibit_episodes.py <seg>...` | How long EPAS stayed inhibited, why, and what openpilot was doing during it |
 | `find_handson.py <seg>...` | handsOnLevel / eacStatus / eacErrorCode histograms, to find drives with real takeovers |
