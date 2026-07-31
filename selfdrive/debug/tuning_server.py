@@ -360,6 +360,8 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, PAGE_VEHICLE, 'text/html; charset=utf-8')
     if page == '/videos':
       return self._send(200, PAGE_VIDEO, 'text/html; charset=utf-8')
+    if page == '/guide':
+      return self._send(200, PAGE_GUIDE, 'text/html; charset=utf-8')
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
 
   def do_POST(self):
@@ -654,6 +656,12 @@ border:1px solid var(--line);color:var(--mut)}
   <div class="st"><span class="pill" id="p-eng">–</span><span class="pill" id="p-lead">–</span></div>
 </a>
 
+<a class="card" href="/guide">
+  <div class="t">설명 · 튜닝 옵션이 뭘 바꾸나</div>
+  <div class="d">저속 추종·커브 감속 옵션이 실제로 무엇을 바꾸는지 쉬운 비유로 설명하고,
+    옵션별 캐치포인트(언제 켜고, 뭘 보고, 뭘 조심할지)를 정리했습니다.</div>
+</a>
+
 <a class="card" href="/vehicle">
   <div class="t">차량 · 상태 한눈에</div>
   <div class="d">기어·속도·문·안전벨트·서스펜션 차고처럼 지금 차가 어떤 상태인지를
@@ -712,6 +720,102 @@ async function once(){
 }
 once();tick();setInterval(tick,1000);
 </script></body></html>"""
+
+
+PAGE_GUIDE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>설명 · 튜닝 옵션</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--ok:#4CC38A;--warn:#F5B942;--bad:#E5484D;--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--ok:#1B7F53;--warn:#9A6210;--bad:#C42B30}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);
+padding:22px;padding-bottom:calc(30px + env(safe-area-inset-bottom));max-width:760px;margin-inline:auto}
+.back{display:inline-block;font-family:var(--m);font-size:11px;color:var(--dim);text-decoration:none;margin-bottom:10px}
+.back:hover{color:var(--radar)}
+h1{font-size:19px;margin:0 0 3px}
+.sub{font-size:12.5px;color:var(--mut);line-height:1.55;margin-bottom:18px}
+h2{font-size:15.5px;margin:22px 0 9px;color:var(--radar)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 15px;margin:11px 0}
+.card .lab{font-size:11px;font-family:var(--m);color:var(--dim);letter-spacing:.04em;margin-bottom:8px}
+.blk{margin:8px 0}
+.blk .t{font-size:12.5px;color:var(--mut);margin-bottom:3px}
+p{margin:5px 0;font-size:14px;line-height:1.6}
+.vs{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;font-size:13.5px;margin:6px 0}
+.vs .w{color:var(--dim);font-family:var(--m);font-size:11px;padding-top:2px}
+ul{margin:6px 0 4px;padding-left:20px}li{margin:4px 0;font-size:13.5px;line-height:1.55}
+b.ok{color:var(--ok)}b.warn{color:var(--warn)}b.bad{color:var(--bad)}
+code{font-family:var(--m);background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+.em{color:var(--radar)}
+</style></head><body>
+<a class="back" href="/">← 메뉴</a>
+<h1>튜닝 옵션이 뭘 바꾸나</h1>
+<div class="sub">openpilot이 앞차를 따라가는 건 = 네가 <b>줄 서서 앞사람 뒤를 걷는 것</b>과 똑같아. 이 비유로 설명할게.
+옵션은 안 켜면 예전과 100% 동일하니 하나씩 켜봐.</div>
+
+<h2>1. 기어가는 앞차 따라가기 <code>LeadCreepFollowCms</code></h2>
+<div class="card">
+  <div class="lab">줄이 아주 조금씩 앞으로 갈 때</div>
+  <div class="vs">
+    <div class="w">예전</div><div>앞사람이 찔끔 움직여도 나는 <b>완전히 멈춰 섰다가</b>, 좀 멀어지면 <b>후다닥 따라붙어.</b> → 섰다 붙었다 덜컹덜컹.</div>
+    <div class="w">지금</div><div>앞사람이 계속 조금씩 움직이면 나도 <b class="em">같이 살살 걸어가.</b> 앞사람이 진짜 딱 멈추면 그때 나도 멈춤.</div>
+  </div>
+  <div class="blk"><div class="t">한 줄 로직</div>
+  <p>예전엔 "내가 갈 속도가 거의 0이네 → <b>완전 멈춤 확정!</b>" 스위치가 앞차가 움직이든 말든 눌려버렸어.
+  지금은 "앞차가 아직 이 속도 이상으로 굴러가면 → <b>멈춤 스위치 누르지 마</b>" 조건을 붙인 거야.</p></div>
+  <div class="blk"><div class="t">캐치포인트</div><ul>
+    <li><b class="ok">✅ 정체·가다서다에서 효과 최고.</b> "섰다 크립으로 따라잡기" 덜컹임이 사라짐.</li>
+    <li><b class="warn">⚠️ 숫자 = 문턱 속도.</b> 낮을수록(0.30) 아주 느린 기어감까지 따라가고, 높을수록(0.80) 어지간히 움직여야 따라감.</li>
+    <li><b class="bad">🚨 앞차가 진짜 멈췄는데 안 서는 느낌</b>이면 문턱을 올려(0.30→0.50). 그래도 이상하면 브레이크 밟고 off.</li>
+    <li>실제 브레이크 세기는 그대로라 <b>앞차에 박는 위험은 없음.</b> "완전 정지 잠금"만 뺀 거.</li>
+  </ul></div>
+</div>
+
+<h2>2. 앞차 움직임 따라 차간 조절 <code>DynamicTFollowGain</code></h2>
+<div class="card">
+  <div class="lab">앞사람 걸음이 바뀌는 순간에 간격을 잠깐 조절</div>
+  <div class="vs">
+    <div class="w">빨라짐</div><div>앞사람이 <b>갑자기 빨라지면</b> 간격을 살짝 <b class="em">좁혀서</b> 민첩하게 따라붙어.</div>
+    <div class="w">느려짐</div><div>앞사람이 <b>갑자기 느려지면</b> 간격을 미리 <b class="em">벌려서</b> 급브레이크 없이 부드럽게 받아.</div>
+  </div>
+  <div class="blk"><div class="t">한 줄 로직</div>
+  <p>"앞차 속도"가 아니라 <b>"속도가 변하는 정도(급가속/급감속)"</b>를 보고 간격을 밀고 당겨.
+  정속으로 잘 갈 땐 아무 일 안 하고, <b>변화가 생기는 순간에만</b> 작동해.</p></div>
+  <div class="blk"><div class="t">캐치포인트</div><ul>
+    <li><b class="ok">✅ 재출발·감속 받아치기가 부드러워짐.</b> 1번이 "완전정지 자체"를 없앤다면, 이건 그 위에 <b>부드러움</b>을 얹는 보조.</li>
+    <li><b class="warn">⚠️ 숫자 = 조절 폭(초).</b> 클수록 더 많이 밀당함.</li>
+    <li><b class="em">🔑 일시적(과도) 효과.</b> 앞차가 일정 속도로 자리잡으면 간격은 네가 고른 Gap(1~7)으로 <b>되돌아와.</b> 정상임.</li>
+    <li>정속 고속에선 거의 체감 없음. <b>변화 잦은 저속에서 진가.</b></li>
+  </ul></div>
+</div>
+
+<h2>3. 커브 감속 강도 <code>CurveSpeedLatAccelCms</code></h2>
+<div class="card">
+  <div class="lab">코너를 미리 보고 얼마나 세게 파고들지</div>
+  <div class="vs">
+    <div class="w">낮게</div><div>코너에서 <b>일찍·많이 감속</b> — 편안, 안 쏠림.</div>
+    <div class="w">높게</div><div><b>속도 유지</b>하며 코너 통과 — 스포티, 좀 쏠림.</div>
+    <div class="w">끔</div><div>코너에서 <b class="bad">스스로 감속 안 함</b> — 내가 알아서 줄여야 함.</div>
+  </div>
+  <div class="blk"><div class="t">한 줄 로직</div>
+  <p>예전엔 "코너에서 허용하는 쏠림 정도"가 <b>고정 숫자</b>로 코드에 박혀 있었어. 그걸 밖으로 빼서 고를 수 있게 한 거야.</p></div>
+  <div class="blk"><div class="t">캐치포인트</div><ul>
+    <li><b class="em">🔑 끔을 골라도 진짜 위험한 한계는 안전장치가 따로 지킴</b> — 근데 "끔"은 그것까지 꺼서 <b>코너 전 자동 감속을 아예 안 함.</b> 직접 줄여야 함.</li>
+    <li><b class="warn">⚠️ 기본값(2.20)은 예전 그대로</b>라 안 만지면 예전과 똑같음.</li>
+    <li>감속만 조절. 가속을 더 붙여주는 기능이 아님.</li>
+  </ul></div>
+</div>
+
+<h2>공통 (전부 해당)</h2>
+<div class="card"><ul>
+  <li><b class="ok">🟢 셋 다 기본 off/기본값</b> → 안 켜면 예전과 100% 동일. 안전하게 하나씩.</li>
+  <li><b>🔄 바꾼 값은 "해제 상태에서 반영"돼야 적용됨.</b> 주행 중 목표거리가 안 튀게 일부러 그렇게 함. 값 바꾸고 반영 → 한 번 해제했다 다시 걸기.</li>
+  <li><b>🧪 한 번에 하나만</b> 바꿔서 A/B 해야 원인을 알 수 있어. (그래서 <a class="em" href="/live">Live</a>에 시나리오 버튼을 만든 것)</li>
+  <li><b class="em">🎯 1번이 네 불만("완전정지 후 크립")의 진짜 해결책</b>, 2번은 부드러움 보강. 테스트도 1번부터.</li>
+</ul></div>
+
+</body></html>"""
 
 
 PAGE_VEHICLE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
