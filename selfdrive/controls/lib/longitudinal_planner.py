@@ -25,6 +25,17 @@ ALLOW_THROTTLE_THRESHOLD = 0.4
 PARAM_REFRESH_FRAMES = int(0.5 / DT_MDL)  # params hit disk; don't read every frame
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 V_SOFT_LEAD_SPEED = 1.0  # m/s; v_soft only engages approaching a stopped/slow lead, not a moving one
+
+# Grey-zone throttle hold. radard publishes a lead only once the model's leadsV3[0].prob clears
+# 0.5, so below that the planner sees clear road and accelerates. Route 0000001b seg 10: engaged
+# with no lead, accelerated at the full 2.0 m/s^2 for 5.4s (51 -> 65 km/h) while prob crept
+# 0.01 -> 0.47 toward a STOPPED car, which was finally published at 61m closing at 17.6 m/s. The
+# decel needed then ran past ACCEL_MIN 0.5s later and the driver had to brake. Holding 51 km/h
+# would have needed only ~2.0 m/s^2. So when there is real but sub-threshold evidence of
+# something ahead, stop adding speed -- braking stays vision-gated, since the radar carries
+# in-path stationary clutter continuously and braking on it would be phantom braking.
+# The band is cheap: 0.2 <= prob < 0.5 is 2.5% of engaged driving over 148 logged minutes.
+GREY_LEAD_PROB_MAX = 0.5   # radard's publish gate; above this there is a real lead to plan against
 LEAD_CREEP_CONFIRM_TIME = 0.20      # s; reject one-frame radar velocity spikes
 LEAD_CREEP_MAX_EGO_SPEED = 2.5      # m/s; this is only a stop-and-go aid
 LEAD_CREEP_MAX_CLOSING_SPEED = 0.5  # m/s; never suppress a stop while rapidly closing
@@ -116,6 +127,7 @@ class LongitudinalPlanner:
     self.lead_creep_prev_d_rel = 0.0
     self.lead_creep_prev_v_lead_k = 0.0
     self.lead_creep_active = False
+    self.grey_lead_hold = False
     self.refresh_tuning()
 
   def refresh_tuning(self) -> None:
@@ -134,6 +146,10 @@ class LongitudinalPlanner:
     self.lead_creep_follow = int(self.params.get("LeadCreepFollowCms", return_default=True) or 0) / 100.0
     # Precise stop (paired with the velocity PID): v_soft caps the approach speed to a stopped lead.
     self.precise_stop = self.CP.brand == "tesla" and self.params.get_bool("TeslaVelocityPid")
+    # Grey-zone throttle hold: model lead probability (%) at which to stop adding speed even
+    # though radard has not published a lead yet. 0 = off.
+    self.grey_lead_prob = int(self.params.get("GreyLeadProbPct", return_default=True) or 0) / 100.0
+    self.grey_lead_accel_cap = int(self.params.get("GreyLeadAccelCapCms", return_default=True) or 0) / 100.0
 
     # Curve-speed lateral-accel budget: how hard the car loads the steering in curves. Clamped
     # below the LateralLoadGovernor ceiling (MAX_LATERAL_ACCEL_NO_ROLL = 3.0) so the reactive
@@ -143,6 +159,16 @@ class LongitudinalPlanner:
     curve_on = curve_cms > 0
     self.curve.set_tuning(min(max(curve_cms, 1) / 100.0, MAX_LATERAL_ACCEL_NO_ROLL - 0.4), enabled=curve_on)
     self.governor.set_enabled(curve_on)
+
+  def grey_lead_ahead(self, model_msg, lead) -> bool:
+    """Sub-threshold but real model evidence of something ahead, with no lead published yet."""
+    if self.grey_lead_prob <= 0.0 or lead.status:
+      return False
+    leads = model_msg.leadsV3
+    if len(leads) == 0:
+      return False
+    prob = float(leads[0].prob)
+    return np.isfinite(prob) and self.grey_lead_prob <= prob < GREY_LEAD_PROB_MAX
 
   def reset_lead_creep(self, lead=None) -> None:
     valid = lead is not None and lead.status
@@ -250,6 +276,13 @@ class LongitudinalPlanner:
       clipped_accel_coast = max(accel_coast, accel_clip[0])
       clipped_accel_coast_interp = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED*2], [accel_clip[1], clipped_accel_coast])
       accel_clip[1] = min(accel_clip[1], clipped_accel_coast_interp)
+
+    # Don't add speed toward something the model half-sees but radard cannot publish yet. This
+    # only lowers the acceleration ceiling -- it never commands braking, so a false positive
+    # costs speed, not a phantom stop.
+    self.grey_lead_hold = self.grey_lead_ahead(sm['modelV2'], sm['radarState'].leadOne)
+    if self.grey_lead_hold:
+      accel_clip[1] = min(accel_clip[1], self.grey_lead_accel_cap)
 
     # Curve-aware longitudinal: the feedforward curve-speed profile, with the reactive lateral-load
     # governor folded in as a tighter cap (whichever wants the lower speed). Always enabled; both
