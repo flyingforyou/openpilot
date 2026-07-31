@@ -8,6 +8,27 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
+
+def get_velocity_pid_target(speeds, action_t: float, fallback: float,
+                            a_target: float = 0.0, e2e_source: bool = False) -> float:
+  """Return a velocity target consistent with the acceleration command's time/source.
+
+  MPC speeds are sampled at the actuator horizon. In experimental mode the selected aTarget may
+  come from e2e while the published speed trajectory still comes from MPC, so integrate that
+  selected acceleration over the short actuator horizon instead of mixing two plan sources.
+  """
+  if not np.isfinite(fallback):
+    return 0.0
+  if not np.isfinite(action_t):
+    return float(fallback)
+  if e2e_source:
+    return max(float(fallback + a_target * max(action_t, 0.0)), 0.0) if np.isfinite(a_target) else float(fallback)
+  if len(speeds) != len(CONTROL_N_T_IDX):
+    return float(fallback)
+  v_target = float(np.interp(action_t, CONTROL_N_T_IDX, speeds))
+  return v_target if np.isfinite(v_target) else float(fallback)
+
+
 # Velocity-tracking PID (ported from CarrotPilot). Tesla's accel PID gains are 0, i.e. the accel
 # command is pure feedforward with no closed-loop correction, so it overshoots stops. Tracking the
 # planned velocity with a closed loop (kp on velocity error, plus the plan's accel as feedforward)
@@ -82,7 +103,7 @@ class LongControl:
   def reset(self):
     self.pid.reset()
 
-  def update(self, active, CS, a_target, should_stop, accel_limits, v_target=0.0, radar_state=None):
+  def update(self, active, CS, a_target, should_stop, accel_limits, v_target=None, radar_state=None):
     """Update longitudinal control. This updates the state machine and runs a PID loop"""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
@@ -110,7 +131,8 @@ class LongControl:
     else:  # LongCtrlState.pid
       # Velocity PID closes the loop on the planned speed so the car lands the stop instead of
       # coasting past it on feedforward alone; feedforward is still the plan's accel.
-      error = (v_target - CS.vEgo) if self.velocity_pid else (a_target - CS.aEgo)
+      target_v = CS.vEgo if v_target is None or not np.isfinite(v_target) else v_target
+      error = (target_v - CS.vEgo) if self.velocity_pid else (a_target - CS.aEgo)
       output_accel = self.pid.update(error, speed=CS.vEgo,
                                      feedforward=a_target)
 

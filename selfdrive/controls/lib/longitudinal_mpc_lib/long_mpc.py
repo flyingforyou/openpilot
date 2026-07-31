@@ -88,6 +88,9 @@ DYNAMIC_TF_JERK_V = [1.0, 0.0, 0.0, -1.0]    # scaled by the gain: + opens the g
 DYNAMIC_TF_MIN = 0.50                        # floor for the dynamically-reduced tFollow (temporary, below MIN_T_FOLLOW)
 DYNAMIC_TF_MAX = 2.00                        # ceiling
 DYNAMIC_TF_JERK_TAU = 0.5                    # s, EMA time constant on the lead-jerk estimate
+DYNAMIC_TF_RAW_JERK_LIMIT = 5.0              # m/s^3; reject lead acquisition/track-switch spikes
+DYNAMIC_TF_TRACK_JUMP_D = 5.0               # m; vision-only leads use track id -1
+DYNAMIC_TF_TRACK_JUMP_V = 5.0               # m/s; reset rather than differentiating another lead
 # CarrotPilot parity: when the lead is pulling away, also cut the jerk cost so the car ramps its
 # acceleration up promptly instead of dragging behind (the "can't follow the lead right away" feel).
 DYNAMIC_JERK_LEAD_ACCEL_TH = 0.2             # lead jerk (m/s^3) above which the lead counts as pulling away
@@ -288,6 +291,10 @@ class LongitudinalMpc:
     self.dynamic_tf_gain = 0.0  # DynamicTFollowGain / 100; 0 -> dynamic follow off
     self.lead_jerk = 0.0
     self.prev_a_lead_k = 0.0
+    self.dynamic_lead_initialized = False
+    self.dynamic_lead_track_id = -1
+    self.dynamic_lead_d_rel = 0.0
+    self.dynamic_lead_v_lead_k = 0.0
     self.reset()
     self.source = LongitudinalPlanSource.cruise
 
@@ -320,6 +327,7 @@ class LongitudinalMpc:
     self.time_linearization = 0.0
     self.time_integrator = 0.0
     self.x0 = np.zeros(X_DIM)
+    self.reset_dynamic_lead()
     self.set_weights()
 
   def set_cost_weights(self, cost_weights, constraint_cost_weights):
@@ -338,11 +346,14 @@ class LongitudinalMpc:
     for i in range(N):
       self.solver.cost_set(i, 'Zl', Zl)
 
-  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
+  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard, lead=None):
+    # set_weights runs before update(), so its jerk estimate is normally one model frame old. Reset
+    # it first on a lead discontinuity so a cut-in cannot inherit the previous lead's relaxed cost.
+    if lead is not None:
+      self.prepare_dynamic_lead(lead)
     jerk_factor = get_jerk_factor(personality)
     # Dynamic follow: while the lead is pulling away, drop the jerk cost so acceleration builds
-    # quickly and the car catches up right away. Gated on the same knob as the tFollow nudge; uses
-    # the lead-jerk estimate refreshed in update() (one frame old here, ~50ms, negligible).
+    # quickly and the car catches up right away. Gated on the same knob as the tFollow nudge.
     if self.dynamic_tf_gain > 0.0 and self.lead_jerk > DYNAMIC_JERK_LEAD_ACCEL_TH:
       jerk_factor *= DYNAMIC_JERK_FACTOR
     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
@@ -371,16 +382,46 @@ class LongitudinalMpc:
       self.t_follow = limit_t_follow_increase(self.t_follow, target_t_follow, self.dt, self.rise_rate)
     return self.t_follow
 
+  def reset_dynamic_lead(self, lead=None) -> None:
+    valid = (lead is not None and lead.status and
+             np.all(np.isfinite([lead.aLeadK, lead.dRel, lead.vLeadK])))
+    self.lead_jerk = 0.0
+    self.prev_a_lead_k = lead.aLeadK if valid else 0.0
+    self.dynamic_lead_track_id = int(lead.radarTrackId) if valid else -1
+    self.dynamic_lead_d_rel = float(lead.dRel) if valid else 0.0
+    self.dynamic_lead_v_lead_k = float(lead.vLeadK) if valid else 0.0
+    self.dynamic_lead_initialized = valid
+
+  def prepare_dynamic_lead(self, lead) -> bool:
+    finite_lead = lead.status and np.all(np.isfinite([lead.aLeadK, lead.dRel, lead.vLeadK]))
+    if self.dynamic_tf_gain <= 0.0 or not finite_lead:
+      self.reset_dynamic_lead(lead if finite_lead else None)
+      return False
+    track_id = int(lead.radarTrackId)
+    discontinuous = self.dynamic_lead_initialized and (
+      track_id != self.dynamic_lead_track_id or
+      abs(lead.dRel - self.dynamic_lead_d_rel) > DYNAMIC_TF_TRACK_JUMP_D or
+      abs(lead.vLeadK - self.dynamic_lead_v_lead_k) > DYNAMIC_TF_TRACK_JUMP_V
+    )
+    if not self.dynamic_lead_initialized or discontinuous:
+      self.reset_dynamic_lead(lead)
+      return False
+    return True
+
   def apply_dynamic_t_follow(self, t_follow: float, lead) -> float:
     """Nudge the base tFollow by the lead's jerk (CarrotPilot dynamic_t_follow). Lead jerk is the
     EMA-smoothed derivative of the Kalman lead accel; a lead pulling away shrinks the gap so the car
     keeps rolling, a braking lead opens it. Off (returns t_follow unchanged) when the gain is 0."""
-    if self.dynamic_tf_gain <= 0.0 or not lead.status:
-      self.lead_jerk = 0.0
-      self.prev_a_lead_k = lead.aLeadK if lead.status else 0.0
+    if not self.prepare_dynamic_lead(lead):
       return t_follow
-    raw_jerk = (lead.aLeadK - self.prev_a_lead_k) / self.dt
+
+    track_id = int(lead.radarTrackId)
+    raw_jerk = float(np.clip((lead.aLeadK - self.prev_a_lead_k) / self.dt,
+                             -DYNAMIC_TF_RAW_JERK_LIMIT, DYNAMIC_TF_RAW_JERK_LIMIT))
     self.prev_a_lead_k = lead.aLeadK
+    self.dynamic_lead_track_id = track_id
+    self.dynamic_lead_d_rel = float(lead.dRel)
+    self.dynamic_lead_v_lead_k = float(lead.vLeadK)
     alpha = self.dt / (DYNAMIC_TF_JERK_TAU + self.dt)
     self.lead_jerk += alpha * (raw_jerk - self.lead_jerk)
     adjust = float(np.interp(self.lead_jerk, DYNAMIC_TF_JERK_BP, DYNAMIC_TF_JERK_V)) * self.dynamic_tf_gain

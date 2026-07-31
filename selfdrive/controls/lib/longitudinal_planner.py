@@ -25,6 +25,12 @@ ALLOW_THROTTLE_THRESHOLD = 0.4
 PARAM_REFRESH_FRAMES = int(0.5 / DT_MDL)  # params hit disk; don't read every frame
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 V_SOFT_LEAD_SPEED = 1.0  # m/s; v_soft only engages approaching a stopped/slow lead, not a moving one
+LEAD_CREEP_CONFIRM_TIME = 0.20      # s; reject one-frame radar velocity spikes
+LEAD_CREEP_MAX_EGO_SPEED = 2.5      # m/s; this is only a stop-and-go aid
+LEAD_CREEP_MAX_CLOSING_SPEED = 0.5  # m/s; never suppress a stop while rapidly closing
+LEAD_CREEP_MIN_ROOM = 1.0           # m beyond configured stop distance before stop suppression is allowed
+LEAD_CREEP_TRACK_JUMP_D = 5.0       # m; vision-only leads all use track id -1, so also guard continuity
+LEAD_CREEP_TRACK_JUMP_V = 3.0       # m/s; a different lead must restart confirmation
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -60,6 +66,23 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   return [a_target[0], min(a_target[1], a_x_allowed)]
 
 
+def combine_should_stop(mpc_should_stop: bool, e2e_should_stop: bool, experimental_mode: bool,
+                        creep_follow_active: bool, mpc_stop_is_lead: bool) -> bool:
+  """Creep-follow may clear only a lead0/MPC stop; preserve cruise/forced and e2e stops."""
+  clear_mpc_stop = creep_follow_active and mpc_stop_is_lead
+  mpc_should_stop = mpc_should_stop and not clear_mpc_stop
+  return (e2e_should_stop or mpc_should_stop) if experimental_mode else mpc_should_stop
+
+
+def is_mpc_stop_clearable_by_creep(source, force_slow_decel: bool, v_cruise: float,
+                                   v_ego_stopping: float) -> bool:
+  """Only an ordinary lead0 stop may be released by a confirmed creeping lead."""
+  return (source == LongitudinalPlanSource.lead0 and
+          not force_slow_decel and
+          np.isfinite(v_cruise) and
+          v_cruise > v_ego_stopping)
+
+
 class LongitudinalPlanner:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
@@ -88,6 +111,11 @@ class LongitudinalPlanner:
 
     self.frame = 0
     self.launch_accel = A_CRUISE_MAX_VALS[0]
+    self.lead_creep_frames = 0
+    self.lead_creep_track_id = -1
+    self.lead_creep_prev_d_rel = 0.0
+    self.lead_creep_prev_v_lead_k = 0.0
+    self.lead_creep_active = False
     self.refresh_tuning()
 
   def refresh_tuning(self) -> None:
@@ -115,6 +143,47 @@ class LongitudinalPlanner:
     curve_on = curve_cms > 0
     self.curve.set_tuning(min(max(curve_cms, 1) / 100.0, MAX_LATERAL_ACCEL_NO_ROLL - 0.4), enabled=curve_on)
     self.governor.set_enabled(curve_on)
+
+  def reset_lead_creep(self, lead=None) -> None:
+    valid = lead is not None and lead.status
+    self.lead_creep_frames = 0
+    self.lead_creep_track_id = int(lead.radarTrackId) if valid else -1
+    self.lead_creep_prev_d_rel = float(lead.dRel) if valid else 0.0
+    self.lead_creep_prev_v_lead_k = float(lead.vLeadK) if valid else 0.0
+    self.lead_creep_active = False
+
+  def update_lead_creep(self, lead, v_ego: float, enabled: bool) -> bool:
+    """Confirm a genuinely creeping lead before suppressing the discrete stop latch.
+
+    A single vLeadK threshold is unsafe near a stopped car: the legacy radar can report short
+    positive velocity spikes. Require persistence, low ego speed, no rapid closing, enough room,
+    and track continuity.
+    """
+    finite_lead = lead.status and np.all(np.isfinite([lead.dRel, lead.vLeadK, lead.vRel]))
+    track_id = int(lead.radarTrackId) if finite_lead else -1
+    initialized = self.lead_creep_frames > 0 or self.lead_creep_active
+    discontinuous = initialized and (
+      track_id != self.lead_creep_track_id or
+      abs(lead.dRel - self.lead_creep_prev_d_rel) > LEAD_CREEP_TRACK_JUMP_D or
+      abs(lead.vLeadK - self.lead_creep_prev_v_lead_k) > LEAD_CREEP_TRACK_JUMP_V
+    )
+    if self.lead_creep_follow <= 0.0 or not enabled or not finite_lead or discontinuous:
+      self.reset_lead_creep(lead if finite_lead else None)
+      return False
+
+    room = lead.dRel - self.mpc.stop_distance
+    braking_room = max(v_ego, 0.0) ** 2 / (2.0 * COMFORT_BRAKE)
+    candidate = (v_ego <= LEAD_CREEP_MAX_EGO_SPEED and
+                 lead.vLeadK > self.lead_creep_follow and
+                 lead.vRel > -LEAD_CREEP_MAX_CLOSING_SPEED and
+                 room > LEAD_CREEP_MIN_ROOM + braking_room)
+    confirm_frames = max(1, int(round(LEAD_CREEP_CONFIRM_TIME / self.dt)))
+    self.lead_creep_frames = min(self.lead_creep_frames + 1, confirm_frames) if candidate else 0
+    self.lead_creep_active = self.lead_creep_frames >= confirm_frames
+    self.lead_creep_track_id = track_id
+    self.lead_creep_prev_d_rel = float(lead.dRel)
+    self.lead_creep_prev_v_lead_k = float(lead.vLeadK)
+    return self.lead_creep_active
 
   @staticmethod
   def parse_model(model_msg):
@@ -202,16 +271,17 @@ class LongitudinalPlanner:
 
     if force_slow_decel:
       v_cruise = 0.0
-
+    lead = sm['radarState'].leadOne
+    creep_follow_active = self.update_lead_creep(lead, v_ego, not reset_state and not force_slow_decel)
     # v_soft: approaching a stopped/slow lead, cap the speed on a physics stop curve by the room left
     # to the target gap, so the car eases down to it instead of coasting past (CarrotPilot v_soft).
-    if self.precise_stop:
-      lead = sm['radarState'].leadOne
-      if lead.status and lead.vLeadK < V_SOFT_LEAD_SPEED:
-        stop_gap = max(lead.dRel - self.mpc.stop_distance - 1.0, 0.0)
-        v_cruise = min(v_cruise, math.sqrt(2.0 * COMFORT_BRAKE * stop_gap))
+    # If a creeping lead is confirmed, converge to its speed rather than incorrectly targeting zero.
+    if self.precise_stop and lead.status and lead.vLeadK < V_SOFT_LEAD_SPEED:
+      stop_gap = max(lead.dRel - self.mpc.stop_distance - 1.0, 0.0)
+      lead_target_speed = max(lead.vLeadK, 0.0) if creep_follow_active else 0.0
+      v_cruise = min(v_cruise, lead_target_speed + math.sqrt(2.0 * COMFORT_BRAKE * stop_gap))
 
-    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
+    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality, lead=lead)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     gap_adjust = int(sm['carState'].cruiseState.gapAdjust)
     if self.CP.brand == "tesla":
@@ -243,23 +313,21 @@ class LongitudinalPlanner:
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    if sm['selfdriveState'].experimentalMode:
+    experimental_mode = sm['selfdriveState'].experimentalMode
+    # A driver-monitor/soft-disable force-decel or an external zero-speed cap must win even if
+    # lead0 happens to be the nearest obstacle. Creep-follow may clear only an ordinary lead0 stop.
+    mpc_stop_is_lead = is_mpc_stop_clearable_by_creep(self.mpc.source, force_slow_decel,
+                                                      v_cruise, self.CP.vEgoStopping)
+    if experimental_mode:
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
-      self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       if output_a_target < output_a_target_mpc:
         self.mpc.source = LongitudinalPlanSource.e2e
     else:
       output_a_target = output_a_target_mpc
-      self.output_should_stop = output_should_stop_mpc
-
-    # Don't latch a full stop while the lead itself is still creeping forward -- keep following it at
-    # a low crawl instead of stopping and then creeping to catch up. The MPC still governs the actual
-    # accel, so this only drops the discrete standstill latch; once the lead is (near) stopped its
-    # speed falls back under the threshold and the normal stop re-engages. 0 disables it.
-    lead_one = sm['radarState'].leadOne
-    if (self.lead_creep_follow > 0.0 and self.output_should_stop
-        and lead_one.status and lead_one.vLeadK > self.lead_creep_follow):
-      self.output_should_stop = False
+    # Creep-follow is a lead0-following aid. It must not clear a cruise/forced stop, a leadTwo stop,
+    # or an experimental/e2e stop-line or traffic-light request.
+    self.output_should_stop = combine_should_stop(output_should_stop_mpc, output_should_stop_e2e, experimental_mode,
+                                                  creep_follow_active, mpc_stop_is_lead)
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

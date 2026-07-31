@@ -6,7 +6,7 @@ from cereal import car, log
 import cereal.messaging as messaging
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
-from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority, Ratekeeper
+from openpilot.common.realtime import config_realtime_process, DT_CTRL, DT_MDL, Priority, Ratekeeper
 from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
@@ -16,7 +16,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
-from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+from openpilot.selfdrive.controls.lib.longcontrol import LongControl, get_velocity_pid_target
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
@@ -112,9 +112,14 @@ class Controls:
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
+    # aTarget is evaluated at actuator delay, so the velocity feedback target must use the same
+    # horizon. speeds[0] is the plan's current-time speed and makes the PID fight a delayed accel.
+    action_t = self.CP.longitudinalActuatorDelay + DT_MDL
+    e2e_source = long_plan.longitudinalPlanSource == log.LongitudinalPlan.LongitudinalPlanSource.e2e
+    v_target = get_velocity_pid_target(long_plan.speeds, action_t, CS.vEgo,
+                                       a_target=long_plan.aTarget, e2e_source=e2e_source)
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,
-                                            v_target=long_plan.speeds[0] if len(long_plan.speeds) else 0.0,
-                                            radar_state=self.sm['radarState']))
+                                            v_target=v_target, radar_state=self.sm['radarState']))
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
