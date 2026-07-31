@@ -97,7 +97,12 @@ class LongitudinalPlanner:
     stop_cm = int(self.params.get("StopDistanceCm", return_default=True) or 600)
     launch_cms = int(self.params.get("LaunchAccelCms", return_default=True) or 160)
     self.launch_accel = min(launch_cms / 100.0, ACCEL_MAX)
-    self.mpc.set_tuning(gap_profile, rise_pct / 100.0, stop_cm / 100.0)
+    # Dynamic follow: how many seconds of tFollow the lead's jerk may add/remove. 0 disables it.
+    dyn_tf = int(self.params.get("DynamicTFollowGain", return_default=True) or 0)
+    self.mpc.set_tuning(gap_profile, rise_pct / 100.0, stop_cm / 100.0, dyn_tf / 100.0)
+    # Roll with a still-moving lead: minimum lead speed (m/s) above which a full stop is not latched,
+    # so the car keeps a low crawl behind a creeping lead instead of stopping then catching up. 0 = off.
+    self.lead_creep_follow = int(self.params.get("LeadCreepFollowCms", return_default=True) or 0) / 100.0
 
     # Curve-speed lateral-accel budget: how hard the car loads the steering in curves. Clamped
     # below the LateralLoadGovernor ceiling (MAX_LATERAL_ACCEL_NO_ROLL = 3.0) so the reactive
@@ -235,6 +240,15 @@ class LongitudinalPlanner:
     else:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+
+    # Don't latch a full stop while the lead itself is still creeping forward -- keep following it at
+    # a low crawl instead of stopping and then creeping to catch up. The MPC still governs the actual
+    # accel, so this only drops the discrete standstill latch; once the lead is (near) stopped its
+    # speed falls back under the threshold and the normal stop re-engages. 0 disables it.
+    lead_one = sm['radarState'].leadOne
+    if (self.lead_creep_follow > 0.0 and self.output_should_stop
+        and lead_one.status and lead_one.vLeadK > self.lead_creep_follow):
+      self.output_should_stop = False
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

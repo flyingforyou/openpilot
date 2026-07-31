@@ -30,29 +30,70 @@ from openpilot.selfdrive.debug.can_source import CanSource, list_routes
 # Options rather than free-form numbers: a typo in a text box goes straight into the braking
 # path, and named choices are also what makes an A/B run reproducible afterwards.
 SETTINGS = {
-  "StoppedLeadMatchEnabled": {
-    "label": "정지차 매칭 보정", "type": "bool",
-    "help": "비전이 정지차를 달리는 차로 오독할 때 레이더 트랙을 유지합니다.",
-    "options": [(1, "사용"), (0, "미사용")],
-  },
-  "StoppedLeadHoldMs": {
-    "label": "정지차 확정 대기", "type": "int",
-    "help": "거리·횡방향이 일치하는 상태가 이만큼 지속되면 정지차로 확정합니다. "
-            "짧으면 빨리 반응하고, 길면 오검출에 보수적입니다.",
-    "options": [(300, "빠르게 0.3초"), (500, "표준 0.5초"), (800, "신중히 0.8초"), (1200, "매우 신중 1.2초")],
+  # ── 차간 · 추종 ────────────────────────────────────────────────────────────
+  "GapProfile": {
+    "group": "차간 · 추종",
+    "label": "차간거리 프로파일", "type": "int",
+    "help": "스티어링 휠 Gap 1~7이 각각 몇 초 간격을 요구할지 정합니다.",
+    "options": [(0, "표준 0.80~1.75초"), (1, "가깝게 0.80~1.60초"), (2, "멀게 0.95~1.90초"), (3, "넓게 0.80~1.94초")],
   },
   "StopDistanceCm": {
+    "group": "차간 · 추종",
     "label": "정지 시 앞차 간격", "type": "int",
     "help": "앞차 뒤에 멈출 때 남기는 거리입니다. 모든 속도의 추종 거리에 같은 값이 더해집니다.",
     "options": [(450, "가깝게 4.5m"), (500, "조금 가깝게 5.0m"), (600, "표준 6.0m"),
                 (700, "여유 7.0m"), (800, "넓게 8.0m")],
   },
-  "GapProfile": {
-    "label": "차간거리 프로파일", "type": "int",
-    "help": "스티어링 휠 Gap 1~7이 각각 몇 초 간격을 요구할지 정합니다.",
-    "options": [(0, "표준 0.80~1.75초"), (1, "가깝게 0.80~1.60초"), (2, "멀게 0.95~1.90초"), (3, "넓게 0.80~1.94초")],
+  "TFollowRiseRatePct": {
+    "group": "차간 · 추종",
+    "label": "Gap 확대 반영 속도", "type": "int",
+    "help": "Gap을 크게 바꿨을 때 목표 거리가 늘어나는 속도입니다. 빠르면 즉각적이지만 "
+            "감속이 급해질 수 있습니다. 줄일 때는 항상 즉시 반영됩니다. "
+            "gap 1↔7 전 구간 전환에 0.10은 9.5초, 0.35는 2.7초, 0.50은 1.9초가 걸립니다.",
+    "options": [(10, "느리게 0.10초/초"), (20, "보통 0.20초/초"),
+                (35, "빠르게 0.35초/초 (기본)"), (50, "즉각 0.50초/초")],
   },
+  "DynamicTFollowGain": {
+    "group": "차간 · 추종",
+    "label": "앞차 움직임 따라 차간 조절", "type": "int",
+    "help": "앞차의 가감속(저크)에 맞춰 차간시간을 실시간으로 조절합니다. 앞차가 풀어주면 차간을 "
+            "줄여 같이 굴러가고, 앞차가 감속하면 미리 벌립니다. 값은 조절 폭(초)입니다. "
+            "가다 서다에서 재출발이 매끄러워집니다. 선택한 Gap(1~7) 위에 얹혀 동작하며, 0이면 사용 안 함. "
+            "CarrotPilot의 dynamic_t_follow를 이식한 것입니다.",
+    "options": [(0, "사용 안 함 (기본)"), (30, "약하게 0.30초"),
+                (50, "표준 0.50초"), (80, "강하게 0.80초")],
+  },
+  "LeadCreepFollowCms": {
+    "group": "차간 · 추종",
+    "label": "기어가는 앞차 따라가기", "type": "int",
+    "help": "앞차가 이 속도 이상으로 조금씩 움직이면 완전정지하지 않고 저속으로 함께 굴러갑니다. "
+            "가다 서다에서 '완전정지 후 크립으로 따라잡기'가 사라집니다. 앞차가 실제로 멈추면(이 속도 "
+            "미만) 정상적으로 정지합니다. 실제 감속은 그대로 제어되며 정지 latch만 뺍니다. 0이면 사용 안 함.",
+    "options": [(0, "사용 안 함 (기본)"), (30, "0.30 m/s 이상"),
+                (50, "0.50 m/s 이상"), (80, "0.80 m/s 이상")],
+  },
+  "StoppedLeadMatchEnabled": {
+    "group": "차간 · 추종",
+    "label": "정지차 매칭 보정", "type": "bool",
+    "help": "비전이 정지차를 달리는 차로 오독할 때 레이더 트랙을 유지합니다.",
+    "options": [(1, "사용"), (0, "미사용")],
+  },
+  "StoppedLeadHoldMs": {
+    "group": "차간 · 추종",
+    "label": "정지차 확정 대기", "type": "int",
+    "help": "거리·횡방향이 일치하는 상태가 이만큼 지속되면 정지차로 확정합니다. "
+            "짧으면 빨리 반응하고, 길면 오검출에 보수적입니다.",
+    "options": [(300, "빠르게 0.3초"), (500, "표준 0.5초"), (800, "신중히 0.8초"), (1200, "매우 신중 1.2초")],
+  },
+  "LongitudinalPersonality": {
+    "group": "차간 · 추종",
+    "label": "기본 추종 시간(personality)", "type": "int",
+    "help": "Gap 신호가 없을 때의 기본 추종 시간입니다.",
+    "options": [(0, "aggressive"), (1, "standard"), (2, "relaxed")],
+  },
+  # ── 가속 · 감속 ────────────────────────────────────────────────────────────
   "LaunchAccelCms": {
+    "group": "가속 · 감속",
     "label": "출발 가속 상한", "type": "int",
     "help": "정지 상태에서 뗄 때 허용하는 최대 가속도입니다. 감속에는 영향이 없습니다. "
             "36km/h 이후로는 기존 곡선 그대로이고, panda 안전 상한이 2.0이라 그 위로는 못 갑니다. "
@@ -61,6 +102,7 @@ SETTINGS = {
                 (190, "더 빠르게 1.90 m/s²"), (200, "최대 2.00 m/s²")],
   },
   "CurveSpeedLatAccelCms": {
+    "group": "가속 · 감속",
     "label": "커브 감속 강도", "type": "int",
     "help": "커브를 미리 인식해서 속도를 줄일 때, 코너에서 허용하는 횡가속(횡G)입니다. "
             "낮을수록 더 일찍·더 많이 감속해 부드럽고, 높을수록 속도를 더 유지해 스포티합니다. "
@@ -71,21 +113,9 @@ SETTINGS = {
                 (220, "표준 2.20 m/s² (기본)"), (240, "스포티 2.40 m/s²"),
                 (260, "최소 감속 2.60 m/s²")],
   },
-  "TFollowRiseRatePct": {
-    "label": "Gap 확대 반영 속도", "type": "int",
-    "help": "Gap을 크게 바꿨을 때 목표 거리가 늘어나는 속도입니다. 빠르면 즉각적이지만 "
-            "감속이 급해질 수 있습니다. 줄일 때는 항상 즉시 반영됩니다. "
-            "gap 1↔7 전 구간 전환에 0.10은 9.5초, 0.35는 2.7초, 0.50은 1.9초가 걸립니다.",
-    "options": [(10, "느리게 0.10초/초"), (20, "보통 0.20초/초"),
-                (35, "빠르게 0.35초/초 (기본)"), (50, "즉각 0.50초/초")],
-  },
-  "DriverMonitorBypass": {
-    "label": "드라이버 모니터링 우회", "type": "bool",
-    "help": "운전자 주의 감시를 끕니다. 얼굴 미검출·주의 분산 경고와 강제 해제가 발생하지 않습니다. "
-            "카메라와 모델은 그대로 돌아가므로 녹화는 유지되고, 전력 절감 효과는 없습니다.",
-    "options": [(0, "사용 안 함 (기본)"), (1, "우회")],
-  },
+  # ── 조향 · 같이 돌리기 ─────────────────────────────────────────────────────
   "TeslaCoopSteer": {
+    "group": "조향 · 같이 돌리기",
     "label": "핸들 같이 돌리기", "type": "bool",
     "help": "핸들을 돌리면 openpilot이 조향을 놓는 대신, 운전자가 미는 힘만큼 목표 방향을 "
             "함께 옮깁니다. 세게 밀 필요가 없어져서 차가 조향을 차단하는 지점(약 3.2Nm)까지 "
@@ -93,28 +123,34 @@ SETTINGS = {
     "options": [(0, "사용 안 함 (기본)"), (1, "같이 돌리기")],
   },
   "TeslaCoopMaxTorqueCNm": {
+    "group": "조향 · 같이 돌리기",
     "label": "같이 돌리기 · 허용 힘", "type": "int",
     "help": "운전자가 이 힘까지 미는 동안 목표를 따라 옮깁니다. 넘으면 더 못 따라가므로 "
             "차가 조향을 차단할 수 있습니다. 이 차는 약 3.2Nm에서 차단되므로 그보다 낮아야 합니다.",
     "options": [(200, "좁게 2.0 Nm"), (250, "표준 2.5 Nm"), (300, "넓게 3.0 Nm · 차단점에 근접")],
   },
   "TeslaCoopLatAccelCms": {
+    "group": "조향 · 같이 돌리기",
     "label": "같이 돌리기 · 반응 강도", "type": "int",
     "help": "같은 힘으로 얼마나 많이 틀어줄지입니다. 크면 핸들이 가볍게 느껴지고 조금만 밀어도 "
             "많이 돌아갑니다. 작으면 묵직하지만 의도하지 않은 개입이 줄어듭니다.",
     "options": [(100, "묵직하게 1.0 m/s²"), (150, "표준 1.5 m/s²"), (200, "가볍게 2.0 m/s²")],
   },
+  # ── 주차 · 안전 ────────────────────────────────────────────────────────────
   "TeslaStockAutopark": {
+    "group": "주차 · 안전",
     "label": "순정 오토파크 허용", "type": "bool",
     "help": "openpilot이 해제된 동안 순정 AP1의 조향·가감속 메시지를 차로 통과시킵니다. "
             "오토파크가 동작하게 되지만, 순정 오토스티어 조향도 함께 통과합니다. "
             "openpilot이 작동 중일 때는 항상 차단됩니다. 변경 후 재시동이 필요합니다.",
     "options": [(0, "차단 (기본)"), (1, "통과")],
   },
-  "LongitudinalPersonality": {
-    "label": "Driving personality", "type": "int",
-    "help": "Gap 신호가 없을 때의 기본 추종 시간입니다.",
-    "options": [(0, "aggressive"), (1, "standard"), (2, "relaxed")],
+  "DriverMonitorBypass": {
+    "group": "주차 · 안전",
+    "label": "드라이버 모니터링 우회", "type": "bool",
+    "help": "운전자 주의 감시를 끕니다. 얼굴 미검출·주의 분산 경고와 강제 해제가 발생하지 않습니다. "
+            "카메라와 모델은 그대로 돌아가므로 녹화는 유지되고, 전력 절감 효과는 없습니다.",
+    "options": [(0, "사용 안 함 (기본)"), (1, "우회")],
   },
 }
 
@@ -261,7 +297,7 @@ class Handler(BaseHTTPRequestHandler):
           v = int(bool(v)) if cfg['type'] == 'bool' else int(v)
         except Exception:
           v = None
-        out[k] = {'value': v, 'label': cfg['label'], 'help': cfg['help'],
+        out[k] = {'value': v, 'label': cfg['label'], 'help': cfg['help'], 'group': cfg.get('group', ''),
                   'options': [{'v': ov, 'label': ol} for ov, ol in cfg['options']]}
       return self._send(200, json.dumps({
         'settings': out,
@@ -383,6 +419,9 @@ border-radius:8px;font-family:var(--m);font-weight:700;font-size:16px}
 .row{display:flex;justify-content:space-between;align-items:center;gap:14px;padding:12px 0;
 border-bottom:1px solid var(--line)}.row:last-child{border-bottom:0}
 .row .lab{font-size:14px;margin-bottom:3px}.row .hlp{font-size:11.5px;color:var(--mut);line-height:1.45}
+.grp{font-family:var(--m);font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--radar);
+margin:16px 0 2px;padding-top:11px;border-top:1px solid var(--line)}
+#settings .grp:first-child{border-top:0;padding-top:2px;margin-top:0}
 select{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:9px;
 padding:9px 10px;font-size:13.5px;font-family:inherit;max-width:190px}
 select:focus-visible{outline:2px solid var(--radar);outline-offset:1px}
@@ -467,7 +506,12 @@ let cfg={}, staged={};
 
 function renderSettings(){
   const box=$('settings');box.innerHTML='';
+  let lastGrp=null;
   for(const[k,c]of Object.entries(cfg)){
+    if(c.group && c.group!==lastGrp){
+      const g=document.createElement('div');g.className='grp';g.textContent=c.group;
+      box.appendChild(g);lastGrp=c.group;
+    }
     const row=document.createElement('div');row.className='row';
     const left=document.createElement('div');
     left.innerHTML=`<div class="lab">${c.label}</div><div class="hlp">${c.help}</div>`;

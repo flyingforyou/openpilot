@@ -77,6 +77,17 @@ TESLA_GAP_T_FOLLOW = {
 MIN_T_FOLLOW = 0.80
 T_FOLLOW_RISE_RATE = 0.35  # seconds of tFollow per real second
 
+# Dynamic follow, ported from CarrotPilot's dynamic_t_follow. Nudges the base tFollow (whatever the
+# selected gap 1-7 asks for) by the lead's jerk: a lead pulling away (positive jerk) shrinks the gap
+# so the car rolls with it instead of stopping then creeping to catch up; a braking lead (negative
+# jerk) opens the gap early. Lead jerk is the time-derivative of the Kalman lead accel (aLeadK),
+# EMA-smoothed here, so no new radar signal is needed. Gain 0 -> feature off (tFollow unchanged).
+DYNAMIC_TF_JERK_BP = [-3.0, -0.5, 0.5, 2.0]  # lead jerk, m/s^3
+DYNAMIC_TF_JERK_V = [1.0, 0.0, 0.0, -1.0]    # scaled by the gain: + opens the gap braking, - closes it pulling away
+DYNAMIC_TF_MIN = 0.50                        # floor for the dynamically-reduced tFollow (temporary, below MIN_T_FOLLOW)
+DYNAMIC_TF_MAX = 2.00                        # ceiling
+DYNAMIC_TF_JERK_TAU = 0.5                    # s, EMA time constant on the lead-jerk estimate
+
 # Gap profiles, selectable at runtime. The knob has 7 positions either way; these change what
 # following time each position asks for, so the whole range shifts or spreads together.
 GAP_PROFILES = {
@@ -269,6 +280,9 @@ class LongitudinalMpc:
     self.gap_profile = 0
     self.rise_rate = T_FOLLOW_RISE_RATE
     self.stop_distance = STOP_DISTANCE
+    self.dynamic_tf_gain = 0.0  # DynamicTFollowGain / 100; 0 -> dynamic follow off
+    self.lead_jerk = 0.0
+    self.prev_a_lead_k = 0.0
     self.reset()
     self.source = LongitudinalPlanSource.cruise
 
@@ -326,10 +340,11 @@ class LongitudinalMpc:
     constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     self.set_cost_weights(cost_weights, constraint_cost_weights)
 
-  def set_tuning(self, gap_profile: int, rise_rate: float, stop_distance: float) -> None:
+  def set_tuning(self, gap_profile: int, rise_rate: float, stop_distance: float, dynamic_tf_gain: float = 0.0) -> None:
     self.gap_profile = gap_profile
     self.rise_rate = rise_rate
     self.stop_distance = stop_distance
+    self.dynamic_tf_gain = dynamic_tf_gain
 
   def update_t_follow(self, personality, gap_adjust: int) -> float:
     if gap_adjust not in TESLA_GAP_T_FOLLOW:
@@ -345,6 +360,21 @@ class LongitudinalMpc:
     else:
       self.t_follow = limit_t_follow_increase(self.t_follow, target_t_follow, self.dt, self.rise_rate)
     return self.t_follow
+
+  def apply_dynamic_t_follow(self, t_follow: float, lead) -> float:
+    """Nudge the base tFollow by the lead's jerk (CarrotPilot dynamic_t_follow). Lead jerk is the
+    EMA-smoothed derivative of the Kalman lead accel; a lead pulling away shrinks the gap so the car
+    keeps rolling, a braking lead opens it. Off (returns t_follow unchanged) when the gain is 0."""
+    if self.dynamic_tf_gain <= 0.0 or not lead.status:
+      self.lead_jerk = 0.0
+      self.prev_a_lead_k = lead.aLeadK if lead.status else 0.0
+      return t_follow
+    raw_jerk = (lead.aLeadK - self.prev_a_lead_k) / self.dt
+    self.prev_a_lead_k = lead.aLeadK
+    alpha = self.dt / (DYNAMIC_TF_JERK_TAU + self.dt)
+    self.lead_jerk += alpha * (raw_jerk - self.lead_jerk)
+    adjust = float(np.interp(self.lead_jerk, DYNAMIC_TF_JERK_BP, DYNAMIC_TF_JERK_V)) * self.dynamic_tf_gain
+    return float(np.clip(t_follow + adjust, DYNAMIC_TF_MIN, DYNAMIC_TF_MAX))
 
   def set_cur_state(self, v, a):
     v_prev = self.x0[1]
@@ -387,6 +417,7 @@ class LongitudinalMpc:
 
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, gap_adjust=0):
     t_follow = self.update_t_follow(personality, int(gap_adjust))
+    t_follow = self.apply_dynamic_t_follow(t_follow, radarstate.leadOne)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
 
