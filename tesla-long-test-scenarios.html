@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tesla 저속 추종 튜닝 · 실차 테스트 시나리오</title>
+<style>
+  :root{--bg:#0e1116;--card:#171b22;--line:#262c36;--tx:#e6e9ee;--mut:#9aa4b2;--acc:#5db3ff;
+        --ok:#54d17a;--warn:#f2b441;--bad:#ff6b6b;--m:ui-monospace,Menlo,Consolas,monospace}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.55 -apple-system,Segoe UI,Roboto,sans-serif;
+       padding:20px;max-width:900px;margin-inline:auto}
+  h1{font-size:22px;margin:0 0 4px}
+  h2{font-size:16px;margin:26px 0 10px;color:var(--acc);border-bottom:1px solid var(--line);padding-bottom:6px}
+  .sub{color:var(--mut);font-size:13px;margin-bottom:18px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:12px 0}
+  .tag{display:inline-block;font-family:var(--m);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+       padding:2px 7px;border-radius:6px;border:1px solid var(--line);color:var(--mut);margin-right:6px}
+  .tag.a{color:var(--acc);border-color:#25455f}
+  .tag.b{color:var(--warn);border-color:#5a4620}
+  code{font-family:var(--m);background:#0b0e13;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12.5px}
+  table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13.5px}
+  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600;font-size:12px}
+  .set{color:var(--acc)} .obs{color:var(--ok)} .pass{color:var(--ok)} .fail{color:var(--bad)}
+  ul{margin:6px 0 6px 2px;padding-left:18px} li{margin:3px 0}
+  .warn{border-left:3px solid var(--warn)} .bad{border-left:3px solid var(--bad)}
+  .kv{font-family:var(--m);font-size:12.5px}
+  .step{margin:4px 0}
+  .step b{color:var(--acc)}
+</style>
+</head>
+<body>
+
+<h1>Tesla 저속 추종 튜닝 · 실차 테스트 시나리오</h1>
+<div class="sub">대상 기능 2종 — <b>기어가는 앞차 따라가기</b>(<code>LeadCreepFollowCms</code>)와
+<b>앞차 움직임 따라 차간 조절</b>(<code>DynamicTFollowGain</code>). 둘 다 기본 off이라 켜기 전엔 기존과 동일.
+목표: "앞차 기어가는데 완전정지→크립으로 따라잡기"가 사라지는지, 부작용(추돌 위험·급감속·헌팅) 없는지 검증.</div>
+
+<div class="card bad">
+  <b>안전 규칙 (모든 시나리오 공통)</b>
+  <ul>
+    <li>뒤차 없는 한적한 도로/주차장에서 시작. 앞차는 <b>내 차(테스트 협조자)</b>가 이상적.</li>
+    <li>발은 항상 브레이크 위. 이상하면 즉시 브레이크 → 해제. 새 롱 로직이니 첫 세션은 저속(≤30km/h)만.</li>
+    <li>변경은 <b>해제 상태에서만 반영</b>됨(주행 중 목표거리 안 튐). 값 바꾸고 반영 → 한 번 해제 후 재engage.</li>
+    <li>한 번에 <b>한 노브만</b> 바꿔서 A/B. 두 개 동시에 켜면 원인 분리가 안 됨.</li>
+  </ul>
+</div>
+
+<div class="card">
+  <b>사전 준비</b>
+  <div class="step"><b>1.</b> 보드에서 <code>cd /data/openpilot &amp;&amp; git pull</code> 로 이 커밋 받기.</div>
+  <div class="step"><b>2.</b> params가 C++이라 <code>sudo systemctl restart comma</code> (매니저 전체 재시작).</div>
+  <div class="step"><b>3.</b> 폰에서 <code>http://&lt;device-ip&gt;:8088/live</code> 열기 — 좌측에 <span class="kv">source / 거리(dRel) / 앞차속도(vLead)</span> 실시간 표시. 이걸 보면서 테스트.</div>
+  <div class="step"><b>4.</b> 라우트명·시각 메모(로그 분석용). 드라이브 후 <code>tools/tesla_analysis/pull_logs.sh</code>로 회수.</div>
+</div>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<h2>A. 기어가는 앞차 따라가기 (LeadCreepFollowCms)</h2>
+<div class="sub">핵심: 앞차가 아직 움직이는데 완전정지 latch를 밟지 않게. 이게 체감이 가장 큼 → 먼저 테스트.</div>
+
+<div class="card">
+  <span class="tag a">A-1</span><b>가다 서다 크립 추종 (핵심 시나리오)</b>
+  <table>
+    <tr><th>상황</th><td>정체 구간. 앞차가 1~2 m/s로 조금씩 굴렀다 섰다 반복.</td></tr>
+    <tr><th class="set">설정</th><td class="set">B: <code>0</code>(off) → 한 바퀴 / A: <code>0.30 m/s 이상</code> → 같은 구간 다시</td></tr>
+    <tr><th class="obs">관찰</th><td class="obs">/live에서 vLead가 0.3~1 m/s일 때 내 차가 <b>완전정지(standstill)로 latch되는지</b> vs 저속으로 함께 구르는지. 몸으로는 "섰다 크립" 덜컹임이 사라지는지.</td></tr>
+    <tr><th class="pass">합격</th><td><span class="pass">A에서 앞차 기어갈 때 완전정지 없이 저속 롤링, 재출발 덜컹임 감소.</span> <span class="fail">불합격: 앞차에 계속 붙어감/거리 안 벌어짐, 또는 헌팅(가속·감속 진동).</span></td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <span class="tag a">A-2</span><b>앞차 실제 완전정지 (안전 회귀 확인)</b>
+  <table>
+    <tr><th>상황</th><td>앞차가 신호/정체로 <b>완전히 멈춤</b>(vLead→0).</td></tr>
+    <tr><th class="set">설정</th><td class="set">A: <code>0.30</code> 켠 상태</td></tr>
+    <tr><th class="obs">관찰</th><td class="obs">vLead가 임계(0.3) 밑으로 내려가면 <b>정상적으로 완전정지</b>하는지. 정지 거리(dRel)가 off일 때와 같은지.</td></tr>
+    <tr><th class="pass">합격</th><td><span class="pass">앞차가 서면 내 차도 정상 정지, 정지 거리 동일.</span> <span class="fail">불합격: 앞차 섰는데 안 서고 계속 기어감 → 즉시 브레이크, 임계값 상향 또는 off.</span></td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <span class="tag a">A-3</span><b>정지 상태 → 앞차 출발</b>
+  <table>
+    <tr><th>상황</th><td>둘 다 정지 → 앞차가 스르륵 출발.</td></tr>
+    <tr><th class="obs">관찰</th><td class="obs">off일 때의 "완전정지 hold → 갭 벌어짐 → 크립 재출발" 지연이, A에서 줄거나 사라지는지.</td></tr>
+    <tr><th class="pass">합격</th><td><span class="pass">재출발이 더 즉각적/매끄러움.</span></td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <b>임계값 튜닝 가이드</b>
+  <ul>
+    <li><code>0.30</code>: 아주 느린 크립까지 따라감(가장 매끄럽지만 앞차 정지 판단이 늦을 수 있음).</li>
+    <li><code>0.50</code>: 균형. 확실히 움직일 때만 따라감.</li>
+    <li><code>0.80</code>: 보수적. 어지간히 움직여야 완전정지 안 함.</li>
+    <li>앞차 정지인데 안 서는 느낌이면 <b>임계값 올리기</b>. 여전히 덜컹이면 내리기.</li>
+  </ul>
+</div>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<h2>B. 앞차 움직임 따라 차간 조절 (DynamicTFollowGain)</h2>
+<div class="sub">핵심: 앞차 저크(가감속 변화)에 맞춰 차간을 실시간 조절 → 추종/재출발 부드러움 보강. A와 별개로 A/B.</div>
+
+<div class="card">
+  <span class="tag b">B-1</span><b>앞차 감속 반응</b>
+  <table>
+    <tr><th>상황</th><td>정속 추종 중 앞차가 감속 시작.</td></tr>
+    <tr><th class="set">설정</th><td class="set">B: <code>0</code> → 반복 / A: <code>0.50초</code></td></tr>
+    <tr><th class="obs">관찰</th><td class="obs">A에서 앞차 감속 시 차간을 <b>미리 벌려</b> 부드럽게 받는지(급브레이크 감소). 과하게 벌어져 뒤처지지 않는지.</td></tr>
+    <tr><th class="pass">합격</th><td><span class="pass">감속 받아치기가 부드러움, 급제동 빈도 감소.</span> <span class="fail">불합격: 과감속/뒤처짐 → gain 낮추기.</span></td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <span class="tag b">B-2</span><b>앞차 가속(풀어줌) 반응</b>
+  <table>
+    <tr><th>상황</th><td>정체 풀리며 앞차 가속.</td></tr>
+    <tr><th class="obs">관찰</th><td class="obs">A에서 차간을 <b>일시적으로 줄여</b> 더 민첩하게 따라붙는지. 너무 바짝 붙지 않는지.</td></tr>
+    <tr><th class="pass">합격</th><td><span class="pass">따라붙음이 민첩·매끄러움, 거리 과도하게 안 벌어짐.</span></td></tr>
+  </table>
+</div>
+
+<div class="card warn">
+  <b>주의</b> — B(dynamic t_follow)는 <b>과도 신호(transient)</b>라 앞차가 등속/등가속에 도달하면 차간이 base(선택한 Gap)로 복귀함. 정상. 정속 추종 중엔 효과 거의 없고 <b>가감속 변화 순간</b>에만 작동.
+</div>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<h2>C. 병행 테스트 (A+B 함께)</h2>
+<div class="card">
+  <table>
+    <tr><th class="set">설정</th><td class="set">A <code>0.30~0.50</code> + B <code>0.50초</code> 동시 ON</td></tr>
+    <tr><th>구간</th><td>정체 가다 서다 왕복 1회.</td></tr>
+    <tr><th class="obs">관찰</th><td class="obs">"완전정지→크립 따라잡기"가 사라지고(A) 추종이 매끄러운지(B). 헌팅/추돌감 없음.</td></tr>
+    <tr><th class="pass">목표</th><td><span class="pass">carrot 저속 추종 느낌에 근접 — 앞차와 함께 롤링, 재출발 부드러움.</span></td></tr>
+  </table>
+</div>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<h2>D. 회귀 확인 (반드시)</h2>
+<div class="card">
+  <ul>
+    <li><b>off = 무변화:</b> 두 노브 모두 <code>0</code>이면 예전과 완전히 동일해야 함. 평소 주행이 달라졌다면 배선 문제 → 보고.</li>
+    <li><b>일반 정지:</b> 신호등·정지선 앞 리드 없는 정지가 정상인지(A는 리드 있을 때만 작동, 신호 정지엔 영향 없어야).</li>
+    <li><b>고속 추종:</b> 고속에서 차간·가감속이 기존과 동일한지(두 기능 다 저속/전이 상황용).</li>
+    <li><b>컷인:</b> 옆 차선 차가 끼어들 때 과민 반응 없는지.</li>
+  </ul>
+</div>
+
+<!-- ────────────────────────────────────────────────────────────────── -->
+<h2>E. 로그 분석 (드라이브 후)</h2>
+<div class="card">
+  <div class="step"><code>tools/tesla_analysis/pull_logs.sh &lt;route&gt;</code> 로 세그먼트 회수.</div>
+  <div class="step">정지 이벤트별 <b>vEgo·dRel·vLead·standstill·accelCmd</b> 시계열을 뽑아 off vs on 비교. 확인 포인트:</div>
+  <ul>
+    <li>on에서 vLead&gt;임계 구간에 <code>standstill</code>이 latch되지 않는가(A 효과).</li>
+    <li>완전정지→재출발 사이 크립 지연이 줄었는가.</li>
+    <li>앞차 감속 시 accelCmd가 더 이르고 완만한가(B 효과).</li>
+    <li>부작용: dRel이 위험하게 짧아지는 순간, accelCmd 진동(헌팅) 없는지.</li>
+  </ul>
+  <div class="step" style="color:var(--mut)">※ 오늘/어제 차가 다르면(Car A/B) 레이더 캘리가 달라 raw dRel 직접 비교 주의.</div>
+</div>
+
+<div class="sub" style="margin-top:22px">기록: 각 시나리오마다 <b>라우트명 · 노브값 · 합격/불합격 · 한 줄 소감</b>을 남기면 다음 튜닝이 빨라짐.</div>
+
+</body>
+</html>
