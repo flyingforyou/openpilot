@@ -154,6 +154,28 @@ SETTINGS = {
   },
 }
 
+# One-tap A/B presets. Each stages a bundle of the low-speed lead-following knobs at once so a
+# scenario can be set up with a single tap on the road, then committed with 반영 (same staged flow
+# as the individual selects). Mirrors tesla-long-test-scenarios.html. Values are validated against
+# each setting's options at import so a bad preset fails fast rather than at POST time.
+SCENARIOS = [
+  {"id": "baseline", "label": "기본 · 둘 다 off", "desc": "회귀 확인 · 예전과 동일",
+   "set": {"DynamicTFollowGain": 0, "LeadCreepFollowCms": 0}},
+  {"id": "creep30", "label": "A · 기어가는 앞차 0.30", "desc": "완전정지 회피(약) · 가다서다 핵심",
+   "set": {"LeadCreepFollowCms": 30, "DynamicTFollowGain": 0}},
+  {"id": "creep50", "label": "A · 기어가는 앞차 0.50", "desc": "완전정지 회피(표준)",
+   "set": {"LeadCreepFollowCms": 50, "DynamicTFollowGain": 0}},
+  {"id": "dyn50", "label": "B · 차간 동적조절 0.50", "desc": "앞차 저크로 추종 부드럽게",
+   "set": {"DynamicTFollowGain": 50, "LeadCreepFollowCms": 0}},
+  {"id": "combo", "label": "A+B 병행", "desc": "완전정지 회피 + 부드러움 · carrot 근접",
+   "set": {"LeadCreepFollowCms": 30, "DynamicTFollowGain": 50}},
+]
+
+for _sc in SCENARIOS:
+  for _k, _v in _sc["set"].items():
+    assert _k in SETTINGS, f"scenario {_sc['id']}: unknown setting {_k}"
+    assert _v in [_ov for _ov, _ in SETTINGS[_k]["options"]], f"scenario {_sc['id']}: {_k}={_v} not an option"
+
 STATE_SERVICES = ['carState', 'radarState', 'selfdriveState', 'longitudinalPlan', 'deviceState']
 
 def _git_commit() -> str:
@@ -301,6 +323,7 @@ class Handler(BaseHTTPRequestHandler):
                   'options': [{'v': ov, 'label': ol} for ov, ol in cfg['options']]}
       return self._send(200, json.dumps({
         'settings': out,
+        'scenarios': SCENARIOS,
         'engaged': bool(self.state.get().get('engaged')),
       }))
 
@@ -432,6 +455,17 @@ button.apply{flex:1;background:var(--ok);color:#04140c;border:0;border-radius:10
 padding:13px;font-size:14.5px;font-weight:600;cursor:pointer;font-family:inherit}
 button.apply[disabled]{background:var(--line);color:var(--dim);cursor:default}
 .dirtynote{font-size:12px;color:var(--mut)}
+.scnnote{font-size:11.5px;color:var(--mut);line-height:1.45;margin-bottom:9px}
+.scnbox{display:flex;flex-direction:column;gap:8px}
+.scn{display:flex;flex-direction:column;align-items:flex-start;gap:2px;text-align:left;width:100%;
+background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:10px 12px;color:var(--tx);
+cursor:pointer;font-family:inherit}
+.scn:hover,.scn:focus-visible{border-color:var(--radar);outline:none}
+.scn.active{border-color:var(--ok);box-shadow:inset 0 0 0 1px var(--ok)}
+.scn .sl{font-size:14px}.scn .sd{font-size:11.5px;color:var(--mut)}
+.scn.active .sl::after{content:" · 적용됨";color:var(--ok);font-size:11px;font-family:var(--m)}
+.scn.staged{border-color:var(--vision)}
+.scn.staged .sl::after{content:" · 대기";color:var(--vision);font-size:11px;font-family:var(--m)}
 #msg{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));
 background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 14px;
 font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none}
@@ -460,6 +494,11 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
     <div><div class="k">상태</div><div class="v" style="font-size:13px"><span id="eng" class="pill">–</span></div></div>
     <div><div class="k">blindspot</div><div class="v" style="font-size:13px"><span id="bs" class="pill">–</span></div></div>
   </div>
+</div>
+
+<div class="card"><div class="h">테스트 시나리오</div>
+  <div class="scnnote">한 번 눌러 세팅을 모아 스테이징 → 아래 <b>반영</b>으로 적용. 해제 상태에서 반영해야 다음 engage부터 적용됩니다.</div>
+  <div id="scenarios" class="scnbox"></div>
 </div>
 
 <div class="card"><div class="h">Settings</div><div id="settings"></div>
@@ -502,7 +541,28 @@ async function poll(){
   }catch(e){$('conn').textContent='디바이스에 연결할 수 없습니다';}
 }
 
-let cfg={}, staged={};
+let cfg={}, staged={}, scenarios=[];
+
+function effVal(k){ return (k in staged)?staged[k]:(cfg[k]?cfg[k].value:null); }
+
+function renderScenarios(){
+  const box=$('scenarios');if(!box)return;box.innerHTML='';
+  scenarios.forEach(sc=>{
+    const keys=Object.keys(sc.set).filter(k=>k in cfg);
+    const matches=keys.every(k=>effVal(k)===sc.set[k]);
+    const anyStaged=keys.some(k=>k in staged);
+    const b=document.createElement('button');
+    b.className='scn'+(matches?(anyStaged?' staged':' active'):'');
+    b.innerHTML=`<span class="sl">${sc.label}</span><span class="sd">${sc.desc}</span>`;
+    b.onclick=()=>{
+      for(const k of keys){
+        if(sc.set[k]===cfg[k].value) delete staged[k]; else staged[k]=sc.set[k];
+      }
+      renderSettings();renderScenarios();updateApply();
+    };
+    box.appendChild(b);
+  });
+}
 
 function renderSettings(){
   const box=$('settings');box.innerHTML='';
@@ -528,7 +588,7 @@ function renderSettings(){
     sel.onchange=()=>{
       const v=parseInt(sel.value,10);
       if(v===c.value) delete staged[k]; else staged[k]=v;
-      renderSettings();updateApply();
+      renderSettings();renderScenarios();updateApply();
     };
     row.appendChild(sel);
     box.appendChild(row);
@@ -544,8 +604,8 @@ function updateApply(){
 
 async function loadSettings(){
   const d=await(await fetch('/api/settings')).json();
-  cfg=d.settings;engaged=d.engaged;
-  renderSettings();updateApply();
+  cfg=d.settings;engaged=d.engaged;scenarios=d.scenarios||[];
+  renderSettings();renderScenarios();updateApply();
 }
 
 $('apply').onclick=async()=>{
