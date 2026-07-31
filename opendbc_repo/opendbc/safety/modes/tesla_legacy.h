@@ -20,6 +20,12 @@ static bool tesla_legacy_stock_lkas_prev = false;
 
 // Stock autopark (HW1). Off unless the car port opts in, since letting the stock module steer
 // means opening the forwarding gate on DAS_steeringControl for a system we can't bound.
+// Whether openpilot owns longitudinal. When it does not, the factory ACC module keeps driving
+// DAS_control and openpilot must neither send that message nor block the stock one -- see the
+// fwd hook. tesla.h has always gated its DAS_control blocking on this; the legacy modes did not,
+// which left the car with no DAS_control at all whenever openpilot longitudinal was turned off.
+static bool tesla_legacy_longitudinal = false;
+
 static bool tesla_legacy_allow_stock_autopark = false;
 static bool tesla_legacy_stock_autopark = false;
 // The maneuver is announced late: on a recorded attempt DAS_steeringControl went to
@@ -191,6 +197,13 @@ static bool tesla_legacy_tx_hook(const CANPacket_t *msg) {
 
   // DAS_control: longitudinal control message
   if ((tesla_external_panda || tesla_hw1) && (msg->addr == das_control_msg)) {
+    // The factory ACC owns this message when openpilot longitudinal is off. Two masters on one
+    // arbitration id with independent counters is what aborted the recorded autopark attempt.
+    // HW1 only, matching the fwd hook -- external panda never carries the flag.
+    if (tesla_hw1 && !tesla_legacy_longitudinal) {
+      violation = true;
+    }
+
     // No AEB events may be sent by openpilot
     int aeb_event = msg->data[2] & 0x03U;
     if (aeb_event != 0) {
@@ -241,8 +254,13 @@ static bool tesla_legacy_fwd_hook(int bus_num, int addr) {
       block_msg = true;
     }
 
-    // DAS_control
-    if ((tesla_external_panda || tesla_hw1) && (addr == das_control_msg) && !tesla_legacy_stock_aeb && !tesla_legacy_stock_autopark) {
+    // DAS_control. Only openpilot longitudinal replaces this message; otherwise the factory ACC
+    // module's frames must reach the car, or it loses TACC and Autopilot along with it. Scoped to
+    // HW1: the external-panda configs drive longitudinal through the second panda without ever
+    // carrying TESLA_FLAG_LONG_CONTROL, so they must keep blocking unconditionally.
+    const bool op_owns_das_control = tesla_external_panda || (tesla_hw1 && tesla_legacy_longitudinal);
+    if (op_owns_das_control && (addr == das_control_msg) &&
+        !tesla_legacy_stock_aeb && !tesla_legacy_stock_autopark) {
       block_msg = true;
     }
   }
@@ -251,6 +269,7 @@ static bool tesla_legacy_fwd_hook(int bus_num, int addr) {
 }
 
 static safety_config tesla_legacy_init(uint16_t param) {
+  const int TESLA_FLAG_LONG_CONTROL = 1;
   const int TESLA_FLAG_EXTERNAL_PANDA = 4;
   const int TESLA_FLAG_HW1 = 8;
   const int TESLA_FLAG_HW2 = 16;
@@ -258,6 +277,7 @@ static safety_config tesla_legacy_init(uint16_t param) {
   const int TESLA_FLAG_STOCK_AUTOPARK = 64;
 
   // Extract flags
+  tesla_legacy_longitudinal = GET_FLAG(param, TESLA_FLAG_LONG_CONTROL);
   tesla_external_panda = GET_FLAG(param, TESLA_FLAG_EXTERNAL_PANDA);
   tesla_hw1 = GET_FLAG(param, TESLA_FLAG_HW1);
   tesla_hw2 = GET_FLAG(param, TESLA_FLAG_HW2);
@@ -292,6 +312,12 @@ static safety_config tesla_legacy_init(uint16_t param) {
   static const CanMsg TESLA_TX_LEGACY_HW1_MSGS[] = {
     {0x488, 0, 4, .check_relay = true, .disable_static_blocking = true},  // DAS_steeringControl
     {0x2b9, 0, 8, .check_relay = true, .disable_static_blocking = true},  // DAS_control
+  };
+
+  // Stock-ACC mode: lateral only. DAS_control is absent, so openpilot cannot transmit it at all
+  // and the factory module's frames pass through untouched.
+  static const CanMsg TESLA_TX_LEGACY_HW1_STOCK_LONG_MSGS[] = {
+    {0x488, 0, 4, .check_relay = true, .disable_static_blocking = true},  // DAS_steeringControl
   };
 
   // Define RX check arrays (keeping them as is)
@@ -340,6 +366,9 @@ static safety_config tesla_legacy_init(uint16_t param) {
 
   if (tesla_hw1) {
     di_torque1_msg = 0x108U;
+    if (!tesla_legacy_longitudinal) {
+      return BUILD_SAFETY_CFG(tesla_legacy_hw1_rx_checks, TESLA_TX_LEGACY_HW1_STOCK_LONG_MSGS);
+    }
     return BUILD_SAFETY_CFG(tesla_legacy_hw1_rx_checks, TESLA_TX_LEGACY_HW1_MSGS);
   }
 
