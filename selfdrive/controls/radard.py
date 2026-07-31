@@ -41,6 +41,15 @@ TRACK_JUMP_D = 5.0   # m
 TRACK_JUMP_Y = 2.0   # m
 TRACK_JUMP_V = 7.0   # m/s
 
+# Close-range radar lead hold. get_lead gates on the vision prob before any radar matching, so a
+# dip in model confidence throws away a radar track that is still measuring the car in front.
+# Measured on this car's logs (365 segments, 148 engaged min): with the lead inside 30m, the
+# radar->vision fallback moves the reported distance +4.9m median / +9.8m p90, and 59% of those
+# fallbacks over-read by more than 2m (median: a real 18.4m reported as 24.8m). The car then
+# believes it has room it does not have. Holding the track we were already following bridges the
+# dip instead of accepting that jump.
+RADAR_LEAD_HOLD_DEFAULT_MS = 1000
+
 
 class KalmanParams:
   def __init__(self, dt: float):
@@ -147,6 +156,55 @@ class Track:
     return ret
 
 
+class RadarLeadHold:
+  """Keep following a close radar track through a vision dropout.
+
+  Strictly persistence: the held track is one the vision model already confirmed as the lead, so
+  this can never promote radar clutter (overhead signs, guardrails) into a lead on its own. It
+  only refuses to *discard* a track, and only while the radar is still measuring it, it has not
+  jumped, it is inside the configured distance, and the hold budget has not run out.
+  """
+
+  def __init__(self):
+    self.hold_dist = 0.0      # m; 0 disables the feature
+    self.max_frames = 0
+    self.track_id = -1
+    self.frames = 0
+    self.used = False         # set by get_lead when it took the hold path this frame
+
+  def configure(self, hold_dist: float, hold_ms: int) -> None:
+    self.hold_dist = max(0.0, hold_dist)
+    self.max_frames = max(1, int((hold_ms / 1000.0) / DT_MDL))
+
+  def candidate(self, tracks: dict[int, Track]) -> Track | None:
+    """The track we may keep publishing this frame, or None."""
+    if self.hold_dist <= 0.0 or self.track_id < 0 or self.frames >= self.max_frames:
+      return None
+    track = tracks.get(self.track_id)
+    # selected_count is the continuity flag: Track.update zeroes it the moment the track stops
+    # being measured or jumps, so a nonzero count means this is still the same object vision
+    # confirmed, and _update_match_counters zeroes it as soon as vision picks someone else.
+    if track is None or not track.measured or track.selected_count <= 0:
+      return None
+    if not 0.0 < track.dRel < self.hold_dist:
+      return None
+    return track
+
+  def observe(self, lead: dict[str, Any]) -> None:
+    """Bookkeeping against the lead that was actually published."""
+    if lead.get('status') and lead.get('radar'):
+      if self.used and lead.get('radarTrackId', -1) == self.track_id:
+        self.frames += 1      # still bridging the same dropout, burn budget
+      else:
+        # vision agrees again (or picked a different track): restore the full budget
+        self.track_id = int(lead.get('radarTrackId', -1))
+        self.frames = 0
+    else:
+      self.track_id = -1
+      self.frames = 0
+    self.used = False
+
+
 def laplacian_pdf(x: float, mu: float, b: float):
   b = max(b, 1e-4)
   return math.exp(-abs(x-mu)/b)
@@ -229,7 +287,8 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, low_speed_override: bool = True,
              update_counters: bool = True, stopped_lead_enabled: bool = True,
-             stopped_lead_count_max: int = STOPPED_LEAD_COUNT_MAX) -> dict[str, Any]:
+             stopped_lead_count_max: int = STOPPED_LEAD_COUNT_MAX,
+             hold: RadarLeadHold | None = None) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_msg.prob > .5:
     track = match_vision_to_track(v_ego, lead_msg, tracks, update_counters,
@@ -242,6 +301,14 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
     lead_dict = track.get_RadarState(lead_msg.prob)
   elif (track is None) and ready and (lead_msg.prob > .5):
     lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego)
+
+  # Vision either lost the lead outright or fell back to its own distance estimate, which at close
+  # range reads systematically long. Prefer the radar track we were already following.
+  if hold is not None and not (lead_dict['status'] and lead_dict.get('radar')):
+    held = hold.candidate(tracks)
+    if held is not None:
+      lead_dict = held.get_RadarState(lead_msg.prob)
+      hold.used = True
 
   if low_speed_override:
     low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
@@ -267,6 +334,7 @@ class RadarD:
     self.kalman_params = KalmanParams(DT_MDL)
 
     self.params = Params()
+    self.lead_hold = RadarLeadHold()
     self.frame = 0
     self.refresh_tuning()
 
@@ -287,6 +355,12 @@ class RadarD:
     hold_ms = self.params.get("StoppedLeadHoldMs", return_default=True) or 500
     # +STOPPED_LEAD_COUNT_UP of evidence per frame, so the threshold is half the frame count
     self.stopped_lead_count_max = max(1, int((hold_ms / 1000.0) / DT_MDL))
+
+    # Close-range radar lead hold. Distance is in cm on the param so the tuning page can offer
+    # whole-metre steps without a float param; 0 disables.
+    hold_cm = self.params.get("RadarLeadHoldCm", return_default=True) or 0
+    lead_hold_ms = self.params.get("RadarLeadHoldMs", return_default=True) or RADAR_LEAD_HOLD_DEFAULT_MS
+    self.lead_hold.configure(hold_cm / 100.0, lead_hold_ms)
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -335,10 +409,14 @@ class RadarD:
       model_v_ego = self.v_ego
     leads_v3 = sm['modelV2'].leadsV3
     if len(leads_v3) > 1:
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
-                                         low_speed_override=True,
-                                         stopped_lead_enabled=self.stopped_lead_enabled,
-                                         stopped_lead_count_max=self.stopped_lead_count_max)
+      lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
+                          low_speed_override=True,
+                          stopped_lead_enabled=self.stopped_lead_enabled,
+                          stopped_lead_count_max=self.stopped_lead_count_max,
+                          hold=self.lead_hold)
+      # The hold only applies to the lead we follow; leadTwo stays purely vision-gated.
+      self.lead_hold.observe(lead_one)
+      self.radar_state.leadOne = lead_one
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, low_speed_override=False,
                                                  update_counters=False,
                                                  stopped_lead_enabled=self.stopped_lead_enabled,
