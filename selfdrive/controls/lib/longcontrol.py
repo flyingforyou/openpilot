@@ -14,11 +14,18 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 # instead lands the stop where the plan wants it.
 VELOCITY_PID_KP = 1.0
 
+# Precise-stop (CarrotPilot) tuning, only used when velocity_pid is on. While stopping, stay in the
+# velocity PID (which decelerates accurately) until either nearly stopped or close behind a lead,
+# then commit to the brake-and-hold ramp. fcw_stop is the "don't coast into a close lead" guard.
+STOPPING_ACCEL_TH = -0.5   # m/s^2; above this (gently braking) switch to the stopping ramp
+FCW_STOP_DIST = 4.0        # m; commit to the stopping ramp this close behind a lead
+
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
 
 def long_control_state_trans(CP, active, long_control_state, v_ego,
-                             should_stop, brake_pressed, cruise_standstill):
+                             should_stop, brake_pressed, cruise_standstill,
+                             a_ego=0.0, radar_state=None, precise_stop=False):
   stopping_condition = should_stop
   starting_condition = (not should_stop and
                         not cruise_standstill and
@@ -46,7 +53,14 @@ def long_control_state_trans(CP, active, long_control_state, v_ego,
 
     elif long_control_state in [LongCtrlState.starting, LongCtrlState.pid]:
       if stopping_condition:
-        long_control_state = LongCtrlState.stopping
+        if precise_stop:
+          # Keep velocity-tracking (accurate decel) until nearly stopped, but commit to the ramp
+          # early when close behind a lead so the car doesn't coast into it (CarrotPilot fcw_stop).
+          fcw_stop = radar_state is not None and radar_state.leadOne.status and radar_state.leadOne.dRel < FCW_STOP_DIST
+          if a_ego > STOPPING_ACCEL_TH or fcw_stop:
+            long_control_state = LongCtrlState.stopping
+        else:
+          long_control_state = LongCtrlState.stopping
       elif started_condition:
         long_control_state = LongCtrlState.pid
   return long_control_state
@@ -68,14 +82,16 @@ class LongControl:
   def reset(self):
     self.pid.reset()
 
-  def update(self, active, CS, a_target, should_stop, accel_limits, v_target=0.0):
+  def update(self, active, CS, a_target, should_stop, accel_limits, v_target=0.0, radar_state=None):
     """Update longitudinal control. This updates the state machine and runs a PID loop"""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
 
     self.long_control_state = long_control_state_trans(self.CP, active, self.long_control_state, CS.vEgo,
                                                        should_stop, CS.brakePressed,
-                                                       CS.cruiseState.standstill)
+                                                       CS.cruiseState.standstill,
+                                                       a_ego=CS.aEgo, radar_state=radar_state,
+                                                       precise_stop=self.velocity_pid)
     if self.long_control_state == LongCtrlState.off:
       self.reset()
       output_accel = 0.

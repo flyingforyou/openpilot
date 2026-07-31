@@ -10,7 +10,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, COMFORT_BRAKE
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, MAX_LATERAL_ACCEL_NO_ROLL
 from openpilot.selfdrive.controls.lib.curve_speed.curve_speed_controller import CurveSpeedController
@@ -24,6 +24,7 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 PARAM_REFRESH_FRAMES = int(0.5 / DT_MDL)  # params hit disk; don't read every frame
 MIN_ALLOW_THROTTLE_SPEED = 2.5
+V_SOFT_LEAD_SPEED = 1.0  # m/s; v_soft only engages approaching a stopped/slow lead, not a moving one
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
@@ -103,6 +104,8 @@ class LongitudinalPlanner:
     # Roll with a still-moving lead: minimum lead speed (m/s) above which a full stop is not latched,
     # so the car keeps a low crawl behind a creeping lead instead of stopping then catching up. 0 = off.
     self.lead_creep_follow = int(self.params.get("LeadCreepFollowCms", return_default=True) or 0) / 100.0
+    # Precise stop (paired with the velocity PID): v_soft caps the approach speed to a stopped lead.
+    self.precise_stop = self.CP.brand == "tesla" and self.params.get_bool("TeslaVelocityPid")
 
     # Curve-speed lateral-accel budget: how hard the car loads the steering in curves. Clamped
     # below the LateralLoadGovernor ceiling (MAX_LATERAL_ACCEL_NO_ROLL = 3.0) so the reactive
@@ -199,6 +202,14 @@ class LongitudinalPlanner:
 
     if force_slow_decel:
       v_cruise = 0.0
+
+    # v_soft: approaching a stopped/slow lead, cap the speed on a physics stop curve by the room left
+    # to the target gap, so the car eases down to it instead of coasting past (CarrotPilot v_soft).
+    if self.precise_stop:
+      lead = sm['radarState'].leadOne
+      if lead.status and lead.vLeadK < V_SOFT_LEAD_SPEED:
+        stop_gap = max(lead.dRel - self.mpc.stop_distance - 1.0, 0.0)
+        v_cruise = min(v_cruise, math.sqrt(2.0 * COMFORT_BRAKE * stop_gap))
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
