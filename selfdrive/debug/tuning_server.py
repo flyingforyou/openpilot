@@ -58,9 +58,9 @@ SETTINGS = {
     "group": "차간 · 추종",
     "label": "앞차 움직임 따라 차간 조절", "type": "int",
     "help": "앞차의 가감속(저크)에 맞춰 차간시간을 실시간으로 조절합니다. 앞차가 풀어주면 차간을 "
-            "줄여 같이 굴러가고, 앞차가 감속하면 미리 벌립니다. 값은 조절 폭(초)입니다. "
-            "가다 서다에서 재출발이 매끄러워집니다. 선택한 Gap(1~7) 위에 얹혀 동작하며, 0이면 사용 안 함. "
-            "CarrotPilot의 dynamic_t_follow를 이식한 것입니다.",
+            "줄이고 동시에 가속을 더 빨리 붙여(jerk 비용 절반) 바로 따라붙습니다. 앞차가 감속하면 미리 "
+            "벌립니다. 값은 차간 조절 폭(초)입니다. 가다 서다 재출발과 앞차 따라붙기가 매끄러워집니다. "
+            "선택한 Gap(1~7) 위에 얹혀 동작하며, 0이면 사용 안 함. CarrotPilot의 dynamic_t_follow 이식.",
     "options": [(0, "사용 안 함 (기본)"), (30, "약하게 0.30초"),
                 (50, "표준 0.50초"), (80, "강하게 0.80초")],
   },
@@ -85,12 +85,6 @@ SETTINGS = {
     "help": "거리·횡방향이 일치하는 상태가 이만큼 지속되면 정지차로 확정합니다. "
             "짧으면 빨리 반응하고, 길면 오검출에 보수적입니다.",
     "options": [(300, "빠르게 0.3초"), (500, "표준 0.5초"), (800, "신중히 0.8초"), (1200, "매우 신중 1.2초")],
-  },
-  "LongitudinalPersonality": {
-    "group": "차간 · 추종",
-    "label": "기본 추종 시간(personality)", "type": "int",
-    "help": "Gap 신호가 없을 때의 기본 추종 시간입니다.",
-    "options": [(0, "aggressive"), (1, "standard"), (2, "relaxed")],
   },
   # ── 가속 · 감속 ────────────────────────────────────────────────────────────
   "LaunchAccelCms": {
@@ -777,7 +771,7 @@ code{font-family:var(--m);background:var(--bg);border:1px solid var(--line);bord
 <div class="card">
   <div class="lab">앞사람 걸음이 바뀌는 순간에 간격을 잠깐 조절</div>
   <div class="vs">
-    <div class="w">빨라짐</div><div>앞사람이 <b>갑자기 빨라지면</b> 간격을 살짝 <b class="em">좁혀서</b> 민첩하게 따라붙어.</div>
+    <div class="w">빨라짐</div><div>앞사람이 <b>갑자기 빨라지면</b> 간격을 <b class="em">좁히고 가속도 확 붙여</b>(jerk 절반) 바로 따라붙어.</div>
     <div class="w">느려짐</div><div>앞사람이 <b>갑자기 느려지면</b> 간격을 미리 <b class="em">벌려서</b> 급브레이크 없이 부드럽게 받아.</div>
   </div>
   <div class="blk"><div class="t">한 줄 로직</div>

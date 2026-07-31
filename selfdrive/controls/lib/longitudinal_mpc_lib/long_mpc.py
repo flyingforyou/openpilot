@@ -88,6 +88,10 @@ DYNAMIC_TF_JERK_V = [1.0, 0.0, 0.0, -1.0]    # scaled by the gain: + opens the g
 DYNAMIC_TF_MIN = 0.50                        # floor for the dynamically-reduced tFollow (temporary, below MIN_T_FOLLOW)
 DYNAMIC_TF_MAX = 2.00                        # ceiling
 DYNAMIC_TF_JERK_TAU = 0.5                    # s, EMA time constant on the lead-jerk estimate
+# CarrotPilot parity: when the lead is pulling away, also cut the jerk cost so the car ramps its
+# acceleration up promptly instead of dragging behind (the "can't follow the lead right away" feel).
+DYNAMIC_JERK_LEAD_ACCEL_TH = 0.2             # lead jerk (m/s^3) above which the lead counts as pulling away
+DYNAMIC_JERK_FACTOR = 0.5                    # multiply the jerk cost by this while it is
 
 # Gap profiles, selectable at runtime. The knob has 7 positions either way; these change what
 # following time each position asks for, so the whole range shifts or spreads together.
@@ -336,6 +340,11 @@ class LongitudinalMpc:
 
   def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
     jerk_factor = get_jerk_factor(personality)
+    # Dynamic follow: while the lead is pulling away, drop the jerk cost so acceleration builds
+    # quickly and the car catches up right away. Gated on the same knob as the tFollow nudge; uses
+    # the lead-jerk estimate refreshed in update() (one frame old here, ~50ms, negligible).
+    if self.dynamic_tf_gain > 0.0 and self.lead_jerk > DYNAMIC_JERK_LEAD_ACCEL_TH:
+      jerk_factor *= DYNAMIC_JERK_FACTOR
     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
     cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
     constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
