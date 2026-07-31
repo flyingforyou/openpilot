@@ -41,7 +41,28 @@ VELOCITY_PID_KP = 1.0
 STOPPING_ACCEL_TH = -0.5   # m/s^2; above this (gently braking) switch to the stopping ramp
 FCW_STOP_DIST = 4.0        # m; commit to the stopping ramp this close behind a lead
 
+# The velocity target comes from longitudinalPlan.speeds, which the planner anchors on its own
+# filtered state (v_desired_filter, RC=2.0s) rather than on vEgo. Under hard braking that anchor
+# sits above the real speed, so the tracking error turns positive and the correction *releases*
+# the brake. Measured on route 0000001b (9.1 engaged min): with aTarget <= -2.0 the delivered
+# command came out 1.11 m/s^2 short of the plan -- 33% of the braking demand -- while at
+# aTarget > -1.0 the error was 0.01-0.03, i.e. the loop behaves exactly where the precise-stop
+# benefit lives. So fade out only the brake-releasing half of the correction as the plan leans on
+# the brakes; extra braking still passes through untouched.
+BRAKE_RELEASE_FADE_BP = [-2.0, -1.0]   # aTarget: no release allowed at/below -2.0, full above -1.0
+
 LongCtrlState = car.CarControl.Actuators.LongControlState
+
+
+def limit_brake_release(output_accel: float, a_target: float) -> float:
+  """Stop velocity tracking from undoing the plan's braking (see BRAKE_RELEASE_FADE_BP)."""
+  if not np.isfinite(output_accel) or not np.isfinite(a_target):
+    return output_accel
+  release = output_accel - a_target
+  if release <= 0.0:
+    return output_accel      # the loop is asking for more braking, never limit that
+  allowed = float(np.interp(a_target, BRAKE_RELEASE_FADE_BP, [0.0, 1.0]))
+  return a_target + release * allowed
 
 
 def long_control_state_trans(CP, active, long_control_state, v_ego,
@@ -135,6 +156,8 @@ class LongControl:
       error = (target_v - CS.vEgo) if self.velocity_pid else (a_target - CS.aEgo)
       output_accel = self.pid.update(error, speed=CS.vEgo,
                                      feedforward=a_target)
+      if self.velocity_pid:
+        output_accel = limit_brake_release(output_accel, a_target)
 
     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
     return self.last_output_accel
