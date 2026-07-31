@@ -1,11 +1,18 @@
 import numpy as np
 from cereal import car
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.modeld.constants import ModelConstants
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
+
+# Velocity-tracking PID (ported from CarrotPilot). Tesla's accel PID gains are 0, i.e. the accel
+# command is pure feedforward with no closed-loop correction, so it overshoots stops. Tracking the
+# planned velocity with a closed loop (kp on velocity error, plus the plan's accel as feedforward)
+# instead lands the stop where the plan wants it.
+VELOCITY_PID_KP = 1.0
 
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
@@ -48,15 +55,20 @@ class LongControl:
   def __init__(self, CP):
     self.CP = CP
     self.long_control_state = LongCtrlState.off
-    self.pid = PIDController((CP.longitudinalTuning.kpBP, CP.longitudinalTuning.kpV),
-                             (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV),
-                             rate=1 / DT_CTRL)
+    # Velocity-tracking PID for a precise stop (Tesla only, opt-in). Otherwise the stock accel PID.
+    self.velocity_pid = CP.brand == "tesla" and Params().get_bool("TeslaVelocityPid")
+    if self.velocity_pid:
+      self.pid = PIDController(([0.], [VELOCITY_PID_KP]), ([0.], [0.]), rate=1 / DT_CTRL)
+    else:
+      self.pid = PIDController((CP.longitudinalTuning.kpBP, CP.longitudinalTuning.kpV),
+                               (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV),
+                               rate=1 / DT_CTRL)
     self.last_output_accel = 0.0
 
   def reset(self):
     self.pid.reset()
 
-  def update(self, active, CS, a_target, should_stop, accel_limits):
+  def update(self, active, CS, a_target, should_stop, accel_limits, v_target=0.0):
     """Update longitudinal control. This updates the state machine and runs a PID loop"""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
@@ -80,7 +92,9 @@ class LongControl:
       self.reset()
 
     else:  # LongCtrlState.pid
-      error = a_target - CS.aEgo
+      # Velocity PID closes the loop on the planned speed so the car lands the stop instead of
+      # coasting past it on feedforward alone; feedforward is still the plan's accel.
+      error = (v_target - CS.vEgo) if self.velocity_pid else (a_target - CS.aEgo)
       output_accel = self.pid.update(error, speed=CS.vEgo,
                                      feedforward=a_target)
 

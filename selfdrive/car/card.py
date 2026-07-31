@@ -125,6 +125,16 @@ class Car:
         if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
           cfg.safetyParam |= TeslaSafetyFlags.STOCK_AUTOPARK.value
 
+    # Stock longitudinal: hand speed control back to the car's own ACC and do lateral only. Clears
+    # openpilotLongitudinalControl (so controlsd/the planner stop actuating long, and the car
+    # controller sends DAS_control only to cancel -- see carcontroller) and drops the panda
+    # LONG_CONTROL flag so the factory DAS_control is forwarded instead of blocked. Set at init, so
+    # a restart is required to change it.
+    if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaStockLong"):
+      self.CP.openpilotLongitudinalControl = False
+      for cfg in self.CP.safetyConfigs:
+        cfg.safetyParam &= ~TeslaSafetyFlags.LONG_CONTROL.value
+
     # Cooperative steering: openpilot shifts its angle target toward the driver instead of
     # letting go of the wheel, so a takeover never has to push hard enough for the EPS to
     # inhibit. CarState reads CP.flags every frame off this same object.
