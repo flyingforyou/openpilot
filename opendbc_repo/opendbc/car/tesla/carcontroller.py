@@ -67,11 +67,15 @@ class CarController(CarControllerBase):
         cntr = (self.frame // 4) % 8
         can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive, CS.out.gasPressed))
 
-    else:
+    elif self.CP.carFingerprint not in LEGACY_CARS:
       # Increment counter so cancel is prioritized even without openpilot longitudinal
       if CC.cruiseControl.cancel:
         cntr = (CS.das_control["DAS_controlCounter"] + 1) % 8
         can_sends.append(self.tesla_can.create_longitudinal_command(13, 0, cntr, CS.out.vEgo, False, CS.out.gasPressed))
+    # Legacy cars with stock ACC: the factory module owns DAS_control and panda forwards its
+    # frames straight through, so openpilot must stay off the id entirely -- not even a cancel.
+    # Interleaving two counters on it is what the car reads as a fault, taking TACC and Autopilot
+    # down with it. Cancelling is the driver's job here, via the stalk.
 
     # TODO: HUD control
     new_actuators = actuators.as_builder()

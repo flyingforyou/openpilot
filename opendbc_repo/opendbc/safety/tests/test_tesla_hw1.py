@@ -70,7 +70,11 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
                                 self.define.dv["DAS_steeringControl"]["DAS_steeringControlType"].items()}
 
     self.safety = libsafety_py.libsafety
-    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy, int(TeslaSafetyFlags.FLAG_HW1))
+    # LONG_CONTROL is what this class describes: every one of RELAY_MALFUNCTION_ADDRS,
+    # FWD_BLACKLISTED_ADDRS and TX_MSGS assumes openpilot owns DAS_control. Stock ACC is the
+    # other mode and gets its own class below.
+    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy,
+                                 int(TeslaSafetyFlags.FLAG_HW1 | TeslaSafetyFlags.LONG_CONTROL))
     self.safety.init_tests()
 
   def _angle_cmd_msg(self, angle: float, state: bool | int, increment_timer: bool = True, bus: int = 0):
@@ -306,6 +310,63 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
 
         # Recover
         self.assertTrue(self._tx(self._angle_cmd_msg(0, True)))
+
+
+class TestTeslaHW1StockLongSafety(TestTeslaHW1Safety):
+  """Stock ACC: the factory module keeps longitudinal and openpilot does lateral only.
+
+  Everything lateral is inherited unchanged. What flips is DAS_control: openpilot must not be
+  able to put a single frame on that id, and the stock module's frames must reach the car.
+  Sending anyway is what the car reads as a fault, and it takes TACC and Autopilot down together.
+  """
+  # openpilot no longer owns DAS_control, so it is neither a TX message nor forward-blocked
+  RELAY_MALFUNCTION_ADDRS = {0: (MSG_DAS_steeringControl,)}
+  FWD_BLACKLISTED_ADDRS = {2: [MSG_DAS_steeringControl]}
+  TX_MSGS = [[MSG_DAS_steeringControl, 0]]
+  LONGITUDINAL = False
+
+  def setUp(self):
+    super().setUp()
+    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy, int(TeslaSafetyFlags.FLAG_HW1))
+    self.safety.init_tests()
+
+  def test_no_longitudinal_tx(self):
+    # engaged or not, with any payload -- the id is simply not ours in this mode
+    for controls_allowed in (False, True):
+      self.safety.set_controls_allowed(controls_allowed)
+      self.assertFalse(self._tx(self._long_control_msg(10, accel_limits=(0, 0))))
+      self.assertFalse(self._tx(self._long_control_msg(0, acc_state=self.acc_states['ACC_CANCEL_GENERIC_SILENT'])))
+
+  def test_stock_das_control_is_forwarded(self):
+    # the whole point: the factory ACC's frames have to reach the car
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_Control_HW1))
+
+  def test_steering_is_unaffected(self):
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(self._angle_cmd_msg(0, state=self.steer_control_types['ANGLE_CONTROL'])))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+
+  # The three below all inspect what openpilot is allowed to put in its own DAS_control. In this
+  # mode it has none -- the blanket block in test_no_longitudinal_tx is the stronger statement --
+  # so they are replaced rather than inherited.
+
+  def test_prevent_reverse(self):
+    # upstream checks the accel-limit signs; here no payload can get out at all
+    self.safety.set_controls_allowed(True)
+    for limits in ((1.1, 0.8), (0, 0), (-0.8, 1.3), (0.8, -1.3)):
+      self.assertFalse(self._tx(self._long_control_msg(set_speed=10, accel_limits=limits)))
+
+  def test_no_aeb(self):
+    # openpilot cannot send an AEB event because it cannot send the message that carries one
+    self.assertFalse(self._tx(self._long_control_msg(10, aeb_event=1)))
+    self.assertFalse(self._tx(self._long_control_msg(10, aeb_event=0)))
+
+  def test_stock_aeb_passthrough(self):
+    # upstream gates DAS_control forwarding on the stock AEB bit; here it forwards unconditionally
+    # because the factory module owns the id, AEB or not
+    for aeb in (0, 1):
+      self.assertEqual(1, self._rx(self._long_control_msg(0, aeb_event=aeb, bus=2)))
+      self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_Control_HW1))
 
 
 if __name__ == "__main__":

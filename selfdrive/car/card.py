@@ -17,6 +17,7 @@ from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
+from opendbc.car.tesla.values import TeslaSafetyFlags
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 
@@ -116,6 +117,18 @@ class Car:
       safety_config = structs.CarParams.SafetyConfig()
       safety_config.safetyModel = structs.CarParams.SafetyModel.noOutput
       self.CP.safetyConfigs = [safety_config]
+
+    # Stock longitudinal: hand speed control back to the car's own ACC and do lateral only.
+    # Clearing openpilotLongitudinalControl stops controlsd/the planner actuating long and makes
+    # the car controller go silent on DAS_control; dropping the panda LONG_CONTROL flag is what
+    # then makes the factory DAS_control forward through instead of being blocked, and drops the
+    # message from the TX allowlist so openpilot cannot transmit it at all. Both halves are
+    # required -- with only the first, the stock frames stayed blocked and the car lost TACC and
+    # Autopilot together. Set at init, so a restart is required to change it.
+    if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaStockLong"):
+      self.CP.openpilotLongitudinalControl = False
+      for cfg in self.CP.safetyConfigs:
+        cfg.safetyParam &= ~TeslaSafetyFlags.LONG_CONTROL.value
 
     if self.CP.secOcRequired:
       # Copy user key if available
