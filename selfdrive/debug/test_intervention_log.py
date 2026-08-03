@@ -84,6 +84,28 @@ def test_takeover_while_disengaged_grades_nobody(log, tmp_path):
   assert il.list_events(str(tmp_path)) == []
 
 
+def test_brake_in_tacc_records_even_though_the_disengage_lands_first(log, monkeypatch):
+  """The case this has to survive on a pcmCruise car: braking cancels the stock ACC, which
+  drops openpilot with it, and nothing orders that against the brake edge. If the disengage is
+  reported on the same sample as the brake, requiring the previous sample to still be engaged
+  would silently lose exactly the events worth having."""
+  monkeypatch.setattr(il, 'ENGAGED_LOOKBACK_N', 20)
+  _settle(log, enabled=True)
+  # brake edge and disengage arrive together
+  log.update(FakeSM(brake=True, enabled=False))
+  assert log.pending is not None, "a TACC brake takeover must still be recorded"
+  assert log.pending['cause'] == 'brake'
+
+
+def test_a_stale_engagement_does_not_resurrect_an_old_takeover(log, monkeypatch):
+  # the lookback is a short grace window, not "was ever engaged"
+  monkeypatch.setattr(il, 'ENGAGED_LOOKBACK_N', 3)
+  _settle(log, n=2, enabled=True)
+  _settle(log, n=6, enabled=False)
+  log.update(FakeSM(brake=True, enabled=False))
+  assert log.pending is None, "long after disengaging, a brake press grades nobody"
+
+
 def test_hard_steering_override_is_its_own_cause(log):
   _settle(log)
   log.update(FakeSM(steer=True))

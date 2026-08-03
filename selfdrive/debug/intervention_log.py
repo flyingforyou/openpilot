@@ -26,6 +26,9 @@ MAX_EVENTS = 200        # bounded; oldest go first
 
 PRE_N = int(PRE_S * SAMPLE_HZ)
 POST_N = int(POST_S * SAMPLE_HZ)
+# How far back "openpilot was driving into this" reaches. Braking cancels the stock ACC and the
+# disengage can be reported before the brake edge, so one sample is not enough.
+ENGAGED_LOOKBACK_N = int(1.0 * SAMPLE_HZ)
 
 
 def _cause(cs, cs_prev) -> str | None:
@@ -101,8 +104,12 @@ class InterventionLog:
       return
 
     cause = _cause(cs, self.prev)
-    # only while openpilot was actually driving -- a brake press offroad grades nobody
-    if cause is not None and self.prev['enabled']:
+    # Only grade a takeover if openpilot was driving into it -- a brake press offroad grades
+    # nobody. Deliberately "recently engaged" rather than "engaged last sample": braking cancels
+    # the stock ACC, which on a pcmCruise car drops openpilot with it, and nothing orders that
+    # against the brake edge. Requiring the previous sample to still be engaged loses the event
+    # whenever the disengage is reported first.
+    if cause is not None and self._was_engaged():
       self.pending = {
         'wallTime': time.time(),
         'cause': cause,
@@ -113,6 +120,12 @@ class InterventionLog:
       self.post_left = POST_N
 
     self._remember(cs, ss)
+
+  def _was_engaged(self) -> bool:
+    """Was openpilot driving in the moment leading up to this? Looks back over the buffer
+    rather than one sample, so the order of the brake edge and the disengage does not matter."""
+    recent = list(self.buf)[-ENGAGED_LOOKBACK_N:]
+    return any(s['engaged'] for s in recent)
 
   def _remember(self, cs, ss) -> None:
     self.prev = {'brakePressed': bool(cs.brakePressed),
