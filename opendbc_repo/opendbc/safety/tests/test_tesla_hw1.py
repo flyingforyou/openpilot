@@ -499,6 +499,15 @@ class TestTeslaHW1StockLongSafety(TestTeslaHW1Safety):
     # the whole point: the factory ACC's frames have to reach the car
     self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_Control_HW1))
 
+  def test_stock_autopark_blocked_unless_opted_in(self):
+    # Same intent as the base case -- no autopark flag, so the steering gate stays shut -- but
+    # DAS_control is forwarded here regardless, because the factory ACC owns it in this mode.
+    self._rx(self._stock_steering_msg())
+    self._rx(self._long_control_msg(0, acc_state=self.acc_states['APC_SELFPARK_START'], bus=2))
+
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_Control_HW1))
+
   def test_steering_is_unaffected(self):
     self.safety.set_controls_allowed(True)
     self.assertTrue(self._tx(self._angle_cmd_msg(0, state=self.steer_control_types['ANGLE_CONTROL'])))
