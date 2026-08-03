@@ -24,8 +24,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cereal.messaging as messaging
 from openpilot.common.params import Params
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.debug import vehicle_state, video_source
 from openpilot.selfdrive.debug.can_source import CanSource, list_routes
+from openpilot.selfdrive.debug.intervention_log import InterventionLog, list_events, read_event
 
 # Options rather than free-form numbers: a typo in a text box goes straight into the braking
 # path, and named choices are also what makes an A/B run reproducible afterwards.
@@ -131,12 +133,19 @@ class State:
   def __init__(self):
     self.lock = threading.Lock()
     self.data: dict = {'onroad': False, 'connected': False}
+    self.interventions = InterventionLog()
     threading.Thread(target=self._run, daemon=True).start()
 
   def _run(self):
     sm = messaging.SubMaster(STATE_SERVICES)
     while True:
       sm.update(100)
+      # Same subscription already carries everything an intervention record needs, including
+      # longitudinalPlan -- which is the shadow answer from the controller that was not driving.
+      try:
+        self.interventions.update(sm)
+      except Exception:
+        cloudlog.exception("intervention_log update failed")
       cs, rs = sm['carState'], sm['radarState']
       lead = rs.leadOne
       with self.lock:
@@ -245,6 +254,15 @@ class Handler(BaseHTTPRequestHandler):
     if self.path.startswith('/api/vehicle'):
       return self._send(200, json.dumps({**vehicle_state.build(self.can.get()), **self.can.state()}))
 
+    if self.path.startswith('/api/events'):
+      # ?event=<name> returns the full sample window; without it, just the index
+      qs = self.path.split('?', 1)[1] if '?' in self.path else ''
+      name = next((p[6:] for p in qs.split('&') if p.startswith('event=')), None)
+      if name:
+        ev = read_event(name)
+        return self._send(200 if ev else 404, json.dumps(ev or {'error': 'not found'}))
+      return self._send(200, json.dumps({'events': list_events()}))
+
     if self.path.startswith('/api/settings'):
       out = {}
       for k, cfg in SETTINGS.items():
@@ -288,6 +306,8 @@ class Handler(BaseHTTPRequestHandler):
 
     if page == '/live':
       return self._send(200, PAGE_LIVE, 'text/html; charset=utf-8')
+    if page == '/events':
+      return self._send(200, PAGE_EVENTS, 'text/html; charset=utf-8')
     if page == '/can':
       return self._send(200, PAGE_CAN, 'text/html; charset=utf-8')
     if page == '/vehicle':
@@ -344,6 +364,110 @@ class Handler(BaseHTTPRequestHandler):
     return self._send(200, json.dumps({'ok': True, 'count': len(changes), 'engaged': engaged}))
 
 
+
+
+PAGE_EVENTS = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>개입 기록</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--vision:#F5B942;--ok:#4CC38A;--bad:#E5484D;
+--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--vision:#9A6210;--ok:#1B7F53;--bad:#C42B30}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);
+padding:16px;padding-bottom:calc(16px + env(safe-area-inset-bottom))}
+h1{font-size:15px;margin:0 0 4px;letter-spacing:-.01em}
+.back{display:inline-block;font-family:var(--m);font-size:11px;color:var(--dim);text-decoration:none;margin-bottom:10px}.back:hover{color:var(--radar)}
+.sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:10px;cursor:pointer}
+.card:hover{border-color:var(--radar)}
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap}
+.when{font-family:var(--m);font-size:12px}
+.tag{font-family:var(--m);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+padding:2px 7px;border-radius:5px;border:1px solid var(--line);color:var(--mut)}
+.tag.brake{color:var(--bad);border-color:var(--bad)}
+.tag.steer{color:var(--vision);border-color:var(--vision)}
+.tag.gas{color:var(--ok);border-color:var(--ok)}
+.d{font-family:var(--m);font-size:19px;font-variant-numeric:tabular-nums}
+.d.neg{color:var(--bad)}
+.meta{font-family:var(--m);font-size:11px;color:var(--dim);margin-top:8px}
+.meta b{color:var(--mut);font-weight:400}
+.empty{font-family:var(--m);font-size:12px;color:var(--dim);text-align:center;padding:40px 0}
+canvas{width:100%;height:150px;display:block;margin-top:10px}
+.legend{font-family:var(--m);font-size:10px;color:var(--dim);margin-top:6px}
+.legend i{display:inline-block;width:9px;height:2px;vertical-align:middle;margin-right:4px}
+a.vid{font-family:var(--m);font-size:11px;color:var(--radar);text-decoration:none;margin-right:14px}
+</style></head><body>
+<a class="back" href="/">&larr; 인덱스</a>
+<h1>개입 기록</h1>
+<div class="sub">운전자가 시스템을 끈 순간 · 그때 두 제어기가 각각 원한 것</div>
+<div id="list"><div class="empty">불러오는 중…</div></div>
+<script>
+const fmt = t => new Date(t*1000).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',
+  hour:'2-digit',minute:'2-digit',second:'2-digit'});
+const CAUSE = {brake:'브레이크', steer:'조향', gas:'가속'};
+
+function draw(cv, s){
+  const ctx = cv.getContext('2d'), W = cv.width = cv.clientWidth*2, H = cv.height = 300;
+  ctx.clearRect(0,0,W,H);
+  const vals = s.flatMap(p => [p.opAccel, p.aEgo]);
+  const lo = Math.min(-1, ...vals), hi = Math.max(1, ...vals);
+  const y = v => H - ((v-lo)/(hi-lo))*(H-20) - 10, x = i => (i/(s.length-1))*W;
+  ctx.strokeStyle = getComputedStyle(document.body).getPropertyValue('--line');
+  ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0,y(0)); ctx.lineTo(W,y(0)); ctx.stroke();
+  const line = (key, col) => {
+    ctx.strokeStyle = col; ctx.lineWidth = 3; ctx.beginPath();
+    s.forEach((p,i) => i ? ctx.lineTo(x(i), y(p[key])) : ctx.moveTo(x(i), y(p[key])));
+    ctx.stroke();
+  };
+  const cs = getComputedStyle(document.body);
+  line('aEgo', cs.getPropertyValue('--mut'));      // 실제로 일어난 일
+  line('opAccel', cs.getPropertyValue('--radar')); // openpilot이 원한 것
+}
+
+async function open_(name, el){
+  if (el.dataset.open) { el.querySelector('.detail')?.remove(); delete el.dataset.open; return; }
+  const r = await fetch('/api/events?event=' + encodeURIComponent(name));
+  const e = await r.json();
+  if (!e.samples) return;
+  const seg = e.route ? `<a class="vid" href="/videos">영상 보기</a>` : '';
+  const d = document.createElement('div');
+  d.className = 'detail';
+  d.innerHTML = `<canvas></canvas>
+    <div class="legend"><i style="background:var(--radar)"></i>openpilot 요구
+      &nbsp;&nbsp;<i style="background:var(--mut)"></i>실제 가속도</div>
+    <div class="meta">${seg}<a class="vid" href="/can">CAN 리플레이</a>
+      <b>route</b> ${e.route || '-'}</div>`;
+  el.appendChild(d);
+  el.dataset.open = '1';
+  draw(d.querySelector('canvas'), e.samples);
+}
+
+async function load(){
+  const r = await fetch('/api/events');
+  const {events} = await r.json();
+  const box = document.getElementById('list');
+  if (!events.length){ box.innerHTML = '<div class="empty">아직 기록된 개입이 없습니다</div>'; return; }
+  box.innerHTML = '';
+  for (const e of events){
+    const el = document.createElement('div');
+    el.className = 'card';
+    const lead = e.leadStatus ? `${e.leadDRel}m ${e.leadRadar?'R':'V'}` : '없음';
+    el.innerHTML = `<div class="row">
+        <span class="when">${fmt(e.wallTime)}</span>
+        <span class="tag ${e.cause}">${CAUSE[e.cause]||e.cause}</span>
+        <span class="d ${e.disagreement<0?'neg':''}">${e.disagreement>0?'+':''}${e.disagreement}</span>
+      </div>
+      <div class="meta"><b>속도</b> ${e.vEgo}m/s &nbsp; <b>앞차</b> ${lead}
+        &nbsp; <b>롱</b> ${e.stockLong?'순정 ACC':'openpilot'}
+        &nbsp; <b>op</b> ${e.opAccel} <b>실제</b> ${e.aEgo}</div>`;
+    el.onclick = () => open_(e.name, el);
+    box.appendChild(el);
+  }
+}
+load();
+</script></body></html>"""
 
 
 PAGE_LIVE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
@@ -541,6 +665,13 @@ border:1px solid var(--line);color:var(--mut)}
   <div class="d">R/V 인식 출처, 앞차 거리·속도, gap, 제동 요구를 실시간으로 보고
     정지차 매칭 보정 같은 옵션을 바꿉니다.</div>
   <div class="st"><span class="pill" id="p-eng">–</span><span class="pill" id="p-lead">–</span></div>
+</a>
+
+<a class="card" href="/events">
+  <div class="t">개입 · 운전자가 끈 순간</div>
+  <div class="d">브레이크나 강한 조향으로 시스템을 끈 시점을 전후 구간과 함께 기록합니다.
+    그때 openpilot이 원했던 값이 같이 남으므로, 순정 ACC와 어느 쪽이 맞았는지 비교할 수 있습니다.</div>
+  <div class="st"><span class="pill" id="p-evt">–</span></div>
 </a>
 
 <a class="card" href="/vehicle">

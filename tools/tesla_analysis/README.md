@@ -40,6 +40,7 @@ so they cannot be piped.
 | `autopark_offer.py <route>...` | Windows where the car offered autopark, and whether openpilot was engaged through them |
 | `gap_sizes.py` | How sparse the stock module's bus requests are -- what sizes a hand-back timeout |
 | `replay_coop.py <route> <from> <to>` | Replays a recorded override through the cooperative steering controller |
+| `shadow_compare.py <seg>...` | Grades the stock ACC against openpilot's shadow plan at every driver takeover, and counts how often a "more conservative wins" gate would have fired without one |
 
 ## A warning about foreign signal databases
 
