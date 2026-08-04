@@ -89,8 +89,6 @@ class CarState(CarStateBase):
       self.shifter_values = self.can_define.dv["DI_systemStatus"]["DI_gear"]
 
     self.autopark = False
-    self.autopark_prev = False
-    self.cruise_enabled_prev = False
     self.fsd14_error_logged = False
     self.suspected_fsd14 = False
 
@@ -101,16 +99,23 @@ class CarState(CarStateBase):
     self.das_control = None
     self.cruise_gap = 0
 
-  def update_autopark_state(self, autopark_now: bool, cruise_enabled: bool):
+  def update_autopark_state(self, autopark_now: bool):
     # Takes the decoded "the park module has the car" boolean rather than the signal it came
-    # from, so both car generations can share the latch. Model 3/Y read DI_autoparkState off
-    # DI_state; the legacy DI_state has no such field, so HW1 derives it from AutopilotStatus.
-    if autopark_now and not self.autopark_prev and not self.cruise_enabled_prev:
-      self.autopark = True
-    if not autopark_now:
-      self.autopark = False
-    self.autopark_prev = autopark_now
-    self.cruise_enabled_prev = cruise_enabled
+    # from, so both car generations can share this. Model 3/Y read DI_autoparkState off DI_state;
+    # the legacy DI_state has no such field, so HW1 derives it from AutopilotStatus.
+    #
+    # This used to be an edge latch: arm only on the rising edge of autopark_now, and only if
+    # cruise was not already enabled the frame before. In practice cruise is very often already
+    # on before the car ever offers a spot -- approaching with ACC engaged is the ordinary case,
+    # not the exception -- so the arm condition never fired and cruiseState.enabled leaked
+    # through for the whole encounter. Once that happens on this platform it is not a one-frame
+    # blip: panda's own fwd_hook state machine drops tesla_legacy_autopark_ts_valid the instant
+    # controls_allowed goes true, which closes the DAS_steeringControl forwarding gate outright
+    # (tesla_legacy_stock_autopark requires !controls_allowed) -- the stock module keeps steering
+    # on bus 2 but the EPS on bus 0 stops hearing it, and ~250-300ms later that surfaces as
+    # EAC_INHIBITED/TMP_FAULT and an APC_ABORT. No latch, no race: mask for as long as the car
+    # says autopark has the wheel, full stop.
+    self.autopark = autopark_now
 
   def update(self, can_parsers) -> structs.CarState:
     if self.CP.carFingerprint in LEGACY_CARS:
@@ -156,7 +161,7 @@ class CarState(CarStateBase):
 
     autopark_state = self.can_define.dv["DI_state"]["DI_autoparkState"].get(int(cp_party.vl["DI_state"]["DI_autoparkState"]), None)
     cruise_enabled = cruise_state in ("ENABLED", "STANDSTILL", "OVERRIDE", "PRE_FAULT", "PRE_CANCEL")
-    self.update_autopark_state(autopark_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED"), cruise_enabled)
+    self.update_autopark_state(autopark_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED"))
 
     # Match panda safety cruise engaged logic
     ret.cruiseState.enabled = cruise_enabled and not self.autopark
@@ -280,7 +285,7 @@ class CarState(CarStateBase):
     speed_units = self.can_defines["DI_state"]["DI_speedUnits"].get(int(cp_chassis.vl["DI_state"]["DI_speedUnits"]), None)
 
     cruise_enabled = cruise_state in ("ENABLED", "STANDSTILL", "OVERRIDE", "PRE_FAULT", "PRE_CANCEL")
-    self.update_autopark_state(autopark_offered, cruise_enabled)
+    self.update_autopark_state(autopark_offered)
 
     # Match panda safety cruise engaged logic. Autopark drives the car through the ACC channel,
     # so the car reports cruise enabled the moment the maneuver starts. Taking that at face value
