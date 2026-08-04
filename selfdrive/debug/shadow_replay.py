@@ -80,8 +80,11 @@ def extract(route: str, seg: int) -> list[dict]:
   next_t = 0.0
   frames: list[dict] = []
 
-  # A segment's rlog opens with initData, whose logMonoTime is the route's start rather than the
-  # segment's. Start the clock at the first real data frame instead.
+  # t=0 has to be the video's first frame, because the chart is read against the video. That is
+  # roadEncodeIdx with segmentId 0 -- the frame the segment's camera file actually starts on.
+  # Anchoring on the first carState instead is only right when the two happen to coincide: on
+  # the first segment of a route the cameras are recording seconds before the car is fingerprinted
+  # and carState appears, which slid the whole chart against the video by that much.
   DATA = ('carState', 'longitudinalPlan', 'radarState', 'selfdriveState', 'modelV2')
   fingerprint = None
 
@@ -90,12 +93,17 @@ def extract(route: str, seg: int) -> list[dict]:
     if w == 'carParams' and fingerprint is None:
       fingerprint = str(evt.carParams.carFingerprint)
       continue
+    if w == 'roadEncodeIdx' and t0 is None and evt.roadEncodeIdx.segmentId == 0:
+      t0 = evt.logMonoTime / 1e9
+      continue
     if w not in DATA:
       continue
     t = evt.logMonoTime / 1e9
     if t0 is None:
       t0 = t
     dt = t - t0
+    if dt < 0:
+      continue          # data that predates the segment's first video frame
 
     if w == 'carState':
       cs = evt.carState
