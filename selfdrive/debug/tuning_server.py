@@ -1292,21 +1292,25 @@ function readout(r){
   ].map(([k,v])=>`<div class="rd"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
 }
 
-// 그래프를 누르면 그 지점으로 옮기고 바로 재생한다
+// 누르면 그 지점에 세워둔다. 재생은 재생 버튼으로만 -- 프레임을 하나씩 살펴보려고 누르는데
+// 매번 영상이 달아나면 그 지점을 다시 잡아야 한다.
 $('ch').onclick=e=>{
-  if(!DATA) return;
   const b=e.currentTarget.getBoundingClientRect(), L=46,R=14;
-  const dur=DATA.rows[DATA.rows.length-1][0];
+  const dur=DATA ? DATA.rows[DATA.rows.length-1][0]
+                 : ((video() && isFinite(video().duration)) ? video().duration-VOFF : 60);
+  const v=video(); if(v && !v.paused) v.pause();
   seek(Math.max(0,Math.min(1,(e.clientX-b.left-L)/(b.width-L-R)))*dur);
-  const v=video(); if(v && v.paused) v.play().catch(()=>{});
 };
 $('play').onclick=()=>{
   solve();                       // 결과가 없으면 재생과 함께 풀어둔다
   const v=video(); if(!v) return;
   if(v.paused) v.play().catch(()=>{}); else v.pause();
 };
-$('worst').onclick=()=>{ if(worstT==null) return; seek(Math.max(0,worstT-4));
-  const v=video(); if(v&&v.paused) v.play().catch(()=>{}); };
+$('worst').onclick=()=>{
+  if(worstT==null) return;
+  const v=video(); if(v && !v.paused) v.pause();
+  seek(Math.max(0, worstT-4));
+};
 addEventListener('resize',draw);
 boot(); tick();
 </script>
