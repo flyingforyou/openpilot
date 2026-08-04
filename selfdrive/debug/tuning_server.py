@@ -1023,6 +1023,12 @@ margin-bottom:11px;overflow:hidden}
 .card>h2{font-size:12px;margin:0;padding:10px 13px;border-bottom:1px solid var(--line);
 color:var(--mut);font-weight:600}
 .pad{padding:13px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+/* 영상은 그대로 두고 그래프는 아래에 둔다. 위에 겹치면 재생이 시작될 때 브라우저가 video 를
+   별도 합성 레이어로 올리면서 캔버스를 덮어버린다. */
+.vid{margin:13px 13px 0;background:#000;border-radius:9px;overflow:hidden}
+.vid video{width:100%;max-height:52vh;display:block}
+.novid{aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;
+color:var(--dim);font-size:12px}
 select,input{background:var(--bg);border:1px solid var(--line);color:var(--tx);border-radius:8px;
 padding:7px 10px;font-size:12px;font-family:var(--m)}
 button{background:transparent;border:1px solid var(--line);color:var(--tx);border-radius:8px;
@@ -1064,12 +1070,18 @@ background:var(--line);border-top:1px solid var(--line)}
 
 <div class="card">
   <h2 id="chartTitle">결과</h2>
+  <div class="vid" id="vidwrap"></div>
   <canvas id="ch"></canvas>
   <div class="legend">
     <span><i style="background:#F5B942"></i>순정 ACC 실제 (aEgo)</span>
     <span><i style="background:#8A97A6"></i>주행 당시 계획 (기록된 aTarget)</span>
     <span><i style="background:#5AC8FA"></i>지금 코드가 내놓는 계획</span>
     <span><i style="background:#FF6B5A"></i>하한에 붙은 구간</span>
+  </div>
+  <div class="pad" style="padding-top:0">
+    <button id="play">▶ 재생</button>
+    <button id="worst" title="지금 코드와 순정이 가장 크게 갈린 순간">최대 격차로</button>
+    <span class="lbl" id="tt" style="margin-left:auto;font-family:var(--m)">—</span>
   </div>
   <div class="read" id="read"></div>
 </div>
@@ -1091,7 +1103,7 @@ background:var(--line);border-top:1px solid var(--line)}
 
 <script>
 const MPH=2.2369363;
-let DATA=null, poll=null;
+let DATA=null, poll=null, vt=0, VOFF=0, worstT=null;
 const $=id=>document.getElementById(id);
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
@@ -1125,13 +1137,49 @@ async function check(){
   if(d.status==='done'){ $('msg').className='msg'; show(d); }
 }
 
+const video=()=>document.getElementById('v');
+
 function show(d){
-  DATA=d;
+  DATA=d; vt=0; VOFF=0;
   $('chartTitle').textContent =
     `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''}) · 푸는 데 ${d.solveSec}초`;
   const hit=d.rows.filter(r=>r[6]&32).length;
   $('msg').textContent = `${d.rows.length}프레임, 하한에 닿은 프레임 ${hit}개 (${(hit/20).toFixed(1)}초)`;
+
+  // 지금 코드가 순정보다 가장 많이 더 감속을 원한 순간
+  let best=0; worstT=null;
+  for(const r of d.rows){ const g=r[3]-r[1]; if(g<best){best=g; worstT=r[0];} }
+
+  // 영상은 세그먼트와 같은 시간축을 쓴다. qcamera 는 세그먼트 시작에서 시작하고,
+  // 리먹스가 타임스탬프를 0 으로 되돌린다 -- 되돌리지 않은 옛 캐시를 대비해 길이 차이로 보정한다.
+  const wrap=$('vidwrap');
+  wrap.innerHTML = `<video id="v" controls preload="auto" playsinline
+      src="/v/${encodeURIComponent(d.route)}/${d.seg}.mp4"></video>`;
+  const v=video(), dur=d.rows.length?d.rows[d.rows.length-1][0]:60;
+  v.onloadedmetadata=()=>{
+    if(isFinite(v.duration) && v.duration > dur+1){ VOFF=v.duration-dur; try{v.currentTime=VOFF;}catch(e){} }
+  };
+  v.onerror=()=>{ wrap.innerHTML='<div class="novid">이 세그먼트에는 영상이 없습니다</div>'; };
+  v.onplay =()=>$('play').textContent='❚❚ 일시정지';
+  v.onpause=()=>$('play').textContent='▶ 재생';
   draw();
+}
+
+function seek(t){
+  if(!DATA) return;
+  const dur=DATA.rows[DATA.rows.length-1][0];
+  vt=Math.max(0,Math.min(dur,t));
+  const v=video(); if(v) try{ v.currentTime=vt+VOFF; }catch(e){}
+  draw();
+}
+
+// 루프는 멈추지 않고 돈다. 재생 이벤트로 켜는 구조는 그 이벤트를 한 번 놓치면 화면이 영영
+// 갱신되지 않고 원인도 드러나지 않는다.
+function tick(){
+  const v=video();
+  if(v && !v.paused) vt=Math.max(0, v.currentTime-VOFF);
+  if(DATA) draw();
+  requestAnimationFrame(tick);
 }
 
 function draw(){
@@ -1169,14 +1217,25 @@ function draw(){
   g.textAlign='center'; g.fillStyle=css('--dim');
   const step=dur>45?10:5;
   for(let t=0;t<=dur;t+=step) g.fillText(String(t), x(t), B+16);
+
+  // 현재 재생 위치: 지나온 구간을 덮고 경계에 손잡이를 세운다
+  const px=Math.round(x(Math.min(vt,dur)))+.5;
+  g.fillStyle=css('--bg'); g.globalAlpha=.5; g.fillRect(L,T,Math.max(0,px-L),ih); g.globalAlpha=1;
+  g.strokeStyle=css('--radar'); g.lineWidth=2;
+  g.beginPath(); g.moveTo(px,T-6); g.lineTo(px,B+6); g.stroke();
+  g.fillStyle=css('--radar');
+  g.beginPath(); g.moveTo(px-5,T-8); g.lineTo(px+5,T-8); g.lineTo(px,T-1); g.closePath(); g.fill();
+  const r=rows[Math.min(rows.length-1,Math.round(vt*20))];
+  if(r) for(const [col,color] of [[1,'#F5B942'],[3,'#5AC8FA']]){
+    g.beginPath(); g.arc(px,y(r[col]),4,0,7); g.fillStyle=color; g.fill();
+    g.strokeStyle=css('--card'); g.lineWidth=1.8; g.stroke();
+  }
+  readout(r);
+  $('tt').textContent=`${vt.toFixed(2)}s / ${dur.toFixed(0)}s`;
 }
 
-$('ch').onclick=e=>{
-  if(!DATA) return;
-  const b=e.currentTarget.getBoundingClientRect(), L=46,R=14;
-  const rows=DATA.rows, dur=rows[rows.length-1][0];
-  const t=Math.max(0,Math.min(1,(e.clientX-b.left-L)/(b.width-L-R)))*dur;
-  const r=rows[Math.min(rows.length-1,Math.round(t*20))];
+function readout(r){
+  if(!r) return;
   const d=r[3]-r[1];
   $('read').innerHTML=[
     ['시각',`${r[0].toFixed(1)}<small>s</small>`],
@@ -1190,9 +1249,22 @@ $('ch').onclick=e=>{
     ['갭',r[7]||'—'],
     ['하한',(r[6]&32)?`<span style="color:${css('--bad')}">닿음</span>`:'—'],
   ].map(([k,v])=>`<div class="rd"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+}
+
+// 그래프를 누르면 그 지점으로 옮기고 바로 재생한다
+$('ch').onclick=e=>{
+  if(!DATA) return;
+  const b=e.currentTarget.getBoundingClientRect(), L=46,R=14;
+  const dur=DATA.rows[DATA.rows.length-1][0];
+  seek(Math.max(0,Math.min(1,(e.clientX-b.left-L)/(b.width-L-R)))*dur);
+  const v=video(); if(v && v.paused) v.play().catch(()=>{});
 };
+$('play').onclick=()=>{ const v=video(); if(!v) return;
+  if(v.paused) v.play().catch(()=>{}); else v.pause(); };
+$('worst').onclick=()=>{ if(worstT==null) return; seek(Math.max(0,worstT-4));
+  const v=video(); if(v&&v.paused) v.play().catch(()=>{}); };
 addEventListener('resize',draw);
-boot();
+boot(); tick();
 </script>
 </body></html>
 """
