@@ -297,11 +297,13 @@ class Handler(BaseHTTPRequestHandler):
 
     page = self.path.split('?')[0].rstrip('/')
 
-    # /v/<route>/<seg>.mp4 -- the road preview, remuxed so a browser will play it
+    # /v/<route>/<seg>.mp4[?q=preview|copy|h264] -- remuxed so a browser will play it
     if page.startswith('/v/'):
+      qs = self.path.split('?', 1)[1] if '?' in self.path else ''
+      quality = next((p[2:] for p in qs.split('&') if p.startswith('q=')), 'preview')
       try:
         route, seg = page[3:].rsplit('/', 1)
-        path = self.videos.get(route, int(seg.removesuffix('.mp4')))
+        path = self.videos.get(route, int(seg.removesuffix('.mp4')), quality=quality)
       except (ValueError, FileNotFoundError):
         return self._send(404, '{}')
       except Exception as e:
@@ -1064,6 +1066,10 @@ background:var(--line);border-top:1px solid var(--line)}
     <span class="lbl">제동 하한</span>
     <input id="amin" size="6" title="이 차의 포트값이 들어갑니다. 고쳐 넣으면 그 값으로 풉니다">
     <span class="lbl">m/s²</span>
+    <span class="lbl">화질</span><select id="q">
+      <option value="preview">프리뷰 526p (즉시)</option>
+      <option value="best">고화질 1344x760</option>
+    </select>
     <button id="run">다시 풀기</button>
   </div>
   <div class="msg" id="msg">주행 중에는 실행하지 않습니다. MPC 를 매 프레임 다시 풀기 때문에 60초 구간에 수 초 걸립니다.</div>
@@ -1130,6 +1136,7 @@ function pickSeg(){
 }
 $('route').onchange=loadSegs;
 $('seg').onchange=pickSeg;
+$('q').onchange=()=>{ MOUNTED=''; if($('seg').value!=='') mountVideo($('route').value, +$('seg').value); };
 
 let SOLVED='';                   // 이미 푼(또는 푸는 중인) 구간+하한
 async function solve(force){
@@ -1181,14 +1188,23 @@ function show(d){
 // 영상은 세그먼트를 고르는 순간 붙는다. 다시 풀어야만 나오게 두면, 계산이 끝나기 전에는
 // 그 구간에 무슨 일이 있었는지 볼 방법이 없다 -- 그리고 재시작 직후처럼 결과가 없는 상태에서는
 // 영상 자체가 아예 나타나지 않는다.
+// 고화질은 두 경로가 있다. HEVC 무변환 복사는 0.75초면 되지만 브라우저가 HEVC 를 디코딩할 수
+// 있어야 하고, H.264 재인코딩은 어디서나 재생되는 대신 세그먼트당 40초쯤 걸린다. 재생 가능한
+// 쪽을 브라우저에게 직접 물어서 고른다.
+function bestQuality(){
+  const v=document.createElement('video');
+  return v.canPlayType('video/mp4; codecs="hvc1.1.6.L120.B0"') ? 'copy' : 'h264';
+}
 let MOUNTED='';
 function mountVideo(route, seg){
-  const key=`${route}/${seg}`;
+  const want=$('q').value==='best' ? bestQuality() : 'preview';
+  const key=`${route}/${seg}/${want}`;
   if(key===MOUNTED) return;
   MOUNTED=key; VOFF=0; vt=0;
   const wrap=$('vidwrap');
+  if(want==='h264') $('msg').textContent='고화질 변환 중… 세그먼트당 40초쯤 걸리고, 한 번 만들면 캐시됩니다';
   wrap.innerHTML = `<video id="v" controls preload="auto" playsinline
-      src="/v/${encodeURIComponent(route)}/${seg}.mp4"></video>`;
+      src="/v/${encodeURIComponent(route)}/${seg}.mp4?q=${want}"></video>`;
   const v=video();
   v.onloadedmetadata=()=>{
     // qcamera 는 세그먼트 시작에서 시작하고 리먹스가 타임스탬프를 0 으로 되돌린다.
