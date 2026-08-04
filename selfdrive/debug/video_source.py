@@ -163,12 +163,17 @@ def _from_road(src: str, dst: str, transcode: bool) -> None:
   costs nothing but leaves HEVC, which not every browser decodes; transcoding costs about 40s a
   segment at ultrafast and plays everywhere.
   """
-  subprocess.run(
+  # -f mp4 is not optional: the destination is written to a .part file first so a killed run
+  # cannot leave a half-muxed segment in the cache, and ffmpeg picks its muxer from the
+  # extension, which .part is not.
+  out = subprocess.run(
     ['ffmpeg', '-y', '-v', 'error', '-r', '20', '-i', src]
     + (['-c', 'copy'] if transcode is False else
        ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '28'])
-    + ['-movflags', 'faststart', dst],
-    check=True, capture_output=True)
+    + ['-movflags', 'faststart', '-f', 'mp4', dst],
+    capture_output=True, text=True)
+  if out.returncode != 0:
+    raise RuntimeError(f'ffmpeg failed ({out.returncode}): {out.stderr.strip()[:300]}')
 
 
 def _remux(src: str, dst: str) -> None:
