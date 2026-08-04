@@ -74,7 +74,8 @@ def extract(route: str, seg: int) -> list[dict]:
 
   cur: dict = {'vEgo': 0.0, 'aEgo': 0.0, 'vCruise': 0.0, 'gap': 0, 'aTarget': 0.0,
                'brake': False, 'gas': False, 'eng': False, 'lead': None,
-               'e2eAccel': None, 'e2eStop': False, 'stockMin': None, 'stockMax': None}
+               'e2eAccel': None, 'e2eStop': False, 'stockMin': None, 'stockMax': None,
+               'standstill': False}
   t0 = None
   next_t = 0.0
   frames: list[dict] = []
@@ -102,6 +103,7 @@ def extract(route: str, seg: int) -> list[dict]:
       cur['vCruise'] = cs.cruiseState.speed
       cur['gap'] = int(cs.cruiseState.gapAdjust)
       cur['brake'], cur['gas'] = bool(cs.brakePressed), bool(cs.gasPressed)
+      cur['standstill'] = bool(cs.standstill)
       # 5.44 m/s^2 (raw 511) is DAS_accelMin/Max's own SNA value, not a real request -- the
       # factory module hasn't reported yet (usually because it isn't the one driving right now).
       cur['stockMin'] = cs.stockAccelMin if cs.stockAccelMin < 5.43 else None
@@ -134,6 +136,7 @@ def extract(route: str, seg: int) -> list[dict]:
         'gap': cur['gap'], 'aTarget': cur['aTarget'],
         'lead': ld, 'e2eAccel': cur['e2eAccel'], 'e2eStop': cur['e2eStop'],
         'stockMin': cur['stockMin'], 'stockMax': cur['stockMax'],
+        'standstill': cur['standstill'],
         'flags': ((F_LEAD if ld else 0) | (F_RADAR if ld and ld['radar'] else 0)
                   | (F_ENG if cur['eng'] else 0) | (F_BRAKE if cur['brake'] else 0)
                   | (F_GAS if cur['gas'] else 0)),
@@ -248,6 +251,7 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
   from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
     LongitudinalMpc, T_IDXS as T_IDXS_MPC)
   from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
+  from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
   from openpilot.selfdrive.modeld.constants import ModelConstants
 
   fingerprint = frames[0].get('fingerprint') if frames else None
@@ -265,11 +269,17 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
   ctrl_t = ModelConstants.T_IDXS[:CONTROL_N]
 
   mpc = LongitudinalMpc(accel_min=floor)
-  mpc.set_weights(prev_accel_constraint=True)
 
   out = []
+  # plannerd rate-limits the clip itself, not just the output, so it has to carry across frames
+  # exactly as LongitudinalPlanner.prev_accel_clip does.
+  prev_accel_clip = [floor, 2.0]
   t_start = time.monotonic()
   for f in frames:
+    # The MPC alone is not the plan. plannerd re-weights every frame and then clips its output
+    # against a speed-dependent, rate-limited ceiling; skipping that made the recomputed line
+    # read about twice the recorded one wherever the car sat still with a cruise speed set.
+    mpc.set_weights(prev_accel_constraint=not f.get('standstill', False))
     mpc.set_cur_state(f['vEgo'], f['aEgo'])
     mpc.update(_radarstate(f['lead']), max(f['vCruise'], 1.0), gap_adjust=f['gap'])
     v_traj = np.interp(ctrl_t, T_IDXS_MPC, mpc.v_solution)
@@ -287,6 +297,15 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
       stop_exp = stop_e2e or stop_mpc
     else:
       a_exp, stop_exp = a_mpc, stop_mpc
+
+    # The ceiling tightens with speed and both ends ramp at 0.05 m/s^2 per frame, so it depends
+    # on its own previous value -- carried across frames the way plannerd carries it.
+    accel_clip = [floor, float(get_max_accel(f['vEgo']))]
+    for i in range(2):
+      accel_clip[i] = float(np.clip(accel_clip[i], prev_accel_clip[i] - 0.05, prev_accel_clip[i] + 0.05))
+    a_mpc = float(np.clip(a_mpc, accel_clip[0], accel_clip[1]))
+    a_exp = float(np.clip(a_exp, accel_clip[0], accel_clip[1]))
+    prev_accel_clip = accel_clip
 
     out.append({
       'aNew': round(float(a_mpc), 3),
