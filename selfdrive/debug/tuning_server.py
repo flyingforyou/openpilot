@@ -1136,6 +1136,7 @@ font-size:10px;text-align:center}
     <span><i style="background:#8A97A6"></i>주행 당시 계획 (기록된 aTarget)</span>
     <span><i style="background:#5AC8FA"></i>지금 코드 · MPC 단독</span>
     <span><i style="background:#B58AFF"></i>지금 코드 · Experimental Mode 블렌드</span>
+    <span><i style="background:#FF9F4A"></i>순정 ACC 커맨드 밴드 (bus2 직접 수신)</span>
     <span><i style="background:#FF6B5A"></i>하한에 붙은 구간</span>
     <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#B58AFF;margin-right:5px;vertical-align:1px"></span>모델만 정지 원함 (신호등·정지선 등)</span>
   </div>
@@ -1378,6 +1379,24 @@ function draw(){
   }
   g.textAlign='left'; g.fillStyle=css('--dim'); g.fillText('mph/s', 4, T+4);
 
+  // 순정 ACC가 그 순간 실제로 커맨드하던 밴드 (stockAccelMin..Max) -- bus2 에서 직접 읽은
+  // 값이라 openpilot 이 종방향을 잡고 있어도 채워진다. null 이면 그 순간 순정이 침묵 중이라는
+  // 뜻이라, 선을 잇지 않고 창을 끊는다.
+  g.fillStyle='#FF9F4A'; g.globalAlpha=.12;
+  for(let i=0;i<rows.length-1;i++){
+    const a=rows[i], b=rows[i+1];
+    if(a[10]==null || a[11]==null) continue;
+    g.fillRect(x(a[0]), y(a[11]), Math.max(1,x(b[0])-x(a[0])), y(a[10])-y(a[11]));
+  }
+  g.globalAlpha=1;
+  g.strokeStyle='#FF9F4A'; g.lineWidth=1.4; g.beginPath(); let pen=false;
+  rows.forEach(r=>{
+    if(r[10]==null){ pen=false; return; }
+    const px=x(r[0]), py=y(r[10]);
+    pen?g.lineTo(px,py):g.moveTo(px,py); pen=true;
+  });
+  g.stroke();
+
   for(const [col,color,lw] of [[1,'#F5B942',1.8],[2,'#8A97A6',1.2],[3,'#5AC8FA',1.8],[4,'#B58AFF',1.6]]){
     g.strokeStyle=color; g.lineWidth=lw; g.beginPath();
     rows.forEach((r,i)=>{ const px=x(r[0]),py=y(r[col]); i?g.lineTo(px,py):g.moveTo(px,py); });
@@ -1403,7 +1422,8 @@ function draw(){
   g.fillStyle=css('--radar');
   g.beginPath(); g.moveTo(px-5,T-8); g.lineTo(px+5,T-8); g.lineTo(px,T-1); g.closePath(); g.fill();
   const r=rows[Math.min(rows.length-1,Math.round(vt*20))];
-  if(r) for(const [col,color] of [[1,'#F5B942'],[3,'#5AC8FA'],[4,'#B58AFF']]){
+  if(r) for(const [col,color] of [[1,'#F5B942'],[3,'#5AC8FA'],[4,'#B58AFF'],[10,'#FF9F4A']]){
+    if(r[col]==null) continue;
     g.beginPath(); g.arc(px,y(r[col]),4,0,7); g.fillStyle=color; g.fill();
     g.strokeStyle=css('--card'); g.lineWidth=1.8; g.stroke();
   }
@@ -1424,6 +1444,8 @@ function readout(r){
     ['당시 계획',`${(r[2]*MPH).toFixed(1)}<small>mph/s</small>`],
     ['지금 코드 (MPC)',`<span style="color:${css('--radar')}">${(r[3]*MPH).toFixed(1)}<small>mph/s</small></span>`],
     ['지금 코드 (Experimental)',`<span style="color:#B58AFF">${(r[4]*MPH).toFixed(1)}<small>mph/s</small></span>`],
+    ['순정 커맨드 밴드',r[10]==null?'침묵':
+      `<span style="color:#FF9F4A">${(r[10]*MPH).toFixed(1)} … ${(r[11]*MPH).toFixed(1)}<small>mph/s</small></span>`],
     ['속도',`${(r[5]*MPH).toFixed(0)}<small>mph</small>`],
     ['리드',r[6]==null?'—':`${(r[6]*3.28084).toFixed(0)}<small>ft</small>`],
     ['tFollow',`${r[9].toFixed(2)}<small>s</small>`],

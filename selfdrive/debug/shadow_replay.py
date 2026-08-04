@@ -74,7 +74,7 @@ def extract(route: str, seg: int) -> list[dict]:
 
   cur: dict = {'vEgo': 0.0, 'aEgo': 0.0, 'vCruise': 0.0, 'gap': 0, 'aTarget': 0.0,
                'brake': False, 'gas': False, 'eng': False, 'lead': None,
-               'e2eAccel': None, 'e2eStop': False}
+               'e2eAccel': None, 'e2eStop': False, 'stockMin': None, 'stockMax': None}
   t0 = None
   next_t = 0.0
   frames: list[dict] = []
@@ -102,6 +102,10 @@ def extract(route: str, seg: int) -> list[dict]:
       cur['vCruise'] = cs.cruiseState.speed
       cur['gap'] = int(cs.cruiseState.gapAdjust)
       cur['brake'], cur['gas'] = bool(cs.brakePressed), bool(cs.gasPressed)
+      # 5.44 m/s^2 (raw 511) is DAS_accelMin/Max's own SNA value, not a real request -- the
+      # factory module hasn't reported yet (usually because it isn't the one driving right now).
+      cur['stockMin'] = cs.stockAccelMin if cs.stockAccelMin < 5.43 else None
+      cur['stockMax'] = cs.stockAccelMax if cs.stockAccelMax < 5.43 else None
     elif w == 'longitudinalPlan':
       cur['aTarget'] = evt.longitudinalPlan.aTarget
     elif w == 'radarState':
@@ -129,6 +133,7 @@ def extract(route: str, seg: int) -> list[dict]:
         'vEgo': cur['vEgo'], 'aEgo': cur['aEgo'], 'vCruise': cur['vCruise'],
         'gap': cur['gap'], 'aTarget': cur['aTarget'],
         'lead': ld, 'e2eAccel': cur['e2eAccel'], 'e2eStop': cur['e2eStop'],
+        'stockMin': cur['stockMin'], 'stockMax': cur['stockMax'],
         'flags': ((F_LEAD if ld else 0) | (F_RADAR if ld and ld['radar'] else 0)
                   | (F_ENG if cur['eng'] else 0) | (F_BRAKE if cur['brake'] else 0)
                   | (F_GAS if cur['gas'] else 0)),
@@ -342,6 +347,8 @@ class ShadowReplay:
           flags,
           f['gap'],
           s['tFollow'],
+          round(f['stockMin'], 3) if f['stockMin'] is not None else None,
+          round(f['stockMax'], 3) if f['stockMax'] is not None else None,
         ])
       with self._lock:
         self._state = {
