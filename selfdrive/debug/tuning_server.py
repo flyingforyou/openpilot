@@ -27,6 +27,7 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.debug import vehicle_state, video_source
 from openpilot.selfdrive.debug.can_source import CanSource, list_routes
+from openpilot.selfdrive.debug import shadow_replay
 from openpilot.selfdrive.debug.intervention_log import InterventionLog, list_events, read_event
 
 # Options rather than free-form numbers: a typo in a text box goes straight into the braking
@@ -279,6 +280,17 @@ class Handler(BaseHTTPRequestHandler):
         'engaged': bool(self.state.get().get('engaged')),
       }))
 
+    if self.path.startswith('/api/shadow'):
+      qs = self.path.split('?', 1)[1] if '?' in self.path else ''
+      route = next((p[6:] for p in qs.split('&') if p.startswith('route=')), None)
+      if route:
+        return self._send(200, json.dumps({'segments': shadow_replay.list_segments(route)}))
+      st = self.shadow.state()
+      st['routes'] = [r['name'] for r in video_source.list_videos()]
+      st['engaged'] = bool(self.state.get().get('engaged'))
+      st['commit'] = GIT_COMMIT
+      return self._send(200, json.dumps(st))
+
     if self.path.startswith('/api/videos'):
       return self._send(200, json.dumps({'routes': video_source.list_videos()}))
 
@@ -314,9 +326,24 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, PAGE_VEHICLE, 'text/html; charset=utf-8')
     if page == '/videos':
       return self._send(200, PAGE_VIDEO, 'text/html; charset=utf-8')
+    if page == '/shadow':
+      return self._send(200, PAGE_SHADOW, 'text/html; charset=utf-8')
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
 
   def do_POST(self):
+    if self.path.startswith('/api/shadow'):
+      n = int(self.headers.get('Content-Length', 0))
+      try:
+        req = json.loads(self.rfile.read(n) or b'{}')
+      except json.JSONDecodeError:
+        return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
+      route, seg = req.get('route'), req.get('seg')
+      if not route or seg is None:
+        return self._send(400, json.dumps({'error': '경로와 세그먼트를 지정하세요'}))
+      am = req.get('accelMin')
+      out = self.shadow.start(route, int(seg), float(am) if am not in (None, '') else None)
+      return self._send(409 if 'error' in out else 200, json.dumps(out))
+
     if self.path.startswith('/api/replay'):
       n = int(self.headers.get('Content-Length', 0))
       try:
@@ -688,6 +715,14 @@ border:1px solid var(--line);color:var(--mut)}
   <div class="st"><span class="pill" id="p-can">–</span></div>
 </a>
 
+<a class="card" href="/shadow">
+  <div class="t">그림자 · 순정 vs 지금 코드</div>
+  <div class="d">녹화된 주행을 지금 소스의 플래너로 다시 풀어, 순정 ACC가 실제로 한 것과
+    나란히 보여줍니다. 상수를 고치고 다시 돌리면 새 선만 움직이므로, 바꾼 값이
+    실제 상황에서 무엇을 바꾸는지 바로 확인할 수 있습니다.</div>
+  <div class="st"><span class="pill" id="p-shd">–</span></div>
+</a>
+
 <a class="card" href="/videos">
   <div class="t">영상 · 녹화된 주행</div>
   <div class="d">디바이스에 저장된 주행 영상을 목록에서 골라 바로 재생합니다.
@@ -967,6 +1002,201 @@ loadRoutes();tick();setInterval(tick,400);
 </script></body></html>"""
 
 
+
+PAGE_SHADOW = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>그림자 · 순정 vs 지금 코드</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--hot:#F5B942;--bad:#FF6B5A;--ok:#4FC98A;
+--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--hot:#9A6210;--bad:#C23B28;--ok:#1E7A4B}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);padding:18px;
+padding-bottom:calc(18px + env(safe-area-inset-bottom))}
+a.back{color:var(--dim);font-family:var(--m);font-size:11px;text-decoration:none}
+h1{font-size:17px;margin:8px 0 3px}
+.sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:11px;
+margin-bottom:11px;overflow:hidden}
+.card>h2{font-size:12px;margin:0;padding:10px 13px;border-bottom:1px solid var(--line);
+color:var(--mut);font-weight:600}
+.pad{padding:13px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+select,input{background:var(--bg);border:1px solid var(--line);color:var(--tx);border-radius:8px;
+padding:7px 10px;font-size:12px;font-family:var(--m)}
+button{background:transparent;border:1px solid var(--line);color:var(--tx);border-radius:8px;
+padding:7px 14px;font-size:12px;cursor:pointer;font-family:var(--s)}
+button:hover:not([disabled]){border-color:var(--radar);color:var(--radar)}
+button[disabled]{opacity:.45;cursor:default}
+.lbl{font-size:11px;color:var(--dim)}
+canvas{width:100%;height:250px;display:block}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--mut);padding:0 13px 12px}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:5px;
+vertical-align:middle}
+.read{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:1px;
+background:var(--line);border-top:1px solid var(--line)}
+.rd{background:var(--card);padding:9px 11px}
+.rd .k{font-size:10px;color:var(--dim);margin-bottom:2px}
+.rd .v{font-family:var(--m);font-size:14px;font-variant-numeric:tabular-nums}
+.rd .v small{font-size:10px;color:var(--mut);margin-left:2px}
+.msg{padding:0 13px 13px;font-size:12px;color:var(--mut)}
+.msg.err{color:var(--bad);font-family:var(--m);font-size:11.5px}
+.note{font-size:11.5px;color:var(--mut);line-height:1.6;padding:13px}
+.note b{color:var(--tx);font-weight:600}
+</style></head><body>
+<a class="back" href="/">&larr; 돌아가기</a>
+<h1>그림자 · 순정 ACC vs 지금 코드</h1>
+<div class="sub" id="sub">불러오는 중…</div>
+
+<div class="card">
+  <h2>재생할 구간</h2>
+  <div class="pad">
+    <span class="lbl">주행</span><select id="route"></select>
+    <span class="lbl">세그먼트</span><select id="seg"></select>
+    <span class="lbl">제동 하한</span>
+    <input id="amin" size="6" placeholder="차량값" title="비워두면 차량 포트의 minAccel 을 씁니다">
+    <span class="lbl">m/s²</span>
+    <button id="run">다시 풀기</button>
+  </div>
+  <div class="msg" id="msg">주행 중에는 실행하지 않습니다. MPC 를 매 프레임 다시 풀기 때문에 60초 구간에 수 초 걸립니다.</div>
+</div>
+
+<div class="card">
+  <h2 id="chartTitle">결과</h2>
+  <canvas id="ch"></canvas>
+  <div class="legend">
+    <span><i style="background:#F5B942"></i>순정 ACC 실제 (aEgo)</span>
+    <span><i style="background:#8A97A6"></i>주행 당시 계획 (기록된 aTarget)</span>
+    <span><i style="background:#5AC8FA"></i>지금 코드가 내놓는 계획</span>
+    <span><i style="background:#FF6B5A"></i>하한에 붙은 구간</span>
+  </div>
+  <div class="read" id="read"></div>
+</div>
+
+<div class="card">
+  <h2>읽는 법</h2>
+  <div class="note">
+    노란 선과 회색 선은 <b>로그에 있는 그대로</b>라 코드를 고쳐도 움직이지 않습니다.
+    파란 선만 지금 소스로 다시 푼 결과이므로, 상수를 바꾸고 다시 돌렸을 때
+    <b>파란 선이 어떻게 달라지는지</b>가 그 변경의 효과입니다.
+    <br><br>
+    빨간 구간은 계획이 제동 하한에 닿아 <b>더 내려가지 못한</b> 구간입니다. 여기서 노란 선이
+    파란 선보다 아래에 있으면, openpilot 이 보수적이었던 것이 아니라 한계에 막힌 것입니다.
+    <br><br>
+    상태는 매 프레임 로그값으로 다시 심습니다. 그대로 굴리면 1~2초 만에 실제 상황에서
+    멀어져 같은 순간을 비교하는 의미가 사라지기 때문입니다.
+  </div>
+</div>
+
+<script>
+const MPH=2.2369363;
+let DATA=null, poll=null;
+const $=id=>document.getElementById(id);
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+async function boot(){
+  const d=await (await fetch('/api/shadow')).json();
+  $('sub').textContent = `커밋 ${d.commit||''} · 녹화 주행 ${(d.routes||[]).length}개`;
+  $('route').innerHTML = (d.routes||[]).map(r=>`<option>${r}</option>`).join('');
+  if((d.routes||[]).length) await loadSegs();
+  if(d.status==='done') show(d);
+}
+async function loadSegs(){
+  const r=$('route').value;
+  const d=await (await fetch('/api/shadow?route='+encodeURIComponent(r))).json();
+  $('seg').innerHTML=(d.segments||[]).map(s=>`<option>${s}</option>`).join('');
+}
+$('route').onchange=loadSegs;
+
+$('run').onclick=async()=>{
+  $('run').disabled=true; $('msg').className='msg'; $('msg').textContent='푸는 중…';
+  const body={route:$('route').value, seg:+$('seg').value, accelMin:$('amin').value.trim()};
+  const res=await fetch('/api/shadow',{method:'POST',body:JSON.stringify(body)});
+  const d=await res.json();
+  if(d.error){ $('msg').className='msg err'; $('msg').textContent=d.error; $('run').disabled=false; return; }
+  poll=setInterval(check,700);
+};
+async function check(){
+  const d=await (await fetch('/api/shadow')).json();
+  if(d.status==='running') return;
+  clearInterval(poll); poll=null; $('run').disabled=false;
+  if(d.status==='error'){ $('msg').className='msg err'; $('msg').textContent=d.error; return; }
+  if(d.status==='done'){ $('msg').className='msg'; show(d); }
+}
+
+function show(d){
+  DATA=d;
+  $('chartTitle').textContent =
+    `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² · 푸는 데 ${d.solveSec}초`;
+  const hit=d.rows.filter(r=>r[6]&32).length;
+  $('msg').textContent = `${d.rows.length}프레임, 하한에 닿은 프레임 ${hit}개 (${(hit/20).toFixed(1)}초)`;
+  draw();
+}
+
+function draw(){
+  if(!DATA) return;
+  const cv=$('ch'), w=cv.clientWidth, h=cv.clientHeight;
+  if(!(w>0&&h>0)) return;
+  const dpr=devicePixelRatio||1;
+  if(cv.width!==Math.round(w*dpr)){ cv.width=Math.round(w*dpr); cv.height=Math.round(h*dpr); }
+  const g=cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,w,h);
+
+  const rows=DATA.rows, dur=rows.length?rows[rows.length-1][0]:1;
+  const S=Math.max(Math.abs(DATA.accelMin), 2.0)*1.08;
+  const L=46,R=14,T=14,B=h-24, iw=w-L-R, ih=B-T;
+  const x=t=>L+iw*(t/dur), y=a=>T+ih*(0.5-(a/S)/2);
+
+  g.fillStyle=css('--bad'); g.globalAlpha=.22;
+  for(let i=0;i<rows.length-1;i++) if(rows[i][6]&32)
+    g.fillRect(x(rows[i][0]),T,Math.max(1,x(rows[i+1][0])-x(rows[i][0])),ih);
+  g.globalAlpha=1;
+
+  g.font='10px '+css('--m'); g.textAlign='right'; g.lineWidth=1;
+  for(const a of [2.0,0,DATA.accelMin]){
+    const yy=Math.round(y(a))+.5;
+    g.strokeStyle = a===DATA.accelMin ? css('--bad') : css('--line');
+    g.beginPath(); g.moveTo(L,yy); g.lineTo(w-R,yy); g.stroke();
+    g.fillStyle=css('--dim'); g.fillText((a*MPH).toFixed(1), L-6, yy+3);
+  }
+  g.textAlign='left'; g.fillStyle=css('--dim'); g.fillText('mph/s', 4, T+4);
+
+  for(const [col,color,lw] of [[1,'#F5B942',1.8],[2,'#8A97A6',1.2],[3,'#5AC8FA',1.8]]){
+    g.strokeStyle=color; g.lineWidth=lw; g.beginPath();
+    rows.forEach((r,i)=>{ const px=x(r[0]),py=y(r[col]); i?g.lineTo(px,py):g.moveTo(px,py); });
+    g.stroke();
+  }
+  g.textAlign='center'; g.fillStyle=css('--dim');
+  const step=dur>45?10:5;
+  for(let t=0;t<=dur;t+=step) g.fillText(String(t), x(t), B+16);
+}
+
+$('ch').onclick=e=>{
+  if(!DATA) return;
+  const b=e.currentTarget.getBoundingClientRect(), L=46,R=14;
+  const rows=DATA.rows, dur=rows[rows.length-1][0];
+  const t=Math.max(0,Math.min(1,(e.clientX-b.left-L)/(b.width-L-R)))*dur;
+  const r=rows[Math.min(rows.length-1,Math.round(t*20))];
+  const d=r[3]-r[1];
+  $('read').innerHTML=[
+    ['시각',`${r[0].toFixed(1)}<small>s</small>`],
+    ['순정 실제',`${(r[1]*MPH).toFixed(1)}<small>mph/s</small>`],
+    ['당시 계획',`${(r[2]*MPH).toFixed(1)}<small>mph/s</small>`],
+    ['지금 코드',`<span style="color:${css('--radar')}">${(r[3]*MPH).toFixed(1)}<small>mph/s</small></span>`],
+    ['지금−순정',`<span style="color:${d<0?css('--bad'):'inherit'}">${d>0?'+':''}${(d*MPH).toFixed(1)}<small>mph/s</small></span>`],
+    ['속도',`${(r[4]*MPH).toFixed(0)}<small>mph</small>`],
+    ['리드',r[5]==null?'—':`${(r[5]*3.28084).toFixed(0)}<small>ft</small>`],
+    ['tFollow',`${r[8].toFixed(2)}<small>s</small>`],
+    ['갭',r[7]||'—'],
+    ['하한',(r[6]&32)?`<span style="color:${css('--bad')}">닿음</span>`:'—'],
+  ].map(([k,v])=>`<div class="rd"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+};
+addEventListener('resize',draw);
+boot();
+</script>
+</body></html>
+"""
+
 PAGE_VIDEO = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>openpilot 녹화 영상</title><style>
@@ -1131,6 +1361,7 @@ def main():
   Handler.params = Params()
   Handler.can = CanSource(Handler.params)
   Handler.videos = video_source.Mp4Cache()
+  Handler.shadow = shadow_replay.ShadowReplay(lambda: bool(Handler.state.get().get('engaged')))
 
   srv = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
   print(f"serving on http://0.0.0.0:{args.port}  (commit {GIT_COMMIT})")
