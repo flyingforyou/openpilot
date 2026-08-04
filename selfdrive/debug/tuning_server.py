@@ -1067,8 +1067,8 @@ background:var(--line);border-top:1px solid var(--line)}
     <input id="amin" size="6" title="이 차의 포트값이 들어갑니다. 고쳐 넣으면 그 값으로 풉니다">
     <span class="lbl">m/s²</span>
     <span class="lbl">화질</span><select id="q">
+      <option value="best" selected>고화질 1344x760</option>
       <option value="preview">프리뷰 526p (즉시)</option>
-      <option value="best">고화질 1344x760</option>
     </select>
     <button id="run">다시 풀기</button>
   </div>
@@ -1399,6 +1399,10 @@ label.chk{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--m
     <div class="bar">
       <button class="nav" id="prev">← 이전</button>
       <button class="nav" id="next">다음 →</button>
+      <select id="q" aria-label="화질">
+        <option value="best" selected>고화질 1344x760</option>
+        <option value="preview">프리뷰 526p</option>
+      </select>
       <span class="now" id="now">주행 기록을 선택하세요</span>
       <label class="chk"><input type="checkbox" id="auto" checked> 자동 연속 재생</label>
     </div>
@@ -1455,12 +1459,21 @@ function drawSegs(){
   $('title').textContent=cur.name;
 }
 
+// 고화질은 두 경로다. HEVC 무변환 복사는 원본 그대로라 손실이 없고 빠르지만 브라우저가 HEVC
+// 를 디코딩할 수 있어야 하고, H.264 재인코딩은 어디서나 재생되는 대신 세그먼트당 40초쯤 든다.
+// 재생 가능한 쪽을 브라우저에게 물어서 고른다.
+function bestQuality(){
+  return document.createElement('video')
+    .canPlayType('video/mp4; codecs="hvc1.1.6.L120.B0"') ? 'copy' : 'h264';
+}
 function open_(r,i){
   cur=r;seg=Math.max(0,Math.min(i,r.segments.length-1));
-  v.src=`/v/${r.name}/${r.segments[seg].seg}.mp4`;
+  const want=$('q').value==='best' ? bestQuality() : 'preview';
+  v.src=`/v/${r.name}/${r.segments[seg].seg}.mp4?q=${want}`;
   v.play().catch(()=>{});   // autoplay may be blocked; controls still work
   drawRoutes();drawSegs();
 }
+$('q').onchange=()=>{ if(cur) open_(cur, seg); };
 
 function step(d){if(cur&&cur.segments[seg+d])open_(cur,seg+d);}
 $('prev').onclick=()=>step(-1);
