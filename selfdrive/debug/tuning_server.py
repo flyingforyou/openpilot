@@ -247,7 +247,7 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, json.dumps({'commit': GIT_COMMIT}))
 
     if self.path.startswith('/api/state'):
-      return self._send(200, json.dumps(self.state.get()))
+      return self._send(200, json.dumps({**self.state.get(), 'commit': GIT_COMMIT}))
 
     if self.path.startswith('/api/routes'):
       return self._send(200, json.dumps({'routes': list_routes(), **self.can.state()}))
@@ -768,8 +768,9 @@ border:1px solid var(--line);color:var(--mut)}
 async function tick(){
   try{
     const s=await(await fetch('/api/state')).json();
+    const stateTxt=s.connected?(s.onroad?'주행 중 · onroad':'정차 · offroad'):'openpilot 대기 중';
     document.getElementById('sub').textContent=
-      s.connected?(s.onroad?'주행 중 · onroad':'정차 · offroad'):'openpilot 대기 중';
+      s.commit?`${stateTxt} · commit ${s.commit}`:stateTxt;
     const e=document.getElementById('p-eng');
     e.textContent=s.engaged?'engaged':'disengaged';e.className='pill'+(s.engaged?' on':'');
     const L=s.lead||{},l=document.getElementById('p-lead');
