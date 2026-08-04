@@ -1118,8 +1118,13 @@ async function loadSegs(){
   const r=$('route').value;
   const d=await (await fetch('/api/shadow?route='+encodeURIComponent(r))).json();
   $('seg').innerHTML=(d.segments||[]).map(s=>`<option>${s}</option>`).join('');
+  pickSeg();
+}
+function pickSeg(){
+  if($('seg').value!=='') mountVideo($('route').value, +$('seg').value);
 }
 $('route').onchange=loadSegs;
+$('seg').onchange=pickSeg;
 
 $('run').onclick=async()=>{
   $('run').disabled=true; $('msg').className='msg'; $('msg').textContent='푸는 중…';
@@ -1150,19 +1155,31 @@ function show(d){
   let best=0; worstT=null;
   for(const r of d.rows){ const g=r[3]-r[1]; if(g<best){best=g; worstT=r[0];} }
 
-  // 영상은 세그먼트와 같은 시간축을 쓴다. qcamera 는 세그먼트 시작에서 시작하고,
-  // 리먹스가 타임스탬프를 0 으로 되돌린다 -- 되돌리지 않은 옛 캐시를 대비해 길이 차이로 보정한다.
+  mountVideo(d.route, d.seg);
+  draw();
+}
+
+// 영상은 세그먼트를 고르는 순간 붙는다. 다시 풀어야만 나오게 두면, 계산이 끝나기 전에는
+// 그 구간에 무슨 일이 있었는지 볼 방법이 없다 -- 그리고 재시작 직후처럼 결과가 없는 상태에서는
+// 영상 자체가 아예 나타나지 않는다.
+let MOUNTED='';
+function mountVideo(route, seg){
+  const key=`${route}/${seg}`;
+  if(key===MOUNTED) return;
+  MOUNTED=key; VOFF=0; vt=0;
   const wrap=$('vidwrap');
   wrap.innerHTML = `<video id="v" controls preload="auto" playsinline
-      src="/v/${encodeURIComponent(d.route)}/${d.seg}.mp4"></video>`;
-  const v=video(), dur=d.rows.length?d.rows[d.rows.length-1][0]:60;
+      src="/v/${encodeURIComponent(route)}/${seg}.mp4"></video>`;
+  const v=video();
   v.onloadedmetadata=()=>{
+    // qcamera 는 세그먼트 시작에서 시작하고 리먹스가 타임스탬프를 0 으로 되돌린다.
+    // 되돌리지 않은 옛 캐시가 섞여 있어도 맞도록 길이 차이로 보정한다.
+    const dur = DATA && DATA.rows.length ? DATA.rows[DATA.rows.length-1][0] : 60;
     if(isFinite(v.duration) && v.duration > dur+1){ VOFF=v.duration-dur; try{v.currentTime=VOFF;}catch(e){} }
   };
-  v.onerror=()=>{ wrap.innerHTML='<div class="novid">이 세그먼트에는 영상이 없습니다</div>'; };
+  v.onerror=()=>{ wrap.innerHTML='<div class="novid">이 세그먼트에는 영상이 없습니다</div>'; MOUNTED=''; };
   v.onplay =()=>$('play').textContent='❚❚ 일시정지';
   v.onpause=()=>$('play').textContent='▶ 재생';
-  draw();
 }
 
 function seek(t){
@@ -1178,13 +1195,18 @@ function seek(t){
 function tick(){
   const v=video();
   if(v && !v.paused) vt=Math.max(0, v.currentTime-VOFF);
-  if(DATA) draw();
+  draw();
   requestAnimationFrame(tick);
 }
 
 function draw(){
-  if(!DATA) return;
   const cv=$('ch'), w=cv.clientWidth, h=cv.clientHeight;
+  if(!DATA){
+    if(w>0&&h>0){ const g=cv.getContext('2d'); g.setTransform(1,0,0,1,0,0); g.clearRect(0,0,cv.width,cv.height); }
+    const v=video();
+    if(v) $('tt').textContent = `${Math.max(0,v.currentTime-VOFF).toFixed(2)}s · 아직 풀지 않았습니다`;
+    return;
+  }
   if(!(w>0&&h>0)) return;
   const dpr=devicePixelRatio||1;
   if(cv.width!==Math.round(w*dpr)){ cv.width=Math.round(w*dpr); cv.height=Math.round(h*dpr); }
