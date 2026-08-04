@@ -256,6 +256,31 @@ class ShadowReplay:
         self._state = {'status': 'error', 'error': f'{type(e).__name__}: {e}'}
 
 
+def route_floor(route: str) -> dict:
+  """The floor today's source gives the car in this recording, for pre-filling the form.
+
+  Reads carParams out of qlog rather than rlog: 400KB against 12MB, and carParams is written
+  near the start of both, so paying the rlog cost just to name the car would be silly.
+  """
+  segs = list_segments(route)
+  fingerprint = None
+  for seg in segs[:3]:                      # the first segment is occasionally short or truncated
+    path = os.path.join(_seg_dir(route, seg), 'qlog.zst')
+    if not os.path.isfile(path):
+      continue
+    try:
+      for evt in _read_events(path):
+        if evt.which() == 'carParams':
+          fingerprint = str(evt.carParams.carFingerprint)
+          break
+    except Exception:
+      cloudlog.exception('shadow: qlog read failed')
+    if fingerprint:
+      break
+  floor, src = car_floor(fingerprint)
+  return {'floor': round(floor, 3), 'floorSrc': src, 'fingerprint': fingerprint}
+
+
 def list_segments(route: str) -> list[int]:
   if not os.path.isdir(REALDATA):
     return []

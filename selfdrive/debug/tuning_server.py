@@ -284,7 +284,8 @@ class Handler(BaseHTTPRequestHandler):
       qs = self.path.split('?', 1)[1] if '?' in self.path else ''
       route = next((p[6:] for p in qs.split('&') if p.startswith('route=')), None)
       if route:
-        return self._send(200, json.dumps({'segments': shadow_replay.list_segments(route)}))
+        return self._send(200, json.dumps({'segments': shadow_replay.list_segments(route),
+                                           **shadow_replay.route_floor(route)}))
       st = self.shadow.state()
       st['routes'] = [r['name'] for r in video_source.list_videos()]
       st['engaged'] = bool(self.state.get().get('engaged'))
@@ -1061,7 +1062,7 @@ background:var(--line);border-top:1px solid var(--line)}
     <span class="lbl">주행</span><select id="route"></select>
     <span class="lbl">세그먼트</span><select id="seg"></select>
     <span class="lbl">제동 하한</span>
-    <input id="amin" size="6" placeholder="차량값" title="비워두면 차량 포트의 minAccel 을 씁니다">
+    <input id="amin" size="6" title="이 차의 포트값이 들어갑니다. 고쳐 넣으면 그 값으로 풉니다">
     <span class="lbl">m/s²</span>
     <button id="run">다시 풀기</button>
   </div>
@@ -1118,27 +1119,45 @@ async function loadSegs(){
   const r=$('route').value;
   const d=await (await fetch('/api/shadow?route='+encodeURIComponent(r))).json();
   $('seg').innerHTML=(d.segments||[]).map(s=>`<option>${s}</option>`).join('');
+  // 포트가 이 차에 주는 값을 그대로 채운다. 빈 칸이면 무엇과 비교하고 있는지 알 수 없다.
+  if(d.floor!=null){ $('amin').value=(+d.floor).toFixed(2); $('amin').title=d.floorSrc||''; }
   pickSeg();
 }
 function pickSeg(){
-  if($('seg').value!=='') mountVideo($('route').value, +$('seg').value);
+  if($('seg').value==='') return;
+  mountVideo($('route').value, +$('seg').value);
+  solve();                       // 고르면 바로 푼다
 }
 $('route').onchange=loadSegs;
 $('seg').onchange=pickSeg;
 
-$('run').onclick=async()=>{
+let SOLVED='';                   // 이미 푼(또는 푸는 중인) 구간+하한
+async function solve(force){
+  const route=$('route').value, seg=$('seg').value, amin=$('amin').value.trim();
+  if(!route || seg==='') return;
+  const key=`${route}/${seg}/${amin}`;
+  if(!force && key===SOLVED) return;
+  if(poll) return;               // 앞선 실행이 끝나기 전에는 겹쳐 쏘지 않는다
+  SOLVED=key;
+  DATA=null;
   $('run').disabled=true; $('msg').className='msg'; $('msg').textContent='푸는 중…';
-  const body={route:$('route').value, seg:+$('seg').value, accelMin:$('amin').value.trim()};
-  const res=await fetch('/api/shadow',{method:'POST',body:JSON.stringify(body)});
+  const res=await fetch('/api/shadow',{method:'POST',
+    body:JSON.stringify({route, seg:+seg, accelMin:amin})});
   const d=await res.json();
-  if(d.error){ $('msg').className='msg err'; $('msg').textContent=d.error; $('run').disabled=false; return; }
+  if(d.error){
+    $('msg').className='msg err'; $('msg').textContent=d.error;
+    $('run').disabled=false; SOLVED='';
+    return;
+  }
   poll=setInterval(check,700);
-};
+}
+$('run').onclick=()=>solve(true);
+$('amin').onchange=()=>solve();
 async function check(){
   const d=await (await fetch('/api/shadow')).json();
   if(d.status==='running') return;
   clearInterval(poll); poll=null; $('run').disabled=false;
-  if(d.status==='error'){ $('msg').className='msg err'; $('msg').textContent=d.error; return; }
+  if(d.status==='error'){ $('msg').className='msg err'; $('msg').textContent=d.error; SOLVED=''; return; }
   if(d.status==='done'){ $('msg').className='msg'; show(d); }
 }
 
@@ -1281,8 +1300,11 @@ $('ch').onclick=e=>{
   seek(Math.max(0,Math.min(1,(e.clientX-b.left-L)/(b.width-L-R)))*dur);
   const v=video(); if(v && v.paused) v.play().catch(()=>{});
 };
-$('play').onclick=()=>{ const v=video(); if(!v) return;
-  if(v.paused) v.play().catch(()=>{}); else v.pause(); };
+$('play').onclick=()=>{
+  solve();                       // 결과가 없으면 재생과 함께 풀어둔다
+  const v=video(); if(!v) return;
+  if(v.paused) v.play().catch(()=>{}); else v.pause();
+};
 $('worst').onclick=()=>{ if(worstT==null) return; seek(Math.max(0,worstT-4));
   const v=video(); if(v&&v.paused) v.play().catch(()=>{}); };
 addEventListener('resize',draw);
