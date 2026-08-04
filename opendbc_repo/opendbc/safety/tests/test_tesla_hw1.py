@@ -48,7 +48,7 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
 
   # Long control limits
   MAX_ACCEL = 2.0
-  MIN_ACCEL = -3.48
+  MIN_ACCEL = -4.0   # measured: this car's own ACC commands -4.22
   INACTIVE_ACCEL = 0.0
 
   cnt_epas = 0

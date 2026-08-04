@@ -510,6 +510,10 @@ struct CarParams {
   radarUnavailable @35 :Bool; # True when radar objects aren't visible on CAN or aren't parsed out
   stopAccel @60 :Float32; # Required acceleration to keep vehicle stationary
   stoppingDecelRate @52 :Float32; # m/s^2/s while trying to stop
+  # Hardest deceleration the planner may ask this car for, m/s^2. Zero means "unset": use the
+  # ISO 15622:2018 ACC limit that interfaces.ACCEL_MIN carries. Ports whose car is known to
+  # brake harder state it here rather than being held to another car's number.
+  minAccel @78 :Float32;
   startAccel @32 :Float32; # Required acceleration to get car moving
   startingState @70 :Bool; # Does this car make use of special starting state
 

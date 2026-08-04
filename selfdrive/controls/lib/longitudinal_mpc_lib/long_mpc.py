@@ -94,22 +94,6 @@ def gap_t_follow_table(profile: int = 0) -> dict[int, float]:
   return {g: round(max(mid + (v - mid) * spread + shift, MIN_T_FOLLOW), 3)
           for g, v in TESLA_GAP_T_FOLLOW.items()}
 
-# Gap profiles, selectable at runtime. The knob has 7 positions either way; these change what
-# following time each position asks for, so the whole range shifts or spreads together.
-GAP_PROFILES = {
-  0: ("표준", 0.0, 1.0),
-  1: ("가깝게", -0.15, 1.0),
-  2: ("멀게", 0.15, 1.0),
-  3: ("넓게", 0.0, 1.4),
-}
-
-
-def gap_t_follow_table(profile: int = 0) -> dict[int, float]:
-  """Shift and/or spread the base table around its midpoint (gap 4)."""
-  _, shift, spread = GAP_PROFILES.get(profile, GAP_PROFILES[0])
-  mid = TESLA_GAP_T_FOLLOW[4]
-  return {g: round(mid + (v - mid) * spread + shift, 3) for g, v in TESLA_GAP_T_FOLLOW.items()}
-
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -274,8 +258,12 @@ def gen_long_ocp():
 
 
 class LongitudinalMpc:
-  def __init__(self, dt=DT_MDL):
+  def __init__(self, dt=DT_MDL, accel_min=ACCEL_MIN):
     self.dt = dt
+    # How hard this car may brake. The global ACCEL_MIN is ISO 15622:2018's ACC limit -- #22148
+    # lowered it from -4.0 for that reason, and gave Honda Nidec and GM exemptions in the same
+    # commit. Taking it from the car port stops one car being held to another's number.
+    self.accel_min = accel_min
     self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
     # Not reset by reset(): a solver failure must not drop the gap slew limiter back to
     # "first valid gap", which would apply a pending tFollow increase in a single step.
@@ -394,7 +382,7 @@ class LongitudinalMpc:
 
     # MPC will not converge if immediate crash is expected
     # Clip lead distance to what is still possible to brake for
-    min_x_lead = MIN_X_LEAD_FACTOR * (v_ego + v_lead) * (v_ego - v_lead) / (-ACCEL_MIN * 2)
+    min_x_lead = MIN_X_LEAD_FACTOR * (v_ego + v_lead) * (v_ego - v_lead) / (-self.accel_min * 2)
     x_lead = np.clip(x_lead, min_x_lead, 1e8)
     v_lead = np.clip(v_lead, 0.0, 1e8)
     a_lead = np.clip(a_lead, -10., 5.)
@@ -435,7 +423,7 @@ class LongitudinalMpc:
       self.solver.set(i, "yref", self.yref[i])
     self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
 
-    self.params[:,0] = ACCEL_MIN
+    self.params[:,0] = self.accel_min
     self.params[:,1] = ACCEL_MAX
     self.params[:,2] = np.min(x_obstacles, axis=1)
     self.params[:,3] = np.copy(self.a_prev)

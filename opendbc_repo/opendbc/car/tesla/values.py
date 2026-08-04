@@ -200,7 +200,14 @@ class CarControllerParams:
 
   STEER_STEP = 2  # Angle command is sent at 50 Hz
   ACCEL_MAX = 2.0    # m/s^2
+  # ISO 15622:2018's ACC deceleration ceiling, rounded to a whole DAS_control step (0.04 m/s^2).
   ACCEL_MIN = -3.48  # m/s^2
+  # HW1/HW2 cars brake harder than the ISO number: a Model X HW1's own ACC was logged commanding
+  # -4.22 m/s^2 while closing on a lead, so the brakes and the DAS_control channel both take it.
+  # openpilot #22148 introduced the ISO limit and exempted Honda Nidec and GM in the same commit;
+  # this is the same exemption, backed by this car's own behaviour. Model 3/Y stay at the ISO
+  # value -- nothing has been measured there, and their panda mode still enforces it.
+  ACCEL_MIN_LEGACY = -4.0  # m/s^2
   JERK_LIMIT_MAX = 4.9  # m/s^3, ACC faults at 5.0
   JERK_LIMIT_MIN = -4.9  # m/s^3, ACC faults at 5.0
   JERK_RAMP_RATE = JERK_LIMIT_MAX * 0.002  # m/s^3 per control step, for smooth gas override

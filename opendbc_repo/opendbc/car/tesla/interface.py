@@ -2,7 +2,7 @@ from opendbc.car import Bus, get_safety_config, structs
 from opendbc.car.interfaces import CarInterfaceBase
 from opendbc.car.tesla.carcontroller import CarController
 from opendbc.car.tesla.carstate import CarState
-from opendbc.car.tesla.values import TeslaSafetyFlags, TeslaFlags, CANBUS, CAR, DBC, FSD_14_FW, Ecu, TeslaLegacyParams, LEGACY_CARS
+from opendbc.car.tesla.values import CarControllerParams, TeslaSafetyFlags, TeslaFlags, CANBUS, CAR, DBC, FSD_14_FW, Ecu, TeslaLegacyParams, LEGACY_CARS
 from opendbc.car.tesla.radar_interface import RadarInterface, RADAR_START_ADDR
 from opendbc.car.tesla.radar_interface import RadarInterface
 
@@ -20,6 +20,10 @@ class CarInterface(CarInterfaceBase):
     ret.brand = "tesla"
 
     ret.safetyConfigs = [get_safety_config(structs.CarParams.SafetyModel.tesla)]
+
+    # Set unconditionally: the car controller clips its accel command against it, so leaving it
+    # at the capnp default of 0 would silently forbid braking rather than fall back.
+    ret.minAccel = CarControllerParams.ACCEL_MIN
 
     ret.steerLimitTimer = 0.4
     ret.steerActuatorDelay = 0.1
@@ -59,6 +63,8 @@ class CarInterface(CarInterfaceBase):
   @staticmethod
   def _get_params_sx(ret: structs.CarParams, candidate, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:
     ret.brand = "tesla"
+
+    ret.minAccel = CarControllerParams.ACCEL_MIN_LEGACY
 
     if not any(0x201 in f for f in fingerprint.values()):
       ret.flags |= TeslaLegacyParams.NO_SDM1.value

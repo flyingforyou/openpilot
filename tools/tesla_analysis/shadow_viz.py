@@ -49,6 +49,51 @@ from cereal import log as capnp_log
 ACCEL_MAX = 2.0
 ACCEL_MIN = -3.48
 
+LONG_MPC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        '..', '..', 'selfdrive', 'controls', 'lib',
+                        'longitudinal_mpc_lib', 'long_mpc.py')
+
+
+def follow_targets(gap_profile: int = 0) -> tuple[dict[int, float], float]:
+  """The gap -> tFollow table and stop distance the planner actually uses.
+
+  Read out of long_mpc.py rather than copied here: the whole point of the chart is to show what
+  openpilot would have done, and a table that silently drifts from the controller's would make
+  it show something else. Parsed rather than imported because importing long_mpc pulls in acados
+  and casadi, which a workstation doing log analysis has no reason to have.
+
+  gap_profile must match what the car had stored, or the target line is for a car that was never
+  driven -- the knob positions mean different following times under each profile.
+  """
+  import ast
+  tree = ast.parse(open(LONG_MPC).read())
+  found: dict[str, object] = {}
+  for node in tree.body:                      # module level only; later defs win, as at runtime
+    if isinstance(node, ast.Assign) and len(node.targets) == 1:
+      name = getattr(node.targets[0], 'id', None)
+      if name in ('TESLA_GAP_T_FOLLOW', 'STOP_DISTANCE', 'MIN_T_FOLLOW', 'GAP_PROFILES'):
+        found[name] = ast.literal_eval(node.value)
+
+  base = found['TESLA_GAP_T_FOLLOW']
+  profiles = found['GAP_PROFILES']
+  min_t = found['MIN_T_FOLLOW']
+  _, shift, spread = profiles.get(gap_profile, profiles[0])
+  mid = base[4]
+  table = {g: round(max(mid + (v - mid) * spread + shift, min_t), 3) for g, v in base.items()}
+  return table, found['STOP_DISTANCE']
+
+
+def device_gap_profile() -> int | None:
+  """What the car actually had stored, if it is reachable. Guessing here is worse than asking."""
+  try:
+    import subprocess
+    out = subprocess.run(['ssh', '-o', 'ConnectTimeout=5', '-o', 'BatchMode=yes',
+                          f'comma@{DEVICE}', 'cat /data/params/d/GapProfile'],
+                         capture_output=True, text=True, timeout=15)
+    return int(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
+  except Exception:
+    return None
+
 # Chart resolution. longitudinalPlan runs at 20Hz, so this samples it without inventing detail;
 # carState (100Hz) is held between samples.
 HZ = 20
@@ -93,7 +138,7 @@ def extract_segment(path: str) -> dict:
   """
   cur = {
     'aAct': 0.0, 'aPlan': 0.0, 'vEgo': 0.0, 'vPlan': 0.0,
-    'dRel': None, 'lead': False, 'leadRadar': False,
+    'dRel': None, 'vRel': None, 'lead': False, 'leadRadar': False,
     'eng': False, 'brake': False, 'gas': False, 'gap': 0,
   }
   t0 = None
@@ -133,6 +178,10 @@ def extract_segment(path: str) -> dict:
       cur['lead'] = bool(lead.status)
       cur['leadRadar'] = bool(lead.radar)
       cur['dRel'] = round(lead.dRel, 1) if lead.status else None
+      # Closing speed separates "settled behind a lead" from "still catching up". Without it a
+      # median over every lead frame counts the approach, which has nothing to do with how
+      # close the controller actually sits.
+      cur['vRel'] = round(lead.vRel, 2) if lead.status else None
     elif w == 'selfdriveState':
       cur['eng'] = bool(evt.selfdriveState.enabled)
 
@@ -146,6 +195,7 @@ def extract_segment(path: str) -> dict:
         (1 if cur['lead'] else 0) | (2 if cur['leadRadar'] else 0) | (4 if cur['eng'] else 0)
         | (8 if cur['brake'] else 0) | (16 if cur['gas'] else 0),
         cur['gap'],
+        cur['vRel'],
       ])
       next_t += DT
 
@@ -163,7 +213,7 @@ def summarise(rows: list[list]) -> dict:
   disagree = 0
   lead_frames = 0
   for r in rows:
-    t, a_act, a_plan, _v, _vp, d_rel, flags, _gap = r
+    t, a_act, a_plan, _v, _vp, d_rel, flags, _gap, _v_rel = r
     if not (flags & 1):
       continue
     lead_frames += 1
@@ -201,6 +251,8 @@ def main() -> int:
   ap.add_argument('route', help='route name, e.g. 00000025--e4e41713d7')
   ap.add_argument('--out', default=None, help='output directory (default <scratch>/shadow-viz)')
   ap.add_argument('--no-video', action='store_true', help='charts only, do not fetch MP4s')
+  ap.add_argument('--gap-profile', type=int, default=None,
+                  help='gap profile the drive ran with (default: read GapProfile off the device)')
   args = ap.parse_args()
 
   out = args.out or os.path.join(SCRATCH, 'shadow-viz')
@@ -231,10 +283,23 @@ def main() -> int:
           f'disagree {stats["disagreePct"]:5.1f}%  worst {stats["worst"]:+.2f} m/s^2'
           f'{"" if has_video else "   (no video)"}')
 
+  profile = args.gap_profile
+  if profile is None:
+    profile = device_gap_profile()
+    if profile is None:
+      profile = 0
+      print('  GapProfile을 읽지 못해 0(표준)으로 그립니다 -- 실제와 다르면 --gap-profile로 지정하세요')
+    else:
+      print(f'  GapProfile={profile} (기기에서 읽음)')
+  t_follow, stop_distance = follow_targets(profile)
   meta = {
+    'gapProfile': profile,
     'route': args.route,
     'accelMax': ACCEL_MAX, 'accelMin': ACCEL_MIN,
     'hz': HZ, 'disagreeMs2': DISAGREE_MS2,
+    # What openpilot would have kept: desired gap = tFollow[knob] * v + stopDistance.
+    'tFollow': {str(k): v for k, v in t_follow.items()},
+    'stopDistance': stop_distance,
     'segments': segments,
   }
   with open(os.path.join(out, 'data', 'route.json'), 'w') as f:

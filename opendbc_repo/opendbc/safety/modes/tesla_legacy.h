@@ -156,9 +156,15 @@ static bool tesla_legacy_tx_hook(const CANPacket_t *msg) {
     .wheelbase = 2.96,
   };
 
+  // DAS_accelMin/Max are 0.04 m/s^2 per step with a -15 offset, so 375 is 0 and each step is
+  // 0.04. min_accel was 288 (-3.48), which is ISO 15622:2018's ACC deceleration ceiling rounded
+  // to a whole step -- inherited from the Model 3/Y port rather than measured on this car. A
+  // Model X HW1's own ACC was logged commanding -4.22 m/s^2 while closing on a lead, so the car
+  // accepts more than the ISO number on this channel. Only the legacy mode is raised: Model 3/Y
+  // stays at the ISO limit, since nothing has been measured there.
   const LongitudinalLimits TESLA_LONG_LIMITS = {
     .max_accel = 425,       // 2 m/s^2
-    .min_accel = 288,       // -3.48 m/s^2
+    .min_accel = 275,       // -4.0 m/s^2
     .inactive_accel = 375,  // 0. m/s^2
   };
 

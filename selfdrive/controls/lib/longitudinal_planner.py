@@ -52,7 +52,9 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
 class LongitudinalPlanner:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
-    self.mpc = LongitudinalMpc(dt=dt)
+    # Ports that leave minAccel at 0 fall back to the ISO limit.
+    self.accel_min = CP.minAccel if CP.minAccel < 0 else ACCEL_MIN
+    self.mpc = LongitudinalMpc(dt=dt, accel_min=self.accel_min)
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
@@ -61,7 +63,7 @@ class LongitudinalPlanner:
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
-    self.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
+    self.prev_accel_clip = [self.accel_min, ACCEL_MAX]
     self.output_a_target = 0.0
     self.output_should_stop = False
 
@@ -132,7 +134,7 @@ class LongitudinalPlanner:
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
-    accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
+    accel_clip = [self.accel_min, get_max_accel(v_ego)]
     steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
     accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
 
