@@ -292,7 +292,13 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
     # The MPC alone is not the plan. plannerd re-weights every frame and then clips its output
     # against a speed-dependent, rate-limited ceiling; skipping that made the recomputed line
     # read about twice the recorded one wherever the car sat still with a cruise speed set.
-    mpc.set_weights(prev_accel_constraint=not f.get('standstill', False), personality=personality)
+    # plannerd: prev_accel_constraint = not (reset_state or standstill), where reset_state means
+    # long control is off -- which it is whenever openpilot is not driving. Keying this off
+    # standstill alone left the change cost switched on through every disengaged stretch, and the
+    # solver answered a different question than the one the drive actually asked.
+    reset_state = not bool(f['flags'] & F_ENG)
+    mpc.set_weights(prev_accel_constraint=not (reset_state or f.get('standstill', False)),
+                    personality=personality)
     mpc.set_cur_state(f['vEgo'], f['aEgo'])
     gap_adjust = f['gap'] or last_gap
     mpc.update(_radarstate(f['lead']), max(f['vCruise'], 1.0),
