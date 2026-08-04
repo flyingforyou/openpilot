@@ -77,9 +77,13 @@ def extract(route: str, seg: int) -> list[dict]:
   # A segment's rlog opens with initData, whose logMonoTime is the route's start rather than the
   # segment's. Start the clock at the first real data frame instead.
   DATA = ('carState', 'longitudinalPlan', 'radarState', 'selfdriveState')
+  fingerprint = None
 
   for evt in _read_events(path):
     w = evt.which()
+    if w == 'carParams' and fingerprint is None:
+      fingerprint = str(evt.carParams.carFingerprint)
+      continue
     if w not in DATA:
       continue
     t = evt.logMonoTime / 1e9
@@ -118,6 +122,8 @@ def extract(route: str, seg: int) -> list[dict]:
       })
       next_t += DT
 
+  for f in frames:
+    f['fingerprint'] = fingerprint
   return frames
 
 
@@ -134,6 +140,25 @@ def _radarstate(ld):
   return rs
 
 
+def car_floor(fingerprint: str | None) -> tuple[float, str]:
+  """What today's source gives this car, not what the drive ran with.
+
+  Read through the car port rather than off the log's own CarParams: the point of re-solving is
+  to see the effect of editing the port, and a floor taken from the recording would never move.
+  """
+  from opendbc.car.interfaces import ACCEL_MIN
+  if not fingerprint:
+    return ACCEL_MIN, 'ISO 기본값 (차종 미상)'
+  try:
+    from opendbc.car.car_helpers import interfaces
+    CP = interfaces[fingerprint].get_non_essential_params(fingerprint)
+    if CP.minAccel < 0:
+      return float(CP.minAccel), f'{fingerprint} 포트값'
+  except Exception:
+    cloudlog.exception('shadow: car floor lookup failed')
+  return ACCEL_MIN, 'ISO 기본값'
+
+
 def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
   """Solve the MPC again over the same inputs, with the code as it stands now.
 
@@ -147,9 +172,10 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
     LongitudinalMpc, T_IDXS as T_IDXS_MPC)
   from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
   from openpilot.selfdrive.modeld.constants import ModelConstants
-  from opendbc.car.interfaces import ACCEL_MIN
-
-  floor = ACCEL_MIN if accel_min is None else accel_min
+  if accel_min is None:
+    floor, floor_src = car_floor(frames[0].get('fingerprint') if frames else None)
+  else:
+    floor, floor_src = float(accel_min), '직접 지정'
   ctrl_t = ModelConstants.T_IDXS[:CONTROL_N]
 
   mpc = LongitudinalMpc(accel_min=floor)
@@ -169,7 +195,8 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
       'aFloorHit': bool(np.min(mpc.a_solution[1:]) <= floor + 1e-3),
       'tFollow': round(float(mpc.t_follow), 3),
     })
-  return {'rows': out, 'accelMin': floor, 'solveSec': round(time.monotonic() - t_start, 1)}
+  return {'rows': out, 'accelMin': floor, 'accelMinSrc': floor_src,
+          'solveSec': round(time.monotonic() - t_start, 1)}
 
 
 class ShadowReplay:
@@ -219,7 +246,8 @@ class ShadowReplay:
       with self._lock:
         self._state = {
           'status': 'done', 'route': route, 'seg': seg,
-          'accelMin': solved['accelMin'], 'solveSec': solved['solveSec'],
+          'accelMin': solved['accelMin'], 'accelMinSrc': solved['accelMinSrc'],
+          'solveSec': solved['solveSec'],
           'rows': rows,
         }
     except Exception as e:                                  # noqa: BLE001 - surfaced to the page

@@ -1128,7 +1128,7 @@ async function check(){
 function show(d){
   DATA=d;
   $('chartTitle').textContent =
-    `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² · 푸는 데 ${d.solveSec}초`;
+    `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''}) · 푸는 데 ${d.solveSec}초`;
   const hit=d.rows.filter(r=>r[6]&32).length;
   $('msg').textContent = `${d.rows.length}프레임, 하한에 닿은 프레임 ${hit}개 (${(hit/20).toFixed(1)}초)`;
   draw();
