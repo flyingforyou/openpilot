@@ -1138,7 +1138,8 @@ font-size:10px;text-align:center}
     <span><i style="background:#5AC8FA"></i>지금 코드 · MPC 단독</span>
     <span><i style="background:#B58AFF"></i>지금 코드 · Experimental Mode 블렌드</span>
     <span><i style="background:#FF9F4A"></i>순정 ACC 커맨드 밴드 (bus2 직접 수신)</span>
-    <span><i style="background:#FF6B5A"></i>하한에 붙은 구간</span>
+    <span><span class="sw" style="background:#FF6B5A;display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;opacity:.5"></span>제동 하한에 붙은 구간</span>
+    <span><span class="sw" style="background:#F5B942;display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;opacity:.45"></span>가속 상한에 붙은 구간</span>
     <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#B58AFF;margin-right:5px;vertical-align:1px"></span>모델만 정지 원함 (신호등·정지선 등)</span>
   </div>
   <div class="pad" style="padding-top:0">
@@ -1281,8 +1282,9 @@ function show(d){
   $('chartTitle').textContent =
     `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''}) · 푸는 데 ${d.solveSec}초`;
   const hit=d.rows.filter(r=>r[7]&32).length;
+  const ceilHit=d.rows.filter(r=>r[7]&256).length;
   const stopFrames=d.rows.filter(r=>(r[7]&64) && !(r[7]&128)).length;
-  $('msg').textContent = `${d.rows.length}프레임, 하한에 닿은 프레임 ${hit}개 (${(hit/20).toFixed(1)}초)`
+  $('msg').textContent = `${d.rows.length}프레임, 제동 하한 ${hit}개 (${(hit/20).toFixed(1)}초) · 가속 상한 ${ceilHit}개 (${(ceilHit/20).toFixed(1)}초)`
     + (stopFrames ? ` · Experimental 모드만 정지를 원한 프레임 ${stopFrames}개 (${(stopFrames/20).toFixed(1)}초)` : '');
 
   // 지금 코드(MPC)가 순정보다 가장 많이 더 감속을 원한 순간
@@ -1366,8 +1368,13 @@ function draw(){
   const L=46,R=14,T=14,B=h-24, iw=w-L-R, ih=B-T;
   const x=t=>L+iw*(t/dur), y=a=>T+ih*(0.5-(a/S)/2);
 
+  // 하한(제동)에 붙은 구간과 상한(가속)에 붙은 구간. 하한만 칠하면 상한에 막힌 건 눈으로
+  // 추측할 수밖에 없어서, 같은 방식으로 둘 다 표시한다.
   g.fillStyle=css('--bad'); g.globalAlpha=.22;
   for(let i=0;i<rows.length-1;i++) if(rows[i][7]&32)
+    g.fillRect(x(rows[i][0]),T,Math.max(1,x(rows[i+1][0])-x(rows[i][0])),ih);
+  g.fillStyle=css('--hot'); g.globalAlpha=.18;
+  for(let i=0;i<rows.length-1;i++) if(rows[i][7]&256)
     g.fillRect(x(rows[i][0]),T,Math.max(1,x(rows[i+1][0])-x(rows[i][0])),ih);
   g.globalAlpha=1;
 
@@ -1452,7 +1459,8 @@ function readout(r){
     ['tFollow',`${r[9].toFixed(2)}<small>s</small>`],
     ['갭',r[8]||'—'],
     ['정지 판단',stopLabel],
-    ['하한',(flags&32)?`<span style="color:${css('--bad')}">닿음</span>`:'—'],
+    ['제동 하한',(flags&32)?`<span style="color:${css('--bad')}">닿음</span>`:'—'],
+    ['가속 상한',(flags&256)?`<span style="color:${css('--hot')}">닿음</span>`:'—'],
   ].map(([k,v])=>`<div class="rd"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
 }
 

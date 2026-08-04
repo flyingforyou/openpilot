@@ -332,6 +332,7 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
     accel_clip = [floor, float(get_max_accel(f['vEgo']))]
     for i in range(2):
       accel_clip[i] = float(np.clip(accel_clip[i], prev_accel_clip[i] - 0.05, prev_accel_clip[i] + 0.05))
+    ceil_hit = a_mpc >= accel_clip[1] - 1e-3
     a_mpc = float(np.clip(a_mpc, accel_clip[0], accel_clip[1]))
     a_exp = float(np.clip(a_exp, accel_clip[0], accel_clip[1]))
     prev_accel_clip = accel_clip
@@ -343,6 +344,8 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
       'stopMpc': bool(stop_mpc), 'stopE2e': stop_e2e, 'stopExp': bool(stop_exp),
       # a_solution[0] is the measured state we just seeded, so the constraint only shows in [1:]
       'aFloorHit': bool(np.min(mpc.a_solution[1:]) <= floor + 1e-3),
+      'aCeilHit': bool(ceil_hit),
+      'accelCeil': round(float(accel_clip[1]), 3),
       'tFollow': round(float(mpc.t_follow), 3),
     })
   return {'rows': out, 'accelMin': floor, 'accelMinSrc': floor_src,
@@ -383,7 +386,8 @@ class ShadowReplay:
       for f, s in zip(frames, solved['rows'], strict=False):
         ld = f['lead']
         flags = (f['flags'] | (32 if s['aFloorHit'] else 0)
-                 | (64 if s['stopExp'] else 0) | (128 if s['stopMpc'] else 0))
+                 | (64 if s['stopExp'] else 0) | (128 if s['stopMpc'] else 0)
+                 | (256 if s['aCeilHit'] else 0))
         rows.append([
           f['t'],
           round(f['aEgo'], 3),          # 순정 ACC 실제
