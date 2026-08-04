@@ -269,6 +269,19 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
   ctrl_t = ModelConstants.T_IDXS[:CONTROL_N]
 
   mpc = LongitudinalMpc(accel_min=floor)
+  # plannerd's refresh_tuning(): the gap profile, rise rate and stop distance all live in params,
+  # and they feed t_follow, which feeds the cruise obstacle -- so they change the plan even with
+  # no lead in sight. Leaving them at the class defaults made the recomputed line disagree with
+  # the recorded one on a car whose GapProfile is not 0.
+  from openpilot.common.params import Params
+  _p = Params()
+  mpc.set_tuning(int(_p.get('GapProfile', return_default=True) or 0),
+                 int(_p.get('TFollowRiseRatePct', return_default=True) or 35) / 100.0,
+                 int(_p.get('StopDistanceCm', return_default=True) or 600) / 100.0)
+  personality = int(_p.get('LongitudinalPersonality', return_default=True) or 1)
+  # Tesla remembers the last real gap: the knob reads 0 whenever the stalk has not reported one
+  # yet, and plannerd substitutes rather than falling through to the personality default.
+  last_gap = int(_p.get('TeslaLastGapAdjust', return_default=True) or 0)
 
   out = []
   # plannerd rate-limits the clip itself, not just the output, so it has to carry across frames
@@ -279,9 +292,11 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
     # The MPC alone is not the plan. plannerd re-weights every frame and then clips its output
     # against a speed-dependent, rate-limited ceiling; skipping that made the recomputed line
     # read about twice the recorded one wherever the car sat still with a cruise speed set.
-    mpc.set_weights(prev_accel_constraint=not f.get('standstill', False))
+    mpc.set_weights(prev_accel_constraint=not f.get('standstill', False), personality=personality)
     mpc.set_cur_state(f['vEgo'], f['aEgo'])
-    mpc.update(_radarstate(f['lead']), max(f['vCruise'], 1.0), gap_adjust=f['gap'])
+    gap_adjust = f['gap'] or last_gap
+    mpc.update(_radarstate(f['lead']), max(f['vCruise'], 1.0),
+               personality=personality, gap_adjust=gap_adjust)
     v_traj = np.interp(ctrl_t, T_IDXS_MPC, mpc.v_solution)
     a_traj = np.interp(ctrl_t, T_IDXS_MPC, mpc.a_solution)
     a_mpc, stop_mpc = get_accel_from_plan(v_traj, a_traj, ctrl_t, action_t=action_t, vEgoStopping=v_ego_stopping)
