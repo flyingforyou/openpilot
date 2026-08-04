@@ -280,6 +280,14 @@ class Handler(BaseHTTPRequestHandler):
         'engaged': bool(self.state.get().get('engaged')),
       }))
 
+    if self.path.startswith('/api/shadow/scan'):
+      qs = self.path.split('?', 1)[1] if '?' in self.path else ''
+      route = next((p[6:] for p in qs.split('&') if p.startswith('route=')), None)
+      st = self.shadow_scan.state()
+      if route and st.get('route') != route and st.get('status') != 'running':
+        st = {'status': 'idle'}                      # a stale result from a different route
+      return self._send(200, json.dumps(st))
+
     if self.path.startswith('/api/shadow'):
       qs = self.path.split('?', 1)[1] if '?' in self.path else ''
       route = next((p[6:] for p in qs.split('&') if p.startswith('route=')), None)
@@ -335,6 +343,18 @@ class Handler(BaseHTTPRequestHandler):
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
 
   def do_POST(self):
+    if self.path.startswith('/api/shadow/scan'):
+      n = int(self.headers.get('Content-Length', 0))
+      try:
+        req = json.loads(self.rfile.read(n) or b'{}')
+      except json.JSONDecodeError:
+        return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
+      route = req.get('route')
+      if not route:
+        return self._send(400, json.dumps({'error': '주행을 지정하세요'}))
+      out = self.shadow_scan.start(route)
+      return self._send(409 if 'error' in out else 200, json.dumps(out))
+
     if self.path.startswith('/api/shadow'):
       n = int(self.headers.get('Content-Length', 0))
       try:
@@ -1054,10 +1074,35 @@ background:var(--line);border-top:1px solid var(--line)}
 .msg.err{color:var(--bad);font-family:var(--m);font-size:11.5px}
 .note{font-size:11.5px;color:var(--mut);line-height:1.6;padding:13px}
 .note b{color:var(--tx);font-weight:600}
+
+/* 세그먼트 스캔 -- 로컬 shadow_viz.py 의 세그먼트 스트립과 같은 모양 */
+.segs{display:flex;gap:4px;padding:11px 13px;overflow-x:auto}
+.seg{flex:0 0 auto;width:52px;background:transparent;border:1px solid var(--line);
+border-radius:8px;padding:6px 4px 5px;cursor:pointer;color:var(--mut);font-family:var(--m);
+font-size:10px;text-align:center}
+.seg:hover{border-color:var(--radar);color:var(--tx)}
+.seg[aria-selected=true]{border-color:var(--radar);color:var(--radar);background:rgba(90,200,250,.08)}
+.seg .n{font-size:12px;font-weight:600;display:block;line-height:1.3}
+.seg .bar{height:3px;border-radius:2px;background:var(--line);margin:4px 0 3px;overflow:hidden}
+.seg .bar>i{display:block;height:100%;background:var(--bad)}
+.seg .pc{font-variant-numeric:tabular-nums}
+.scanbar{height:3px;background:var(--line);border-radius:2px;overflow:hidden;margin:0 13px 11px}
+.scanbar>i{display:block;height:100%;background:var(--radar);transition:width .2s}
 </style></head><body>
 <a class="back" href="/">&larr; 돌아가기</a>
 <h1>그림자 · 순정 ACC vs 지금 코드</h1>
 <div class="sub" id="sub">불러오는 중…</div>
+
+<div class="card">
+  <h2>세그먼트 스캔 — 순정과 지금 계획이 크게 갈린 순서로</h2>
+  <div class="pad">
+    <span class="lbl">스캔할 주행</span><select id="scanRoute"></select>
+    <button id="scanRun">스캔</button>
+    <span class="lbl" id="scanMsg" style="margin-left:auto"></span>
+  </div>
+  <div class="scanbar" id="scanBar" style="display:none"><i style="width:0"></i></div>
+  <div class="segs" id="segs"></div>
+</div>
 
 <div class="card">
   <h2>재생할 구간</h2>
@@ -1115,8 +1160,58 @@ async function boot(){
   const d=await (await fetch('/api/shadow')).json();
   $('sub').textContent = `커밋 ${d.commit||''} · 녹화 주행 ${(d.routes||[]).length}개`;
   $('route').innerHTML = (d.routes||[]).map(r=>`<option>${r}</option>`).join('');
+  $('scanRoute').innerHTML = $('route').innerHTML;
   if((d.routes||[]).length) await loadSegs();
   if(d.status==='done') show(d);
+  resumeScan();
+}
+
+// 세그먼트 스캔 -- 로그에 이미 있는 aTarget/aEgo 로 훑는 저비용 1차 패스. 재계산이 필요한
+// 세그먼트를 고르기 위한 것이라 MPC 를 다시 풀지 않는다; 그 비용은 고른 세그먼트 하나에만 든다.
+let scanPoll=null;
+$('scanRun').onclick=async()=>{
+  const route=$('scanRoute').value;
+  $('scanRun').disabled=true; $('scanMsg').textContent='스캔 중…';
+  const res=await fetch('/api/shadow/scan',{method:'POST',body:JSON.stringify({route})});
+  const d=await res.json();
+  if(d.error){ $('scanMsg').textContent=d.error; $('scanRun').disabled=false; return; }
+  pollScan(route);
+};
+function resumeScan(){
+  // 재접속했을 때 이미 돌고 있거나 끝나 있는 스캔을 이어받는다
+  fetch('/api/shadow/scan?route='+encodeURIComponent($('scanRoute').value)).then(r=>r.json()).then(d=>{
+    if(d.status==='running'){ $('scanRun').disabled=true; pollScan(d.route); }
+    else if(d.status==='done'){ renderSegs(d.segments); }
+  });
+}
+function pollScan(route){
+  if(scanPoll) return;
+  scanPoll=setInterval(async()=>{
+    const d=await (await fetch('/api/shadow/scan?route='+encodeURIComponent(route))).json();
+    if(d.status==='running'){
+      $('scanBar').style.display='block';
+      $('scanBar').firstElementChild.style.width=`${d.total?100*d.done/d.total:0}%`;
+      $('scanMsg').textContent=`${d.done}/${d.total} 세그먼트`;
+      return;
+    }
+    clearInterval(scanPoll); scanPoll=null; $('scanRun').disabled=false; $('scanBar').style.display='none';
+    if(d.status==='error'){ $('scanMsg').textContent=d.error; return; }
+    if(d.status==='done'){ $('scanMsg').textContent=`${d.segments.length}개 세그먼트`; renderSegs(d.segments); }
+  }, 800);
+}
+function renderSegs(segments){
+  $('segs').innerHTML = segments.map(s=>`
+    <button class="seg" data-seg="${s.seg}" aria-selected="false"
+      title="세그먼트 ${s.seg} · 리드 ${s.leadFrames}프레임 · 최대 격차 ${(s.worst*MPH).toFixed(1)} mph/s">
+      <span class="n">${s.seg}</span>
+      <span class="bar"><i style="width:${Math.min(100,s.disagreePct)}%"></i></span>
+      <span class="pc">${s.disagreePct}%</span></button>`).join('');
+  $('segs').onclick=e=>{
+    const b=e.target.closest('.seg'); if(!b) return;
+    document.querySelectorAll('#segs .seg').forEach(x=>x.setAttribute('aria-selected', x===b));
+    $('route').value=$('scanRoute').value;
+    loadSegs().then(()=>{ $('seg').value=b.dataset.seg; pickSeg(); });
+  };
 }
 async function loadSegs(){
   const r=$('route').value;
@@ -1507,6 +1602,7 @@ def main():
   Handler.can = CanSource(Handler.params)
   Handler.videos = video_source.Mp4Cache()
   Handler.shadow = shadow_replay.ShadowReplay(lambda: bool(Handler.state.get().get('engaged')))
+  Handler.shadow_scan = shadow_replay.ShadowScan(lambda: bool(Handler.state.get().get('engaged')))
 
   srv = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
   print(f"serving on http://0.0.0.0:{args.port}  (commit {GIT_COMMIT})")

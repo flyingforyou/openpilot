@@ -37,6 +37,10 @@ DT = 1.0 / HZ
 # speed, where a disagreement means nothing.
 F_LEAD, F_RADAR, F_ENG, F_BRAKE, F_GAS = 1, 2, 4, 8, 16
 
+# How much more braking openpilot has to ask for, against the plan the drive actually ran with,
+# before it counts as a real disagreement rather than the two controllers tracking each other.
+DISAGREE_MS2 = 0.5
+
 
 def _seg_dir(route: str, seg: int) -> str:
   return os.path.join(REALDATA, f'{route}--{seg}')
@@ -138,6 +142,57 @@ def _radarstate(ld):
     o.modelProb = ld['modelProb']
   rs.leadTwo.status = False
   return rs
+
+
+def summarise(frames: list[dict]) -> dict:
+  """How far apart the two controllers were in this segment, using the plan the drive already
+  logged -- not a re-solve. This is what makes a scan across a whole route cheap enough to run
+  on every segment: no acados solve, just the aTarget that was already computed at drive time.
+  """
+  worst = 0.0
+  worst_t = None
+  disagree = 0
+  lead_frames = 0
+  for f in frames:
+    if not f['lead']:
+      continue
+    lead_frames += 1
+    gap = f['aTarget'] - f['aEgo']       # negative = openpilot wanted more braking than the car did
+    if gap < -DISAGREE_MS2:
+      disagree += 1
+    if gap < worst:
+      worst, worst_t = gap, f['t']
+  return {
+    'dur': frames[-1]['t'] if frames else 0.0,
+    'leadFrames': lead_frames,
+    'disagreeFrames': disagree,
+    'disagreePct': round(100.0 * disagree / lead_frames, 1) if lead_frames else 0.0,
+    'worst': round(worst, 3), 'worstT': worst_t,
+  }
+
+
+def scan_route(route: str, on_progress=None) -> list[dict]:
+  """Every segment of a route, ranked by how far the recorded plan and the recorded car parted.
+
+  Cheap on purpose: this reads what was already logged rather than re-solving anything, so it is
+  the triage pass -- picking which segment is worth the cost of a real replay, not a replacement
+  for one. The MPC re-solve only ever runs on the one segment picked afterwards.
+  """
+  out = []
+  segs = list_segments(route)
+  for i, seg in enumerate(segs):
+    if on_progress:
+      on_progress(i, len(segs))
+    try:
+      frames = extract(route, seg)
+    except Exception:
+      cloudlog.exception(f'shadow: scan failed on {route}--{seg}')
+      continue
+    if not frames:
+      continue
+    out.append({'seg': seg, **summarise(frames)})
+  out.sort(key=lambda s: s['worst'])
+  return out
 
 
 def car_floor(fingerprint: str | None) -> tuple[float, str]:
@@ -279,6 +334,51 @@ def route_floor(route: str) -> dict:
       break
   floor, src = car_floor(fingerprint)
   return {'floor': round(floor, 3), 'floorSrc': src, 'fingerprint': fingerprint}
+
+
+class ShadowScan:
+  """One route scan at a time, in the background, never while the car is being driven.
+
+  Separate from ShadowReplay rather than sharing its worker: a scan touches every segment of a
+  route in sequence, and letting it share one slot with a single-segment replay would make each
+  block the other for no reason -- they answer different questions and are usually run together
+  (scan to find the segment, replay to look closely at it).
+  """
+
+  def __init__(self, engaged_fn):
+    self._engaged = engaged_fn
+    self._lock = threading.Lock()
+    self._thread: threading.Thread | None = None
+    self._state: dict = {'status': 'idle'}
+
+  def state(self) -> dict:
+    with self._lock:
+      return dict(self._state)
+
+  def start(self, route: str) -> dict:
+    with self._lock:
+      if self._thread is not None and self._thread.is_alive():
+        return {'error': '이미 스캔 중입니다', **self._state}
+      if self._engaged():
+        return {'error': '주행 중에는 실행하지 않습니다'}
+      self._state = {'status': 'running', 'route': route, 'done': 0, 'total': len(list_segments(route))}
+      self._thread = threading.Thread(target=self._run, args=(route,), daemon=True)
+      self._thread.start()
+      return dict(self._state)
+
+  def _run(self, route: str):
+    def progress(i, total):
+      with self._lock:
+        if self._state.get('status') == 'running':
+          self._state['done'], self._state['total'] = i, total
+    try:
+      segments = scan_route(route, on_progress=progress)
+      with self._lock:
+        self._state = {'status': 'done', 'route': route, 'segments': segments}
+    except Exception as e:                                  # noqa: BLE001 - surfaced to the page
+      cloudlog.exception('shadow scan failed')
+      with self._lock:
+        self._state = {'status': 'error', 'error': f'{type(e).__name__}: {e}'}
 
 
 def list_segments(route: str) -> list[int]:
