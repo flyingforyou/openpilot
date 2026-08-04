@@ -1124,12 +1124,15 @@ font-size:10px;text-align:center}
   <div class="legend">
     <span><i style="background:#F5B942"></i>순정 ACC 실제 (aEgo)</span>
     <span><i style="background:#8A97A6"></i>주행 당시 계획 (기록된 aTarget)</span>
-    <span><i style="background:#5AC8FA"></i>지금 코드가 내놓는 계획</span>
+    <span><i style="background:#5AC8FA"></i>지금 코드 · MPC 단독</span>
+    <span><i style="background:#B58AFF"></i>지금 코드 · Experimental Mode 블렌드</span>
     <span><i style="background:#FF6B5A"></i>하한에 붙은 구간</span>
+    <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#B58AFF;margin-right:5px;vertical-align:1px"></span>모델만 정지 원함 (신호등·정지선 등)</span>
   </div>
   <div class="pad" style="padding-top:0">
     <button id="play">▶ 재생</button>
     <button id="worst" title="지금 코드와 순정이 가장 크게 갈린 순간">최대 격차로</button>
+    <button id="worstStop" disabled title="Experimental 블렌드에서만 정지를 원했던 첫 순간">모델 정지 순간으로</button>
     <span class="lbl" id="tt" style="margin-left:auto;font-family:var(--m)">—</span>
   </div>
   <div class="read" id="read"></div>
@@ -1152,7 +1155,7 @@ font-size:10px;text-align:center}
 
 <script>
 const MPH=2.2369363;
-let DATA=null, poll=null, vt=0, VOFF=0, worstT=null;
+let DATA=null, poll=null, vt=0, VOFF=0, worstT=null, worstStopT=null;
 const $=id=>document.getElementById(id);
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
@@ -1265,12 +1268,20 @@ function show(d){
   DATA=d; vt=0; VOFF=0;
   $('chartTitle').textContent =
     `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''}) · 푸는 데 ${d.solveSec}초`;
-  const hit=d.rows.filter(r=>r[6]&32).length;
-  $('msg').textContent = `${d.rows.length}프레임, 하한에 닿은 프레임 ${hit}개 (${(hit/20).toFixed(1)}초)`;
+  const hit=d.rows.filter(r=>r[7]&32).length;
+  const stopFrames=d.rows.filter(r=>(r[7]&64) && !(r[7]&128)).length;
+  $('msg').textContent = `${d.rows.length}프레임, 하한에 닿은 프레임 ${hit}개 (${(hit/20).toFixed(1)}초)`
+    + (stopFrames ? ` · Experimental 모드만 정지를 원한 프레임 ${stopFrames}개 (${(stopFrames/20).toFixed(1)}초)` : '');
 
-  // 지금 코드가 순정보다 가장 많이 더 감속을 원한 순간
+  // 지금 코드(MPC)가 순정보다 가장 많이 더 감속을 원한 순간
   let best=0; worstT=null;
   for(const r of d.rows){ const g=r[3]-r[1]; if(g<best){best=g; worstT=r[0];} }
+
+  // 리드 기반 MPC 는 정지를 안 원했는데 e2e 모델만 정지를 원했던 첫 순간 -- 신호등·정지선처럼
+  // 화면으로만 보이는 것을 모델이 인식했다는 가장 직접적인 신호다.
+  worstStopT=null;
+  for(const r of d.rows){ if((r[7]&64) && !(r[7]&128)){ worstStopT=r[0]; break; } }
+  $('worstStop').disabled = worstStopT==null;
 
   mountVideo(d.route, d.seg);
   draw();
@@ -1344,7 +1355,7 @@ function draw(){
   const x=t=>L+iw*(t/dur), y=a=>T+ih*(0.5-(a/S)/2);
 
   g.fillStyle=css('--bad'); g.globalAlpha=.22;
-  for(let i=0;i<rows.length-1;i++) if(rows[i][6]&32)
+  for(let i=0;i<rows.length-1;i++) if(rows[i][7]&32)
     g.fillRect(x(rows[i][0]),T,Math.max(1,x(rows[i+1][0])-x(rows[i][0])),ih);
   g.globalAlpha=1;
 
@@ -1357,11 +1368,19 @@ function draw(){
   }
   g.textAlign='left'; g.fillStyle=css('--dim'); g.fillText('mph/s', 4, T+4);
 
-  for(const [col,color,lw] of [[1,'#F5B942',1.8],[2,'#8A97A6',1.2],[3,'#5AC8FA',1.8]]){
+  for(const [col,color,lw] of [[1,'#F5B942',1.8],[2,'#8A97A6',1.2],[3,'#5AC8FA',1.8],[4,'#B58AFF',1.6]]){
     g.strokeStyle=color; g.lineWidth=lw; g.beginPath();
     rows.forEach((r,i)=>{ const px=x(r[0]),py=y(r[col]); i?g.lineTo(px,py):g.moveTo(px,py); });
     g.stroke();
   }
+
+  // Experimental Mode 블렌드에서만 정지를 원한 순간 -- MPC(리드 추종) 혼자서는 안 잡히는,
+  // 모델이 화면에서 직접 본 무언가(신호등·정지선 등) 때문에 멈추고 싶어했다는 뜻이다.
+  g.fillStyle='#B58AFF';
+  for(const r of rows) if((r[7]&64) && !(r[7]&128)){
+    g.beginPath(); g.arc(x(r[0]), B+10, 3, 0, 7); g.fill();
+  }
+
   g.textAlign='center'; g.fillStyle=css('--dim');
   const step=dur>45?10:5;
   for(let t=0;t<=dur;t+=step) g.fillText(String(t), x(t), B+16);
@@ -1374,7 +1393,7 @@ function draw(){
   g.fillStyle=css('--radar');
   g.beginPath(); g.moveTo(px-5,T-8); g.lineTo(px+5,T-8); g.lineTo(px,T-1); g.closePath(); g.fill();
   const r=rows[Math.min(rows.length-1,Math.round(vt*20))];
-  if(r) for(const [col,color] of [[1,'#F5B942'],[3,'#5AC8FA']]){
+  if(r) for(const [col,color] of [[1,'#F5B942'],[3,'#5AC8FA'],[4,'#B58AFF']]){
     g.beginPath(); g.arc(px,y(r[col]),4,0,7); g.fillStyle=color; g.fill();
     g.strokeStyle=css('--card'); g.lineWidth=1.8; g.stroke();
   }
@@ -1384,18 +1403,23 @@ function draw(){
 
 function readout(r){
   if(!r) return;
-  const d=r[3]-r[1];
+  const flags=r[7];
+  const stopExp=!!(flags&64), stopMpc=!!(flags&128);
+  let stopLabel='—';
+  if(stopExp && !stopMpc) stopLabel=`<span style="color:#B58AFF">모델만 정지 원함</span>`;
+  else if(stopMpc) stopLabel=`<span style="color:${css('--bad')}">정지</span>`;
   $('read').innerHTML=[
     ['시각',`${r[0].toFixed(1)}<small>s</small>`],
     ['순정 실제',`${(r[1]*MPH).toFixed(1)}<small>mph/s</small>`],
     ['당시 계획',`${(r[2]*MPH).toFixed(1)}<small>mph/s</small>`],
-    ['지금 코드',`<span style="color:${css('--radar')}">${(r[3]*MPH).toFixed(1)}<small>mph/s</small></span>`],
-    ['지금−순정',`<span style="color:${d<0?css('--bad'):'inherit'}">${d>0?'+':''}${(d*MPH).toFixed(1)}<small>mph/s</small></span>`],
-    ['속도',`${(r[4]*MPH).toFixed(0)}<small>mph</small>`],
-    ['리드',r[5]==null?'—':`${(r[5]*3.28084).toFixed(0)}<small>ft</small>`],
-    ['tFollow',`${r[8].toFixed(2)}<small>s</small>`],
-    ['갭',r[7]||'—'],
-    ['하한',(r[6]&32)?`<span style="color:${css('--bad')}">닿음</span>`:'—'],
+    ['지금 코드 (MPC)',`<span style="color:${css('--radar')}">${(r[3]*MPH).toFixed(1)}<small>mph/s</small></span>`],
+    ['지금 코드 (Experimental)',`<span style="color:#B58AFF">${(r[4]*MPH).toFixed(1)}<small>mph/s</small></span>`],
+    ['속도',`${(r[5]*MPH).toFixed(0)}<small>mph</small>`],
+    ['리드',r[6]==null?'—':`${(r[6]*3.28084).toFixed(0)}<small>ft</small>`],
+    ['tFollow',`${r[9].toFixed(2)}<small>s</small>`],
+    ['갭',r[8]||'—'],
+    ['정지 판단',stopLabel],
+    ['하한',(flags&32)?`<span style="color:${css('--bad')}">닿음</span>`:'—'],
   ].map(([k,v])=>`<div class="rd"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
 }
 
@@ -1417,6 +1441,11 @@ $('worst').onclick=()=>{
   if(worstT==null) return;
   const v=video(); if(v && !v.paused) v.pause();
   seek(Math.max(0, worstT-4));
+};
+$('worstStop').onclick=()=>{
+  if(worstStopT==null) return;
+  const v=video(); if(v && !v.paused) v.pause();
+  seek(Math.max(0, worstStopT-4));
 };
 addEventListener('resize',draw);
 boot(); tick();
