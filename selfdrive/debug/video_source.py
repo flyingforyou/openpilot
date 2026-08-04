@@ -143,8 +143,19 @@ def _remux(src: str, dst: str) -> None:
     stream = inp.streams.video[0]
     with av.open(dst, 'w', format='mp4', options={'movflags': 'faststart'}) as out:
       ostream = out.add_stream(template=stream)
+      # A transport stream's first timestamp is wherever the broadcast clock happened to be, not
+      # zero, and copying it through leaves an MP4 whose movie header spans start_pts..end while
+      # the track only holds a minute of samples. The browser then reports a duration minutes
+      # longer than the video and starts currentTime at the offset instead of 0, which silently
+      # breaks anything lining data up against playback position. Rebase onto zero.
+      first = None
       for packet in inp.demux(stream):
         if packet.dts is None:   # demuxer flush packet
           continue
+        if first is None:
+          first = packet.dts
+        packet.dts -= first
+        if packet.pts is not None:
+          packet.pts -= first
         packet.stream = ostream
         out.mux(packet)

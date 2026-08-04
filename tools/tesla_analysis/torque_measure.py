@@ -52,11 +52,16 @@ def read_events(path):
   try:
     with open(path, 'rb') as src, open(tmp, 'wb') as dst:
       zstandard.ZstdDecompressor().copy_stream(src, dst)
+    # Read the whole staged rlog and parse from bytes. A segment cut short by the car losing
+    # power leaves a truncated final message, and the streaming reader aborts on it inside
+    # libkj -- a C++ terminate that no Python except can catch, killing the whole run. Parsing
+    # from bytes raises a normal KjException instead, after yielding every complete event.
     with open(tmp, 'rb') as f:
-      try:
-        yield from capnp_log.Event.read_multiple(f)
-      except capnp.KjException:
-        pass
+      data = f.read()
+    try:
+      yield from capnp_log.Event.read_multiple_bytes(data)
+    except capnp.KjException:
+      pass
   finally:
     if os.path.exists(tmp):
       os.remove(tmp)
