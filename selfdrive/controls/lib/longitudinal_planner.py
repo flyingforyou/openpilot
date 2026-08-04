@@ -18,7 +18,13 @@ from openpilot.selfdrive.controls.lib.curve_speed.lateral_load_governor import L
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
+# Ceiling on requested acceleration, by speed -- and, on Tesla, by the gap knob. Gap 7 keeps the
+# stock openpilot curve. Gap 1 is the factory ACC's own measured behaviour on this car: p95 of
+# achieved aEgo with the driver's feet off the pedals, over six drives, sampled at these same
+# breakpoints. The 40 m/s point is unchanged in both because no drive in the set reaches it.
+# This is a comfort curve, not a capability limit -- panda's envelope sits well above either.
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
+A_CRUISE_MAX_VALS_GAP1 = [1.7, 1.85, 1.2, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
@@ -29,8 +35,15 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
 
-def get_max_accel(v_ego):
-  return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
+def get_max_accel(v_ego, gap_adjust: int = 0):
+  """gap_adjust 1..7 blends between the assertive curve and the stock one; 0 (no gap signal
+  yet) keeps stock, so a car that never reports a gap behaves exactly as before."""
+  if gap_adjust in (0, 7) or not 1 <= gap_adjust <= 7:
+    vals = A_CRUISE_MAX_VALS
+  else:
+    w = (7 - gap_adjust) / 6.0          # 1 at gap 1, 0 at gap 7
+    vals = [a * w + b * (1 - w) for a, b in zip(A_CRUISE_MAX_VALS_GAP1, A_CRUISE_MAX_VALS, strict=True)]
+  return np.interp(v_ego, A_CRUISE_MAX_BP, vals)
 
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
@@ -134,7 +147,17 @@ class LongitudinalPlanner:
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
-    accel_clip = [self.accel_min, get_max_accel(v_ego)]
+    # Resolved before the clip, because the ceiling rides the gap knob too.
+    gap_adjust = int(sm['carState'].cruiseState.gapAdjust)
+    if self.CP.brand == "tesla":
+      if gap_adjust != 0:
+        if gap_adjust != self.tesla_last_gap_adjust:
+          self.tesla_last_gap_adjust = gap_adjust
+          self.params.put_nonblocking("TeslaLastGapAdjust", gap_adjust)
+      else:
+        gap_adjust = self.tesla_last_gap_adjust
+
+    accel_clip = [self.accel_min, get_max_accel(v_ego, gap_adjust)]
     steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
     accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
 
@@ -175,16 +198,9 @@ class LongitudinalPlanner:
     if force_slow_decel:
       v_cruise = 0.0
 
-    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
+    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality,
+                         gap_adjust=gap_adjust)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
-    gap_adjust = int(sm['carState'].cruiseState.gapAdjust)
-    if self.CP.brand == "tesla":
-      if gap_adjust != 0:
-        if gap_adjust != self.tesla_last_gap_adjust:
-          self.tesla_last_gap_adjust = gap_adjust
-          self.params.put_nonblocking("TeslaLastGapAdjust", gap_adjust)
-      else:
-        gap_adjust = self.tesla_last_gap_adjust
     self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality, gap_adjust=gap_adjust)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)

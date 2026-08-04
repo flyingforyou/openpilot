@@ -59,22 +59,24 @@ CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
 
-# Evenly spaced from gap 1 to gap 7. The old table only spanned 1.10-1.75s, which is 18m
-# between the extremes at 100km/h and under 3m per step -- turning the knob the whole way
-# barely changed the distance. Gap 7 is unchanged; the range was opened downward instead,
-# because that end is what did not match the car: stock gap 1 sits much closer than 1.10s.
+# CarrotPilot's four levels, with interpolated steps between: gap 1/3/5/7 land exactly on
+# 1.10 / 1.30 / 1.45 / 1.60. This table was briefly opened downward to 0.80 at gap 1, on the
+# theory that the stock system follows closer than 1.10 -- logs said otherwise. At ~0.80s headway
+# the 5s crash predictor overlaps the lead and FCW ("Emergency Braking: Risk of Collision") fires
+# on ordinary city lead-braking: routes 13/16 showed gap 1 tripping it ~3.5x as often as gap 3,
+# and gap 3 at 1.12s was clean. FCW's own constants are left alone -- carrot uses the same ones,
+# and the fault was the follow distance, not the warning.
 TESLA_GAP_T_FOLLOW = {
-  1: 0.80,
-  2: 0.96,
-  3: 1.12,
-  4: 1.28,
-  5: 1.43,
-  6: 1.59,
-  7: 1.75,
+  1: 1.10,
+  2: 1.20,
+  3: 1.30,
+  4: 1.38,
+  5: 1.45,
+  6: 1.52,
+  7: 1.60,
 }
-# No profile may ask for less than this. Gap 1 is already deliberately close, and the shift and
-# spread below would otherwise take it to 0.61s, which is a car length at 100km/h.
-MIN_T_FOLLOW = 0.80
+# No profile may follow closer than carrot's tightest, for the reason above.
+MIN_T_FOLLOW = 1.10
 T_FOLLOW_RISE_RATE = 0.35  # seconds of tFollow per real second
 
 # Gap profiles, selectable at runtime. The knob has 7 positions either way; these change what
@@ -94,6 +96,17 @@ def gap_t_follow_table(profile: int = 0) -> dict[int, float]:
   return {g: round(max(mid + (v - mid) * spread + shift, MIN_T_FOLLOW), 3)
           for g, v in TESLA_GAP_T_FOLLOW.items()}
 
+# The gap knob carries the whole feel of the following, not just the distance. Gap 1 means "get
+# on with it" and gap 7 means "take your time", so the change cost -- which is what decides how
+# fast acceleration is allowed to build -- rides the same knob. 0.5 at gap 1 is not a new number:
+# it is exactly what openpilot already applies for the aggressive personality below.
+GAP_JERK_FACTOR = {1: 0.5, 2: 0.58, 3: 0.67, 4: 0.75, 5: 0.83, 6: 0.92, 7: 1.0}
+
+
+def gap_jerk_factor(gap_adjust: int) -> float:
+  return GAP_JERK_FACTOR.get(int(gap_adjust), 1.0)
+
+
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
@@ -109,11 +122,11 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard, gap_adjust=0,
   if gap_adjust in TESLA_GAP_T_FOLLOW:
     return gap_t_follow_table(gap_profile)[gap_adjust]
   if personality==log.LongitudinalPersonality.relaxed:
-    return 1.75
-  elif personality==log.LongitudinalPersonality.standard:
     return 1.45
+  elif personality==log.LongitudinalPersonality.standard:
+    return 1.30
   elif personality==log.LongitudinalPersonality.aggressive:
-    return 1.25
+    return 1.10
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
@@ -323,8 +336,10 @@ class LongitudinalMpc:
     for i in range(N):
       self.solver.cost_set(i, 'Zl', Zl)
 
-  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
-    jerk_factor = get_jerk_factor(personality)
+  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard,
+                  gap_adjust: int = 0):
+    # Both factors multiply, so a gap 1 on the aggressive personality is the loosest this gets.
+    jerk_factor = get_jerk_factor(personality) * gap_jerk_factor(gap_adjust)
     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
     cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
     constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
