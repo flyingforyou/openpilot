@@ -197,6 +197,13 @@ struct CarState {
   invalidLkasSetting @55 :Bool;    # stock LKAS is incorrectly configured (i.e. on or off)
   stockAeb @30 :Bool;
   stockLkas @59 :Bool;
+  # The factory ACC's own commanded band, decoded straight off the AP module's own bus (bus 2 on
+  # HW1) rather than off anything forwarded to the car -- so it is populated every cycle
+  # regardless of who currently owns DAS_control, openpilotLongitudinalControl, or the
+  # forwarding gate. 5.44 m/s^2 (raw 511) is the message's own SNA value: no reading yet, not a
+  # request to accelerate that hard. Legacy Tesla only for now; not decoded for other platforms.
+  stockAccelMin @61 :Float32;
+  stockAccelMax @62 :Float32;
   stockFcw @31 :Bool;
   espDisabled @32 :Bool;
   accFaulted @42 :Bool;

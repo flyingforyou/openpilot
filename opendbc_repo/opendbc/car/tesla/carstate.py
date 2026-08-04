@@ -370,6 +370,12 @@ class CarState(CarStateBase):
     # Messages needed by carcontroller
     self.das_control = copy.copy(cp_ap_pt.vl["DAS_control"])
 
+    # What the factory ACC itself is asking for, straight off its own bus -- logged every cycle
+    # regardless of who owns DAS_control, so a run with openpilot driving still carries a shadow
+    # of what the stock system would have done, for comparing after the fact.
+    ret.stockAccelMin = float(self.das_control["DAS_accelMin"])
+    ret.stockAccelMax = float(self.das_control["DAS_accelMax"])
+
     # Stock autopark needs DAS_control and DAS_steeringControl to itself for the whole maneuver.
     # Held for a while after the module goes quiet, to match the panda's forwarding latch --
     # openpilot must stop transmitting for at least as long as panda opens the gate, or the two
