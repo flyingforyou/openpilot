@@ -7,7 +7,7 @@ qcamera into MP4 fixes it -- a stream copy, so a 60s segment costs about 0.1s, l
 and comes out seekable.
 
 qcamera is 526x330 though, which is enough to find a moment and not enough to read one, so the
-full-resolution road camera is offered too -- see QUALITIES for what each tier costs.
+full-resolution cameras are served as well -- see CAMERAS and CODECS.
 """
 import os
 import subprocess
@@ -20,15 +20,21 @@ CACHE = '/data/tmp/qcam-mp4'   # /tmp is a small tmpfs here
 CACHE_BUDGET = 400 * 1024 * 1024
 
 PREVIEW = 'qcamera.ts'
-ROAD = 'fcamera.hevc'
 
-# What the player can ask for. qcamera is 526x330 -- fine for finding a moment, too soft to read
-# a road sign or judge a gap. fcamera is the same drive at 1344x760, and both ways of serving it
-# were measured on this device over a 60s segment:
-#   copy  -- 0.75s, 36MB, but HEVC in MP4 only plays where the browser has a decoder for it
-#   h264  -- 41s, 8MB, plays anywhere
-# So copy is offered first and the page falls back to h264 when it cannot play HEVC.
-QUALITIES = ('preview', 'copy', 'h264')
+# The three recorded views, all 1344x760 HEVC. qcamera is kept only as a fallback for segments
+# that predate a camera file -- at 526x330 it finds a moment without showing one, so nothing
+# offers it by choice.
+CAMERAS = {
+  'road': 'fcamera.hevc',
+  'wide': 'ecamera.hevc',
+  'driver': 'dcamera.hevc',
+}
+
+# Two ways to hand a camera file to a browser, both measured here over a 60s segment:
+#   copy  -- 0.75s, 36MB, lossless, but HEVC in MP4 only plays where the browser decodes it
+#   h264  -- 41s, 18MB, lossy, plays anywhere
+# The page asks canPlayType and picks; copy is preferred because it is the original bitstream.
+CODECS = ('copy', 'h264')
 # full-res sources, in the order worth offering them
 DOWNLOADS = [
   ('fcamera.hevc', '전방'),
@@ -113,11 +119,15 @@ class Mp4Cache:
     with self.guard:
       return self.locks.setdefault(key, threading.Lock())
 
-  def get(self, route: str, seg: int, base: str = REALDATA, quality: str = 'preview') -> str:
-    if quality not in QUALITIES:
-      quality = 'preview'
-    src = raw_path(route, seg, PREVIEW if quality == 'preview' else ROAD, base)
-    key = f'{route}--{seg}--{quality}--{int(os.path.getmtime(src))}.mp4'
+  def get(self, route: str, seg: int, base: str = REALDATA,
+          cam: str = 'road', codec: str = 'copy') -> str:
+    if codec not in CODECS:
+      codec = 'copy'
+    name = CAMERAS.get(cam)
+    if name is None:
+      cam, name = 'preview', PREVIEW
+    src = raw_path(route, seg, name, base)
+    key = f'{route}--{seg}--{cam}--{codec}--{int(os.path.getmtime(src))}.mp4'
     dst = os.path.join(self.dir, key)
 
     with self._lock(key):
@@ -125,10 +135,10 @@ class Mp4Cache:
         os.makedirs(self.dir, exist_ok=True)
         tmp = dst + f'.{os.getpid()}.part'
         try:
-          if quality == 'preview':
+          if cam == 'preview':
             _remux(src, tmp)
           else:
-            _from_road(src, tmp, transcode=(quality == 'h264'))
+            _from_camera(src, tmp, transcode=(codec == 'h264'))
           os.replace(tmp, dst)
         finally:
           if os.path.exists(tmp):
@@ -155,8 +165,8 @@ class Mp4Cache:
         pass
 
 
-def _from_road(src: str, dst: str, transcode: bool) -> None:
-  """Put the full-resolution road camera in a container a browser will accept.
+def _from_camera(src: str, dst: str, transcode: bool) -> None:
+  """Put a full-resolution camera file in a container a browser will accept.
 
   The .hevc files are raw elementary streams with no container and no timestamps at all, so the
   frame rate has to be asserted on the way in -- loggerd writes them at 20fps. Copying the stream

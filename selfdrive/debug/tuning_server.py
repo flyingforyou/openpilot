@@ -297,13 +297,14 @@ class Handler(BaseHTTPRequestHandler):
 
     page = self.path.split('?')[0].rstrip('/')
 
-    # /v/<route>/<seg>.mp4[?q=preview|copy|h264] -- remuxed so a browser will play it
+    # /v/<route>/<seg>.mp4[?cam=road|wide|driver][&q=copy|h264] -- in a container a browser plays
     if page.startswith('/v/'):
       qs = self.path.split('?', 1)[1] if '?' in self.path else ''
-      quality = next((p[2:] for p in qs.split('&') if p.startswith('q=')), 'preview')
+      cam = next((p[4:] for p in qs.split('&') if p.startswith('cam=')), 'road')
+      codec = next((p[2:] for p in qs.split('&') if p.startswith('q=')), 'copy')
       try:
         route, seg = page[3:].rsplit('/', 1)
-        path = self.videos.get(route, int(seg.removesuffix('.mp4')), quality=quality)
+        path = self.videos.get(route, int(seg.removesuffix('.mp4')), cam=cam, codec=codec)
       except (ValueError, FileNotFoundError):
         return self._send(404, '{}')
       except Exception as e:
@@ -1066,10 +1067,6 @@ background:var(--line);border-top:1px solid var(--line)}
     <span class="lbl">제동 하한</span>
     <input id="amin" size="6" title="이 차의 포트값이 들어갑니다. 고쳐 넣으면 그 값으로 풉니다">
     <span class="lbl">m/s²</span>
-    <span class="lbl">화질</span><select id="q">
-      <option value="best" selected>고화질 1344x760</option>
-      <option value="preview">프리뷰 526p (즉시)</option>
-    </select>
     <button id="run">다시 풀기</button>
   </div>
   <div class="msg" id="msg">주행 중에는 실행하지 않습니다. MPC 를 매 프레임 다시 풀기 때문에 60초 구간에 수 초 걸립니다.</div>
@@ -1136,7 +1133,6 @@ function pickSeg(){
 }
 $('route').onchange=loadSegs;
 $('seg').onchange=pickSeg;
-$('q').onchange=()=>{ MOUNTED=''; if($('seg').value!=='') mountVideo($('route').value, +$('seg').value); };
 
 let SOLVED='';                   // 이미 푼(또는 푸는 중인) 구간+하한
 async function solve(force){
@@ -1197,14 +1193,14 @@ function bestQuality(){
 }
 let MOUNTED='';
 function mountVideo(route, seg){
-  const want=$('q').value==='best' ? bestQuality() : 'preview';
-  const key=`${route}/${seg}/${want}`;
+  const codec=bestQuality();
+  const key=`${route}/${seg}/${codec}`;
   if(key===MOUNTED) return;
   MOUNTED=key; VOFF=0; vt=0;
   const wrap=$('vidwrap');
-  if(want==='h264') $('msg').textContent='고화질 변환 중… 세그먼트당 40초쯤 걸리고, 한 번 만들면 캐시됩니다';
+  if(codec==='h264') $('msg').textContent='고화질 변환 중… 세그먼트당 40초쯤 걸리고, 한 번 만들면 캐시됩니다';
   wrap.innerHTML = `<video id="v" controls preload="auto" playsinline
-      src="/v/${encodeURIComponent(route)}/${seg}.mp4?q=${want}"></video>`;
+      src="/v/${encodeURIComponent(route)}/${seg}.mp4?cam=road&q=${codec}"></video>`;
   const v=video();
   v.onloadedmetadata=()=>{
     // qcamera 는 세그먼트 시작에서 시작하고 리먹스가 타임스탬프를 0 으로 되돌린다.
@@ -1399,9 +1395,10 @@ label.chk{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--m
     <div class="bar">
       <button class="nav" id="prev">← 이전</button>
       <button class="nav" id="next">다음 →</button>
-      <select id="q" aria-label="화질">
-        <option value="best" selected>고화질 1344x760</option>
-        <option value="preview">프리뷰 526p</option>
+      <select id="cam" aria-label="카메라">
+        <option value="road" selected>전방</option>
+        <option value="wide">광각</option>
+        <option value="driver">운전자</option>
       </select>
       <span class="now" id="now">주행 기록을 선택하세요</span>
       <label class="chk"><input type="checkbox" id="auto" checked> 자동 연속 재생</label>
@@ -1468,12 +1465,11 @@ function bestQuality(){
 }
 function open_(r,i){
   cur=r;seg=Math.max(0,Math.min(i,r.segments.length-1));
-  const want=$('q').value==='best' ? bestQuality() : 'preview';
-  v.src=`/v/${r.name}/${r.segments[seg].seg}.mp4?q=${want}`;
+  v.src=`/v/${r.name}/${r.segments[seg].seg}.mp4?cam=${$('cam').value}&q=${bestQuality()}`;
   v.play().catch(()=>{});   // autoplay may be blocked; controls still work
   drawRoutes();drawSegs();
 }
-$('q').onchange=()=>{ if(cur) open_(cur, seg); };
+$('cam').onchange=()=>{ if(cur) open_(cur, seg); };
 
 function step(d){if(cur&&cur.segments[seg+d])open_(cur,seg+d);}
 $('prev').onclick=()=>step(-1);
