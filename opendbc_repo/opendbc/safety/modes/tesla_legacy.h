@@ -160,14 +160,15 @@ static bool tesla_legacy_tx_hook(const CANPacket_t *msg) {
   // 0.04. min_accel was 288 (-3.48): ISO 15622:2018's ACC deceleration ceiling rounded to a whole
   // step, inherited from the Model 3/Y port rather than measured on this car.
   //
-  // This is a safety envelope, so it is set to what the factory system is itself allowed to do on
-  // this channel, not to the operating point. Across six logged drives a Model X HW1's own ACC
-  // authorised down to raw 249 while never being rejected by the car; the port asks for -4.2
-  // (raw 270), well inside it. Only the legacy mode moves -- Model 3/Y stay at the ISO limit,
-  // since nothing has been measured there.
+  // This is a safety envelope, so it is sized off what the factory system asks for on this
+  // channel, not off the operating point. Across six logged drives a Model X HW1's own ACC went
+  // to raw 262 (-4.52) with the driver's foot off the pedal; it reached raw 249 only in a frame
+  // where the driver was already braking, which says nothing about what it asks for unprompted.
+  // The port asks for -4.2 (raw 270), inside that with room to spare. Only the legacy mode
+  // moves -- Model 3/Y stay at the ISO limit, since nothing has been measured there.
   const LongitudinalLimits TESLA_LONG_LIMITS = {
     .max_accel = 425,       // 2 m/s^2
-    .min_accel = 249,       // -5.04 m/s^2, the factory ACC's own authorisation floor
+    .min_accel = 262,       // -4.52 m/s^2, the deepest the factory ACC asked for unprompted
     .inactive_accel = 375,  // 0. m/s^2
   };
 

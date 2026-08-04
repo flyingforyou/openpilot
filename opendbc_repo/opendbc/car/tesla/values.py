@@ -203,9 +203,9 @@ class CarControllerParams:
   # ISO 15622:2018's ACC deceleration ceiling, rounded to a whole DAS_control step (0.04 m/s^2).
   ACCEL_MIN = -3.48  # m/s^2
   # HW1/HW2 cars brake harder than the ISO number. Measured over six drives on a Model X HW1:
-  # the factory ACC authorises down to -5.04 m/s^2 on DAS_accelMin and the car reaches -4.22.
-  # -4.2 is the nearest whole DAS_control step (0.04) to what it actually achieves, so this asks
-  # for what the car has been seen to do rather than for its full authorisation.
+  # with the driver's foot off the pedal the factory ACC asks down to -4.52 m/s^2 on DAS_accelMin.
+  # -4.2 is the nearest whole DAS_control step (0.04) below that, so this stays inside what the
+  # factory system requests of the car on its own.
   # openpilot #22148 introduced the ISO limit and exempted Honda Nidec and GM in the same commit;
   # this is the same exemption, backed by this car's own behaviour. Model 3/Y stay at the ISO
   # value -- nothing has been measured there, and their panda mode still enforces it.
