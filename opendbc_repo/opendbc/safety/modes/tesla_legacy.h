@@ -164,10 +164,20 @@ static bool tesla_legacy_tx_hook(const CANPacket_t *msg) {
   // channel, not off the operating point. Across six logged drives a Model X HW1's own ACC went
   // to raw 262 (-4.52) with the driver's foot off the pedal; it reached raw 249 only in a frame
   // where the driver was already braking, which says nothing about what it asks for unprompted.
-  // The port asks for -4.2 (raw 270), inside that with room to spare. Only the legacy mode
-  // moves -- Model 3/Y stay at the ISO limit, since nothing has been measured there.
+  // The port asks for -4.2 (raw 270), inside that with room to spare.
+  //
+  // max_accel is measured the same way and was the same kind of inherited number: 425 (+2.0) is
+  // openpilot's own generic ACCEL_MAX, not anything about this car. The factory ACC authorises
+  // raw 440 (+2.60) pulling away from a stop -- 47 separate runs across six drives with the
+  // driver's feet off, 37 of them held longer than 0.3s and the longest 7.9s, so it is a real
+  // request and not a seam artifact. The port's own ceiling (A_CRUISE_MAX_VALS, 1.6 at rest) is
+  // a ride-comfort curve and stays well inside this; the envelope just stops being the thing
+  // that decides.
+  //
+  // Only the legacy mode moves -- Model 3/Y stay at the generic limits, since nothing has been
+  // measured there.
   const LongitudinalLimits TESLA_LONG_LIMITS = {
-    .max_accel = 425,       // 2 m/s^2
+    .max_accel = 440,       // +2.60 m/s^2, the most the factory ACC asked for unprompted
     .min_accel = 262,       // -4.52 m/s^2, the deepest the factory ACC asked for unprompted
     .inactive_accel = 375,  // 0. m/s^2
   };

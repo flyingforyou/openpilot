@@ -47,7 +47,7 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
   LATERAL_FREQUENCY = 50  # Hz
 
   # Long control limits
-  MAX_ACCEL = 2.0
+  MAX_ACCEL = 2.60  # most the factory ACC asked for with the driver's feet off the pedals
   MIN_ACCEL = -4.52  # deepest the factory ACC asked for with the driver's foot off the pedal
   INACTIVE_ACCEL = 0.0
 
