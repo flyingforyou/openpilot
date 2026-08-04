@@ -305,10 +305,11 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
     # standstill alone left the change cost switched on through every disengaged stretch, and the
     # solver answered a different question than the one the drive actually asked.
     reset_state = not bool(f['flags'] & F_ENG)
-    mpc.set_weights(prev_accel_constraint=not (reset_state or f.get('standstill', False)),
-                    personality=personality)
-    mpc.set_cur_state(f['vEgo'], f['aEgo'])
+    # Resolved first: the gap knob sets the change cost and the accel ceiling as well as tFollow.
     gap_adjust = f['gap'] or last_gap
+    mpc.set_weights(prev_accel_constraint=not (reset_state or f.get('standstill', False)),
+                    personality=personality, gap_adjust=gap_adjust)
+    mpc.set_cur_state(f['vEgo'], f['aEgo'])
     mpc.update(_radarstate(f['lead']), max(f['vCruise'], 1.0),
                personality=personality, gap_adjust=gap_adjust)
     v_traj = np.interp(ctrl_t, T_IDXS_MPC, mpc.v_solution)
@@ -329,7 +330,7 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
 
     # The ceiling tightens with speed and both ends ramp at 0.05 m/s^2 per frame, so it depends
     # on its own previous value -- carried across frames the way plannerd carries it.
-    accel_clip = [floor, float(get_max_accel(f['vEgo']))]
+    accel_clip = [floor, float(get_max_accel(f['vEgo'], gap_adjust))]
     for i in range(2):
       accel_clip[i] = float(np.clip(accel_clip[i], prev_accel_clip[i] - 0.05, prev_accel_clip[i] + 0.05))
     ceil_hit = a_mpc >= accel_clip[1] - 1e-3
