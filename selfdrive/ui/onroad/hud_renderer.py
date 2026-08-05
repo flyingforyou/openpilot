@@ -35,6 +35,14 @@ class FontSizes:
   set_speed: int = 90
 
 
+# CarrotPilot's traffic-light state, published on longitudinalPlan.
+TRAFFIC_OFF, TRAFFIC_RED, TRAFFIC_GREEN = 0, 1, 2
+# xState: which of its longitudinal states the planner is in. Only the stopping ones matter here.
+XSTATE_E2E_STOP, XSTATE_E2E_STOPPED = 3, 5
+# Below this the plan is neither accelerating nor braking in any way worth drawing an arrow for.
+ACCEL_DEADBAND = 0.15  # m/s^2
+
+
 @dataclass(frozen=True)
 class Colors:
   WHITE = rl.WHITE
@@ -51,6 +59,11 @@ class Colors:
   BORDER_TRANSLUCENT = rl.Color(255, 255, 255, 75)
   HEADER_GRADIENT_START = rl.Color(0, 0, 0, 114)
   HEADER_GRADIENT_END = rl.BLANK
+  LIGHT_RED = rl.Color(226, 44, 44, 255)
+  LIGHT_GREEN = rl.Color(60, 200, 110, 255)
+  LIGHT_OFF = rl.Color(80, 80, 80, 170)
+  ACCEL_UP = rl.Color(128, 216, 166, 255)
+  ACCEL_DOWN = rl.Color(226, 120, 90, 255)
 
 
 UI_CONFIG = UIConfig()
@@ -70,6 +83,9 @@ class HudRenderer(Widget):
     self._gap_adjust: int = 0
     self._last_gap_adjust: int = 0
     self._gap_popup_until: float = 0.0
+    self._traffic_state: int = TRAFFIC_OFF
+    self._x_state: int = 0
+    self._plan_accel: float = 0.0
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -87,6 +103,9 @@ class HudRenderer(Widget):
       self._gap_adjust = 0
       self._last_gap_adjust = 0
       self._gap_popup_until = 0.0
+      self._traffic_state = TRAFFIC_OFF
+      self._x_state = 0
+      self._plan_accel = 0.0
       return
 
     controls_state = sm['controlsState']
@@ -118,6 +137,13 @@ class HudRenderer(Widget):
     else:
       self._gap_adjust = 0
 
+    # Only the carrot planner fills these; the stock one leaves them at zero, which reads as
+    # "no traffic light seen" and draws nothing.
+    plan = sm['longitudinalPlan']
+    self._traffic_state = int(plan.trafficState)
+    self._x_state = int(plan.xState)
+    self._plan_accel = float(plan.aTarget)
+
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
     # Draw the header background
@@ -138,6 +164,49 @@ class HudRenderer(Widget):
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
     self._exp_button.render(rl.Rectangle(button_x, button_y, UI_CONFIG.button_size, UI_CONFIG.button_size))
+
+    # Left of the experimental button, which already owns the top-right corner.
+    self._draw_traffic_light(button_x - UI_CONFIG.border_size, button_y)
+
+  def _draw_traffic_light(self, right_x: float, top_y: float) -> None:
+    """A lamp for what the model sees, and an arrow for what the plan is doing about it.
+
+    Drawn only when there is something to say: no lamp when no light is seen, no arrow when the
+    plan is neither accelerating nor braking. A permanently-lit indicator stops being read.
+    """
+    if self._traffic_state == TRAFFIC_OFF:
+      return
+
+    radius = 44
+    cx = int(right_x - radius)
+    cy = int(top_y + UI_CONFIG.button_size / 2)
+
+    lit = COLORS.LIGHT_RED if self._traffic_state == TRAFFIC_RED else COLORS.LIGHT_GREEN
+    rl.draw_circle(cx, cy, radius + 6, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_circle(cx, cy, radius, lit)
+    rl.draw_circle_lines(cx, cy, radius, COLORS.WHITE_TRANSLUCENT)
+
+    # The planner can be stopping for a light it no longer calls red -- show that it is still
+    # holding, rather than a green lamp over a car that is not moving.
+    if self._x_state in (XSTATE_E2E_STOP, XSTATE_E2E_STOPPED):
+      rl.draw_circle_lines(cx, cy, radius + 12, lit)
+
+    if abs(self._plan_accel) < ACCEL_DEADBAND:
+      return
+
+    up = self._plan_accel > 0
+    colour = COLORS.ACCEL_UP if up else COLORS.ACCEL_DOWN
+    ax = cx
+    ay = cy + radius + 34
+    half, height = 20, 26
+    tip = rl.Vector2(ax, ay - height / 2 if up else ay + height / 2)
+    left = rl.Vector2(ax - half, ay + height / 2 if up else ay - height / 2)
+    right = rl.Vector2(ax + half, ay + height / 2 if up else ay - height / 2)
+    # raylib fills triangles wound counter-clockwise; swapping the base corners covers both.
+    if up:
+      rl.draw_triangle(tip, left, right, colour)
+    else:
+      rl.draw_triangle(tip, right, left, colour)
 
     if self._gap_adjust != 0 and time.monotonic() < self._gap_popup_until:
       self._draw_gap_popup(rect)
