@@ -1340,7 +1340,7 @@ font-size:10px;text-align:center}
     <span class="lbl">제동 하한</span>
     <input id="amin" size="6" title="이 차의 포트값이 들어갑니다. 고쳐 넣으면 그 값으로 풉니다">
     <span class="lbl">m/s²</span>
-    <button id="run">다시 풀기</button>
+    <button id="run">풀기</button>
   </div>
   <div class="msg" id="msg">주행 중에는 실행하지 않습니다. MPC 를 매 프레임 다시 풀기 때문에 60초 구간에 수 초 걸립니다.</div>
 </div>
@@ -1457,8 +1457,18 @@ async function loadSegs(){
 }
 function pickSeg(){
   if($('seg').value==='') return;
+  // Video only. Solving a segment costs about 17s on this device -- 3.4 decompressing and
+  // parsing the log, 4.8 re-solving the stock MPC over 1200 frames, 8.8 replaying it through
+  // carrot's planner, which reads the log a second time. Paying that on every dropdown change
+  // meant the page was unusable for picking a moment to look at. It runs when asked now.
   mountVideo($('route').value, +$('seg').value);
-  solve();                       // 고르면 바로 푼다
+  DATA=null; SOLVED='';
+  $('run').disabled=false;
+  $('run').textContent='풀기';
+  $('msg').className='msg';
+  $('msg').textContent='영상은 바로 재생됩니다. 계획선은 "풀기"를 눌러야 계산합니다 (약 17초).';
+  $('chartTitle').textContent='결과 — 아직 풀지 않았습니다';
+  draw();
 }
 $('route').onchange=loadSegs;
 $('seg').onchange=pickSeg;
@@ -1472,7 +1482,8 @@ async function solve(force){
   if(poll) return;               // 앞선 실행이 끝나기 전에는 겹쳐 쏘지 않는다
   SOLVED=key;
   DATA=null;
-  $('run').disabled=true; $('msg').className='msg'; $('msg').textContent='푸는 중…';
+  $('run').disabled=true; $('msg').className='msg';
+  $('msg').textContent='로그를 읽는 중… (전체 약 17초)';
   const res=await fetch('/api/shadow',{method:'POST',
     body:JSON.stringify({route, seg:+seg, accelMin:amin})});
   const d=await res.json();
@@ -1484,14 +1495,20 @@ async function solve(force){
   poll=setInterval(check,700);
 }
 $('run').onclick=()=>solve(true);
-$('amin').onchange=()=>solve();
+$('amin').onchange=()=>{
+  // Changing the floor invalidates the answer on screen, but does not re-run it: same cost,
+  // same reason. Say the number moved and let the button do the work.
+  SOLVED='';
+  $('run').disabled=false;
+  if(DATA){ $('msg').className='msg'; $('msg').textContent='하한이 바뀌었습니다 — 다시 풀려면 "풀기"를 누르세요.'; }
+};
 async function check(){
   const d=await (await fetch('/api/shadow')).json();
   if(d.status==='running') return;
   if(d.status==='partial'){ show(d); return; }        // still solving -- keep polling
   clearInterval(poll); poll=null; $('run').disabled=false;
   if(d.status==='error'){ $('msg').className='msg err'; $('msg').textContent=d.error; SOLVED=''; return; }
-  if(d.status==='done'){ $('msg').className='msg'; show(d); }
+  if(d.status==='done'){ $('msg').className='msg'; $('run').textContent='다시 풀기'; show(d); }
 }
 
 const video=()=>document.getElementById('v');
@@ -1506,7 +1523,7 @@ function show(d){
   if(d.status==='partial'){
     $('chartTitle').textContent =
       `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''}) · 다시 푸는 중…`;
-    $('msg').textContent = `${d.rows.length}프레임 기록값 표시됨 · 지금 코드로 다시 푸는 중…`;
+    $('msg').textContent = `${d.rows.length}프레임 기록값 표시됨 · 지금 코드와 CarrotPilot 으로 푸는 중… (약 13초)`;
   } else {
     $('chartTitle').textContent =
       `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''})`
@@ -1723,7 +1740,8 @@ $('ch').onclick=e=>{
   seek(Math.max(0,Math.min(1,(e.clientX-b.left-L)/(b.width-L-R)))*dur);
 };
 $('play').onclick=()=>{
-  solve();                       // 결과가 없으면 재생과 함께 풀어둔다
+  // Play plays. It used to kick off a solve when there was no result, which put a 17s job
+  // behind a button whose label says nothing about computing anything.
   const v=video(); if(!v) return;
   if(v.paused) v.play().catch(()=>{}); else v.pause();
 };
