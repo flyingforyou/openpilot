@@ -24,7 +24,7 @@ class RadarInterface(RadarInterfaceBase):
     self.radar_off_can = CP.radarUnavailable
     self.rcp = get_radar_can_parser(CP)
 
-  def update(self, can_strings):
+  def update(self, can_strings, v_ego: float = 0.0):
     if self.radar_off_can or (self.rcp is None):
       return super().update(None)
 

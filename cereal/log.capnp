@@ -759,6 +759,14 @@ struct RadarState @0x9a185389d6fdd05f {
     radar @14 :Bool;
     radarTrackId @15 :Int32 = -1;
 
+    # Lead jerk, filtered in the radar interface. The longitudinal MPC reads it to tell a lead
+    # easing off its brakes from one still leaning on them, which acceleration alone does not
+    # distinguish. score is the match confidence radard settled on, kept for debugging why a
+    # particular return was chosen. dPath (@6, above) is the lateral offset from the model's own
+    # lane centre at this track's distance -- on a curve that is a different question from yRel.
+    jLead @16 :Float32;
+    score @17 :Float32;
+
     aLeadDEPRECATED @5 :Float32;
   }
 

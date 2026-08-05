@@ -198,8 +198,10 @@ class Car:
     # Update carState from CAN
     CS = self.CI.update(can_list)
 
-    # Update radar tracks from CAN
-    RD: structs.RadarDataT | None = self.RI.update(can_list)
+    # Update radar tracks from CAN. vEgo goes in because absolute lead speed, and the
+    # acceleration and jerk derived from it, are only recoverable at this point -- the radar
+    # reports closing speed and nothing else.
+    RD: structs.RadarDataT | None = self.RI.update(can_list, CS.vEgo)
 
     self.sm.update(0)
 

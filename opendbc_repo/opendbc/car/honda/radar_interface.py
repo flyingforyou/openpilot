@@ -27,7 +27,7 @@ class RadarInterface(RadarInterfaceBase):
     self.trigger_msg = 0x445
     self.updated_messages = set()
 
-  def update(self, can_strings):
+  def update(self, can_strings, v_ego: float = 0.0):
     # in Bosch radar and we are only steering for now, so sleep 0.05s to keep
     # radard at 20Hz and return no points
     if self.radar_off_can:

@@ -61,9 +61,9 @@ class RadarInterface(RadarInterfaceBase):
     self.rcp = get_radar_can_parser(CP)
     self.last_radar_data: structs.RadarData | None = None
 
-  def update(self, can_strings):
+  def update(self, can_strings, v_ego: float = 0.0):
     if self.radar_off_can or self.rcp is None:
-      return super().update(None)
+      return super().update(None, v_ego)
 
     vls = self.rcp.update(can_strings)
     self.updated_messages.update(vls)
@@ -74,13 +74,13 @@ class RadarInterface(RadarInterfaceBase):
         return self.last_radar_data
       return None
 
-    rr = self._update(self.updated_messages)
+    rr = self._update(self.updated_messages, v_ego)
     self.updated_messages.clear()
     self.last_radar_data = rr
 
     return rr
 
-  def _update(self, updated_messages):
+  def _update(self, updated_messages, v_ego: float = 0.0):
     ret = structs.RadarData()
     if self.rcp is None:
       return ret
@@ -128,6 +128,14 @@ class RadarInterface(RadarInterfaceBase):
       self.pts[i].aRel = msg_a['LongAccel']
       self.pts[i].yvRel = msg_b['LatSpeed']
       self.pts[i].measured = bool(msg_a['Meas'])
+      # One forward radar on this car; vLead/aLead/jLead are filled by apply_lead_filtering.
+      self.pts[i].radarSource = structs.RadarData.RadarPoint.RadarSource.frontRadar
+
+    # Before the points are handed out, and once per fresh radar frame rather than once per
+    # call: between Bosch triggers update() replays last_radar_data, and filtering the same
+    # points again would run the differentiator over a standstill and decay every lead's
+    # acceleration toward zero.
+    self.apply_lead_filtering(v_ego)
 
     ret.points = list(self.pts.values())
     return ret

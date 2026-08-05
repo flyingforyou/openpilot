@@ -11,8 +11,10 @@ from functools import cache
 from opendbc.car import DT_CTRL, apply_hysteresis, gen_empty_fingerprint, scale_rot_inertia, scale_tire_stiffness, STD_CARGO_KG
 from opendbc.car import structs
 from opendbc.car.can_definitions import CanData, CanRecvCallable, CanSendCallable
+from opendbc.car.carlog import carlog
 from opendbc.car.common.basedir import BASEDIR
 from opendbc.car.common.conversions import Conversions as CV
+from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.common.simple_kalman import KF1D, get_kalman_gain
 from opendbc.car.values import PLATFORMS
 from opendbc.can import CANParser
@@ -77,14 +79,153 @@ def get_torque_params():
 # generic car and radar interfaces
 
 
+class MyTrack:
+  """Absolute lead motion for one radar point, filtered.
+
+  Ported from CarrotPilot. aRel comes back NaN or plainly noisy on most radars -- this car's
+  Bosch unit included -- so acceleration is differentiated from a filtered speed here, where the
+  raw point and its measured flag are still in hand, rather than left for radard to infer from a
+  track it has already smoothed. jLead falls out of the same chain and is what the longitudinal
+  MPC reads to tell a lead easing off from one braking hard.
+
+  Corner-radar slot reuse handling is not ported: that exists because some radars recycle a slot
+  id for a different object between frames, and this car has one forward radar that does not.
+  """
+
+  def __init__(self, track_id: int, radar_point, dt: float):
+    self.track_id = track_id
+    self.dt = dt
+    self.cnt = 0
+    self.noisy = False
+    self.dRel = radar_point.dRel
+    self.vRel = radar_point.vRel
+    self.yRel = radar_point.yRel
+    self.yvRel = radar_point.yvRel
+    self.vLead = radar_point.vLead
+    self.v_lead_filtered_last = self.vLead
+    self.aLead = 0.0
+    self.jLead = 0.0
+    self.vLead_avg = FirstOrderFilter(self.vLead, 0.1, dt)
+    self.aLead_avg = FirstOrderFilter(self.aLead, 0.15, dt)
+    self.jLead_avg = FirstOrderFilter(self.jLead, 0.4, dt)
+    self.yRel_avg = FirstOrderFilter(self.yRel, 0.1, dt)
+    self.yvRel_avg = FirstOrderFilter(self.yvRel, 0.1, dt)
+
+  def init_point(self, radar_point) -> None:
+    self.dRel = radar_point.dRel
+    self.vRel = radar_point.vRel
+    self.yRel = radar_point.yRel
+    self.yvRel = radar_point.yvRel
+    self.vLead = radar_point.vLead
+    self.v_lead_filtered_last = self.vLead
+    self.aLead = 0.0
+    self.jLead = 0.0
+    self.vLead_avg.x = self.vLead
+    self.aLead_avg.x = self.aLead
+    self.jLead_avg.x = self.jLead
+    self.yRel_avg.x = self.yRel
+    self.yvRel_avg.x = self.yvRel
+
+  def update(self, radar_point) -> None:
+    if not radar_point.measured:
+      if self.cnt > 0:
+        self.init_point(radar_point)
+      self.cnt = 0
+      return
+
+    if self.cnt < 1:
+      self.init_point(radar_point)
+      self.cnt += 1
+      return
+
+    self.vLead = radar_point.vLead
+    self.yRel = self.yRel_avg.update(radar_point.yRel)
+    self.yvRel = self.yvRel_avg.update(radar_point.yvRel)
+
+    v_lead_filtered = self.vLead_avg.update(self.vLead)
+    # A stopped lead still jitters a few cm/s. Differentiating that would manufacture an
+    # acceleration for a car that is not moving, so hold it at zero instead.
+    pseudo_stop = abs(v_lead_filtered) < 0.3 and abs(self.vLead - v_lead_filtered) < 0.05
+    a_raw = (v_lead_filtered - self.v_lead_filtered_last) / self.dt
+    self.v_lead_filtered_last = v_lead_filtered
+
+    # A jump this large is the slot changing object, not a real acceleration. Restarting the
+    # count re-arms the warmup below so the new object does not inherit the old one's jerk.
+    self.noisy = abs(a_raw - self.aLead) > 3.0
+    if self.noisy:
+      self.cnt = 0
+
+    a_lead = self.aLead_avg.update(np.clip(a_raw, -10.0, 5.0) if not pseudo_stop else 0.0)
+    j_lead = (a_lead - self.aLead) / self.dt
+    self.aLead = a_lead
+    self.jLead = self.jLead_avg.update(j_lead if self.cnt > 2 else 0.0)
+
+    self.dRel = radar_point.dRel
+    self.vRel = radar_point.vRel
+    self.cnt += 1
+
+
 class RadarInterfaceBase(ABC):
+  # Frames of filter warmup before aLead/jLead are published. Until then the differentiator is
+  # still converging and would hand radard a number that says more about the filter than the road.
+  LEAD_FILTER_WARMUP = 6
+
   def __init__(self, CP: structs.CarParams):
     self.CP = CP
     self.rcp = None
     self.pts: dict[int, structs.RadarData.RadarPoint] = {}
     self.frame = 0
 
-  def update(self, can_packets: list[tuple[int, list[CanData]]]) -> structs.RadarDataT | None:
+    # Lead-motion filtering (see MyTrack). dt is measured rather than assumed: radarTimeStep is
+    # deprecated in this tree, and this car's Bosch radar runs at 8Hz against the 20Hz that most
+    # ports take for granted -- a wrong dt would scale every acceleration and jerk it produces.
+    self.lead_tracks: dict[int, MyTrack] = {}
+    self.radar_dt: float | None = None
+    self._dt_samples: list[float] = []
+
+  def _estimate_radar_dt(self, now: float) -> bool:
+    """True once dt is known. Samples the real interval between radar updates."""
+    if self.radar_dt is not None:
+      return True
+    self._dt_samples.append(now)
+    if len(self._dt_samples) > 100:
+      # Drop the first 50: process startup and the CAN parser filling up make those intervals
+      # unrepresentative of the steady-state rate.
+      self.radar_dt = float(np.mean(np.diff(self._dt_samples[50:])))
+      carlog.info(f"radar dt estimated at {self.radar_dt:.4f}s ({1/self.radar_dt:.1f}Hz)")
+      self._dt_samples = []
+      return True
+    return False
+
+  def apply_lead_filtering(self, v_ego: float) -> None:
+    """Fill vLead/aLead/jLead on this frame's points. Call once per fresh radar update."""
+    if not self._estimate_radar_dt(time.monotonic()):
+      # Still measuring dt. Absolute speed is exact without it; only the derivatives need waiting.
+      for point in self.pts.values():
+        point.vLead = point.vRel + v_ego
+      return
+
+    tracks: dict[int, MyTrack] = {}
+    for point in self.pts.values():
+      point.vLead = point.vRel + v_ego
+      track_id = point.trackId
+      track = self.lead_tracks.get(track_id)
+      if track is None:
+        track = MyTrack(track_id, point, self.radar_dt)
+      tracks[track_id] = track
+      track.update(point)
+
+      point.yRel = float(track.yRel)
+      point.yvRel = float(track.yvRel)
+      if track.cnt < self.LEAD_FILTER_WARMUP:
+        point.aLead = 0.0
+        point.jLead = 0.0
+      else:
+        point.aLead = float(track.aLead)
+        point.jLead = float(track.jLead)
+    self.lead_tracks = tracks
+
+  def update(self, can_packets: list[tuple[int, list[CanData]]], v_ego: float = 0.0) -> structs.RadarDataT | None:
     self.frame += 1
     if (self.frame % 5) == 0:  # 20 Hz is very standard
       return structs.RadarData()

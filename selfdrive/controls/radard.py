@@ -30,11 +30,23 @@ RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame
 # lead with a badly wrong closing speed. Rather than loosen vel_sane -- which guards against
 # braking for stationary clutter -- require sustained agreement in distance and lateral offset
 # before trusting the radar track.
-STOPPED_LEAD_MAX_SPEED = 1.0        # m/s, treat the track as stopped below this
-STOPPED_LEAD_Y_GATE = 4.0           # m, lateral agreement between radar track and vision lead
+# The lateral gate for this case is y_sane(wide) in match_vision_to_track now; the speed test
+# it used to pair with is gone, because pass B is reached precisely when speed disagrees.
 STOPPED_LEAD_COUNT_UP = 2           # evidence gained per frame while the pattern holds
 STOPPED_LEAD_COUNT_MAX = int(1.0 / DT_MDL)   # commit after ~0.5s of evidence (+2 per frame)
 STICKY_SELECTED_COUNT_MAX = int(2.0 / DT_MDL)
+
+# Yaw compensation for the forward projection, from CarrotPilot. Turning the car makes a
+# stationary object appear to slide sideways at yaw_rate * dRel; these bound how much of that
+# apparent motion is subtracted back out, so a bad yaw estimate cannot invent lateral speed.
+YAW_COMP_GAIN = 0.6
+YAW_COMP_MAX_DREL = 50.0
+YAW_COMP_MAX_YAW_RATE = 0.35
+YAW_COMP_MAX_YVREL_CORRECTION = 1.5
+YAW_COMP_MAX_VREL_CORRECTION = 0.6
+
+# How far ahead a track is projected when deciding whether it is heading into our lane.
+RADAR_LAT_PROJECTION_S = 0.6
 
 # A track that jumps this much between frames isn't the same object; drop its evidence.
 TRACK_JUMP_D = 5.0   # m
@@ -88,7 +100,76 @@ class Track:
     self.is_stopped_car_count = 0
     self.selected_count = 0
 
-  def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float):
+    # Lane-relative position, from CarrotPilot. yRel is measured along a straight line out of
+    # the bumper, so on a curve a roadside object reads as very nearly ahead while the lane it
+    # would have to be in has already bent away. dPath asks the question in the frame that
+    # matters: how far is this from the middle of my lane, at its distance.
+    self.dPath = 0.0
+    self.in_lane_prob = 0.0
+    self.lane_half_width = 1.8
+    self.dRel_future = 0.0
+    self.yRel_future = 0.0
+    self.yvRel = 0.0
+    self.jLead = 0.0
+    self.score = 0.0
+    self._vLead_last = 0.0
+    self._vLead_filt = 0.0
+    self._vLead_filt_init = False
+
+  def vlead_for_matching(self, dv_max: float = 4.0, alpha: float = 0.35) -> float:
+    """Speed used only for scoring a match, never published.
+
+    A radar track's speed can spike for one frame when the return is weak. Scoring on the raw
+    value lets that spike decide which object is the lead; clamping the step and smoothing keeps
+    a momentary glitch from reassigning the match, without touching what the planner is told.
+    """
+    v = float(self.vLead)
+    if self.cnt < 2:
+      return v
+    if not self._vLead_filt_init:
+      self._vLead_last = self._vLead_filt = v
+      self._vLead_filt_init = True
+      return v
+    v_last = self._vLead_last
+    self._vLead_last = v
+    v_clamped = float(np.clip(v, v_last - dv_max, v_last + dv_max))
+    self._vLead_filt = alpha * v_clamped + (1.0 - alpha) * self._vLead_filt
+    return float(self._vLead_filt)
+
+  def yaw_compensated_velocities(self, yaw_rate: float) -> tuple[float, float]:
+    # A curved ego path creates apparent lateral velocity in the ego frame (yaw_rate * dRel).
+    # Remove it before projecting the track forward, so an adjacent-lane object on a curve is
+    # not read as moving into our lane. Projection-local on purpose: the published vRel stays
+    # the raw radar value, because that is what the planner is entitled to expect.
+    yaw_rate = float(np.clip(yaw_rate, -YAW_COMP_MAX_YAW_RATE, YAW_COMP_MAX_YAW_RATE))
+    d_rel_for_comp = float(np.clip(self.dRel, 0.0, YAW_COMP_MAX_DREL))
+    yv_rel_corr = float(np.clip(-yaw_rate * d_rel_for_comp * YAW_COMP_GAIN,
+                                -YAW_COMP_MAX_YVREL_CORRECTION, YAW_COMP_MAX_YVREL_CORRECTION))
+    v_rel_corr = float(np.clip(yaw_rate * self.yRel * YAW_COMP_GAIN,
+                               -YAW_COMP_MAX_VREL_CORRECTION, YAW_COMP_MAX_VREL_CORRECTION))
+    return self.vRel + v_rel_corr, self.yvRel + yv_rel_corr
+
+  def d_path(self, md) -> None:
+    """Offset from the model's own lane centre, at this track's distance."""
+    if len(md.laneLines) < 3:
+      return
+    lane_xs, left_ys, right_ys = md.laneLines[1].x, md.laneLines[1].y, md.laneLines[2].y
+    if not len(lane_xs):
+      return
+
+    def interp_at(d_rel, y_rel):
+      left_y = np.interp(d_rel, lane_xs, left_ys)
+      right_y = np.interp(d_rel, lane_xs, right_ys)
+      center_y = (left_y + right_y) / 2.0
+      half_width = max(0.1, abs(right_y - left_y) / 2.0)
+      dist_from_center = y_rel + center_y
+      in_lane = max(0.0, 1.0 - (abs(dist_from_center) / half_width))
+      return float(dist_from_center), float(in_lane), float(half_width)
+
+    self.dPath, self.in_lane_prob, self.lane_half_width = interp_at(self.dRel, self.yRel)
+
+  def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float,
+             j_lead: float = 0.0, yv_rel: float = 0.0):
     prev = None if self.cnt == 0 else (self.dRel, self.yRel, self.vLead, self.measured)
 
     # relative values, copy
@@ -97,6 +178,8 @@ class Track:
     self.vRel = v_rel   # REL_SPEED
     self.vLead = v_lead
     self.measured = measured   # measured or estimate
+    self.jLead = j_lead        # filtered in the radar interface, see opendbc MyTrack
+    self.yvRel = yv_rel
 
     # Only accumulate evidence across frames where this is plausibly the same object still
     # being seen. An unmeasured or discontinuous track starts over.
@@ -141,6 +224,9 @@ class Track:
       "modelProb": model_prob,
       "radar": True,
       "radarTrackId": self.identifier,
+      "jLead": float(self.jLead),
+      "dPath": float(self.dPath),
+      "score": float(self.score),
     }
 
   def potential_low_speed_lead(self, v_ego: float):
@@ -210,49 +296,135 @@ def laplacian_pdf(x: float, mu: float, b: float):
   return math.exp(-abs(x-mu)/b)
 
 
+def is_vision_radar_lateral_match_sane(radar_y_rel: float, vision_y_rel: float, d_path: float) -> bool:
+  """Either the two sensors agree about where the object is, or it is squarely in our lane."""
+  return abs(radar_y_rel - vision_y_rel) < 2.0 or abs(d_path) < 2.4
+
+
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track],
                           update_counters: bool = True, stopped_lead_enabled: bool = True,
                           stopped_lead_count_max: int = STOPPED_LEAD_COUNT_MAX):
-  offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
+  """Which radar track, if any, is the object the vision model called the lead.
 
-  def prob(c):
-    prob_d = laplacian_pdf(c.dRel, offset_vision_dist, lead.xStd[0])
-    prob_y = laplacian_pdf(c.yRel, -lead.y[0], lead.yStd[0])
-    prob_v = laplacian_pdf(c.vRel + v_ego, lead.v[0], lead.vStd[0])
+  Ported from CarrotPilot. The gate that matters is lateral: the previous version accepted on
+  distance and speed alone, and on a curve a stationary roadside return sits at very nearly the
+  vision lead's distance while being nowhere near it, so it could win the match and hand the
+  planner a lead closing at ego speed. Three passes, loosening in a controlled way rather than
+  falling through to whatever scored highest:
 
-    # This isn't exactly right, but it's a good heuristic
-    return prob_d * prob_y * prob_v
+    A  normal    -- both sensors agree on distance, speed and lateral position
+    B  stopped   -- a stopped car vision misreads as moving; speed may disagree, position may not
+    C  cut-in    -- wider lateral window, for an object genuinely moving into the lane
+  """
+  if not tracks:
+    return None
 
-  track = max(tracks.values(), key=prob)
+  offset_vision_dist = float(lead.x[0] - RADAR_TO_CAMERA)
+  lead_prob = float(lead.prob)
+  vision_y = float(lead.y[0])
 
-  # if no 'sane' match is found return -1
-  # stationary radar points can be false positives
-  dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.25, 5.0])
-  vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
-  if dist_sane and vel_sane:
-    _update_match_counters(tracks, track, update_counters)
-    return track
+  # distance windows: a lower bound as well as an upper one. Without the lower bound a return
+  # well short of the vision lead still counts as "close enough" whenever the lead is far away.
+  max_dist = max(offset_vision_dist * 1.25, 5.0)
+  min_dist = max(offset_vision_dist * 0.80, 1.0)
+  max_dist_wide = max(offset_vision_dist * 1.45, 5.0)
+  min_dist_wide = 1.5
 
-  # Stopped lead the vision model is misreading as moving: distance and lateral offset agree,
-  # only the speed doesn't, and the track really is stopped. Committing to it immediately would
-  # mean braking for any stationary clutter that lines up, so require the pattern to hold --
-  # or that we were already using this track, in which case a momentary speed disagreement
-  # shouldn't drop us back to a vision-only lead.
-  y_sane = abs(track.yRel + lead.y[0]) < STOPPED_LEAD_Y_GATE
-  stopped = (v_ego + track.vRel) < STOPPED_LEAD_MAX_SPEED
+  # Speed tolerance scales with the lead's own speed and how sure vision is, instead of a flat
+  # 10 m/s that a stationary object at urban speed slips under.
+  vel_tol = float(max(lead.v[0] * np.interp(lead_prob, [0.8, 0.98], [0.3, 0.5]), 5.0))
+  vel_guard = max(vel_tol * 3.0, 20.0)
 
-  if stopped_lead_enabled and dist_sane and y_sane and stopped and track.measured:
-    sticky = track.selected_count > 0
-    if update_counters:
-      track.is_stopped_car_count += STOPPED_LEAD_COUNT_UP
-    if sticky or track.is_stopped_car_count > stopped_lead_count_max:
-      _update_match_counters(tracks, track, update_counters)
-      return track
+  def dist_sane(t: Track, wide: bool = False) -> bool:
+    return (min_dist_wide < t.dRel < max_dist_wide) if wide else (min_dist < t.dRel < max_dist)
+
+  def y_sane(t: Track, wide: bool = False) -> bool:
+    return abs(t.yRel + vision_y) < (4.0 if wide else 2.0)
+
+  def vel_sane(t: Track) -> bool:
+    dv = abs(float(t.vLead) - float(lead.v[0]))
+    if dv < vel_tol:
+      return True
+    # Moving objects get more latitude -- vision reads their speed poorly -- but bounded, and
+    # never when the track is clearly outside our lane.
+    if float(t.vLead) <= 3.0 or dv > vel_guard:
+      return False
+    return t.in_lane_prob >= 0.25
+
+  def score_pair(t: Track) -> tuple[float, float]:
+    pd = laplacian_pdf(t.dRel, offset_vision_dist, lead.xStd[0])
+    py = laplacian_pdf(t.yRel, -vision_y, lead.yStd[0])
+    py_wide = laplacian_pdf(t.yRel, -vision_y, lead.yStd[0] * 2.0)
+    pv = laplacian_pdf(t.vlead_for_matching(), lead.v[0], lead.vStd[0])
+    return pd * py * pv, pd * py_wide * pv
+
+  first = second = extra = None
+  first_score = second_score = extra_score = -1e18
+  for t in tracks.values():
+    s1, s2 = score_pair(t)
+    t.score = s1
+    if not is_vision_radar_lateral_match_sane(t.yRel, -vision_y, t.dPath):
+      continue
+    if s1 > first_score:
+      second, second_score = first, first_score
+      first, first_score = t, s1
+    elif s1 > second_score:
+      second, second_score = t, s1
+    if s2 > extra_score:
+      extra, extra_score = t, s2
+
+  if first is None or first_score < 1e-4:
+    return None
+
+  best = None
+
+  # A) normal match
+  if dist_sane(first) and vel_sane(first):
+    # A nearer track that vision also likes is usually the real lead; the far one is often a
+    # return from beyond it that happened to score well.
+    if (second is not None and vel_sane(second) and second.in_lane_prob > 0.3
+        and second.cnt > 5 and offset_vision_dist * 0.5 < second.dRel < first.dRel):
+      best = second
+    elif y_sane(first):
+      if lead_prob > 0.5:
+        best = first
+      elif lead_prob > 0.4 and first.selected_count > 0:
+        best = first
+    elif lead_prob > 0.6 and abs(first.dPath) < 2.4:
+      best = first
+
+  # B) stopped car the vision model reads as moving: position agrees, speed does not. Committing
+  # immediately would mean braking for any stationary clutter that lines up, so require the
+  # pattern to hold -- or that we were already following this track.
+  if best is None and stopped_lead_enabled and dist_sane(first) and y_sane(first, wide=True):
+    if (second is not None and second_score > 1e-5
+        and dist_sane(second) and y_sane(second) and vel_sane(second)):
+      best = second
+    elif first.selected_count > 0:
+      best = first
+    elif first.measured:
+      if update_counters:
+        first.is_stopped_car_count += STOPPED_LEAD_COUNT_UP
+      if first.is_stopped_car_count > stopped_lead_count_max:
+        best = first
+
+  # C) cut-in: wider lateral window, only when vision is confident and the object is not far off
+  if best is None and offset_vision_dist < 90.0 and lead_prob > 0.65:
+    if (extra is not None and extra_score > first_score
+        and dist_sane(extra, wide=True) and vel_sane(extra) and y_sane(extra, wide=True)):
+      best = extra
+    elif dist_sane(first, wide=True) and vel_sane(first) and y_sane(first, wide=True):
+      best = first
+    elif (second is not None and second_score > 1e-4
+          and dist_sane(second, wide=True) and vel_sane(second) and y_sane(second, wide=True)):
+      best = second
 
   # Nothing matched: leave the counters alone. Zeroing selected_count here would defeat the
   # stickiness above, since these are exactly the frames it exists to bridge. Evidence still
   # decays when the track stops being measured or jumps (see Track.update).
-  return None
+  if best is not None:
+    _update_match_counters(tracks, best, update_counters)
+  return best
 
 
 def _update_match_counters(tracks: dict[int, Track], selected: Track, enabled: bool) -> None:
@@ -281,6 +453,11 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
     "status": True,
     "radar": False,
     "radarTrackId": -1,
+    # Vision has no jerk estimate and no radar track to place in a lane; leave them at zero
+    # rather than carrying over a previous frame's radar numbers under a vision-only lead.
+    "jLead": 0.0,
+    "dPath": 0.0,
+    "score": 0.0,
   }
 
 
@@ -335,6 +512,9 @@ class RadarD:
 
     self.params = Params()
     self.lead_hold = RadarLeadHold()
+    # The yaw estimate is noisy frame to frame and it scales a correction applied out to 50m,
+    # so it is smoothed before anything is projected with it.
+    self.yaw_rate_filter = FirstOrderFilter(0.0, 0.20, DT_MDL)
     self.frame = 0
     self.refresh_tuning()
 
@@ -377,24 +557,44 @@ class RadarD:
       self.v_ego_hist.append(self.v_ego)
       self.last_v_ego_frame = sm.recv_frame['carState']
 
-    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel, pt.measured] for pt in rr.points}
+    ar_pts = {pt.trackId: pt for pt in rr.points}
 
     # *** remove missing points from meta data ***
     for ids in list(self.tracks.keys()):
       if ids not in ar_pts:
         self.tracks.pop(ids, None)
 
+    # Turning makes a stationary object appear to slide sideways, so the forward projection
+    # needs to know how fast we are turning. livePose is the calibrated estimate; the model's
+    # own orientation rate stands in when it is not trustworthy yet.
+    yaw_rate = 0.0
+    live_pose = sm['livePose'] if 'livePose' in sm.data else None
+    if live_pose is not None and live_pose.angularVelocityDevice.valid and live_pose.inputsOK and live_pose.sensorsOK:
+      yaw_rate = float(live_pose.angularVelocityDevice.z)
+    elif len(sm['modelV2'].orientationRate.z):
+      yaw_rate = float(sm['modelV2'].orientationRate.z[0])
+    yaw_rate = float(self.yaw_rate_filter.update(yaw_rate))
+
     # *** compute the tracks ***
     for ids in ar_pts:
-      rpt = ar_pts[ids]
+      pt = ar_pts[ids]
 
       # align v_ego by a fixed time to align it with the radar measurement
-      v_lead = rpt[2] + self.v_ego_hist[0]
+      v_lead = pt.vRel + self.v_ego_hist[0]
 
       # create the track if it doesn't exist or it's a new track
       if ids not in self.tracks:
         self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
-      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead, rpt[3])
+      track = self.tracks[ids]
+      track.update(pt.dRel, pt.yRel, pt.vRel, v_lead, pt.measured, pt.jLead, pt.yvRel)
+
+      # Lane-relative position, and where the track is heading once the turn is accounted for.
+      # Both feed match_vision_to_track, so they have to be current before the match runs.
+      if self.ready:
+        v_rel_future, yv_rel_future = track.yaw_compensated_velocities(yaw_rate)
+        track.dRel_future = track.dRel + v_rel_future * RADAR_LAT_PROJECTION_S
+        track.yRel_future = track.yRel + yv_rel_future * RADAR_LAT_PROJECTION_S
+        track.d_path(sm['modelV2'])
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
@@ -441,7 +641,7 @@ def main() -> None:
   cloudlog.info("radard got CarParams")
 
   # *** setup messaging
-  sm = messaging.SubMaster(['modelV2', 'carState', 'liveTracks', 'selfdriveState'], poll='modelV2')
+  sm = messaging.SubMaster(['modelV2', 'carState', 'liveTracks', 'selfdriveState', 'livePose'], poll='modelV2')
   pm = messaging.PubMaster(['radarState'])
 
   RD = RadarD(CP.radarDelay)

@@ -335,6 +335,25 @@ struct RadarData @0x888ad6581cf0aacb {
 
     # some radars flag measurements VS estimates
     measured @6 :Bool;
+
+    # Absolute lead motion, filtered in the radar interface rather than derived per-track in
+    # radard. Ported from CarrotPilot: aRel is NaN or noisy on most radars, so vLead is filtered
+    # and differentiated there, where the raw point and its measured flag are still in hand.
+    # jLead is what the longitudinal MPC reads to tell a lead easing off from one braking hard.
+    vLead @7 :Float32; # m/s
+    aLead @8 :Float32; # m/s^2
+    jLead @9 :Float32; # m/s^3
+    radarSource @10 :RadarSource;
+
+    # Which sensor produced the point. This car has one forward Bosch radar, so everything is
+    # frontRadar; the rest are carried so the field means the same thing across ports.
+    enum RadarSource {
+      frontRadar @0;
+      scc @1;
+      corner235 @2;
+      corner180 @3;
+      corner430 @4;
+    }
   }
 
   enum ErrorDEPRECATED {
