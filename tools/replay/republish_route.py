@@ -9,7 +9,11 @@ Prefer a window produced by extract_ui_window.py: reading an rlog directly holds
 segment of decoded capnp objects in memory, which alongside the UI and the ffmpeg recorder was
 enough to reboot a 3.5GB device.
 
-  PYTHONPATH=. python3 tools/replay/republish_route.py <window.pkl|rlog.zst> [--loop]
+  PYTHONPATH=. python3 tools/replay/republish_route.py <window.pkl|rlog.zst> [--loop] [--block a,b]
+
+--block drops services from the replay so a live process can own them instead. Two publishers on
+one service is an error, so replaying longitudinalPlan while plannerd runs would fail outright --
+and it is exactly what you want to block when the point is to watch the live planner work.
 """
 import pickle
 import sys
@@ -25,6 +29,13 @@ SERVICES = [
 ]
 
 
+def blocked_from_argv() -> set[str]:
+  if '--block' not in sys.argv:
+    return set()
+  i = sys.argv.index('--block')
+  return set(sys.argv[i + 1].split(',')) if i + 1 < len(sys.argv) else set()
+
+
 def load(path: str):
   """Return [(mono_time, service, payload_bytes)], from a prebuilt window or straight from a log."""
   if path.endswith('.pkl'):
@@ -36,9 +47,14 @@ def load(path: str):
           for m in LogReader(path) if m.which() in SERVICES]
 
 
-def main(path: str, loop: bool):
+def main(path: str, loop: bool, blocked: set[str] | None = None):
+  blocked = blocked or set()
   events = load(path)
-  socks = {s: messaging.pub_sock(s) for s in SERVICES}
+  # Do not even open a socket for a blocked service: binding it is what would collide with the
+  # live process meant to own it.
+  socks = {s: messaging.pub_sock(s) for s in SERVICES if s not in blocked}
+  if blocked:
+    print(f"blocked (left to live processes): {', '.join(sorted(blocked))}")
   print(f"republishing {len(events)} messages" + (" (looping)" if loop else ""))
 
   n = 0
@@ -62,8 +78,20 @@ def main(path: str, loop: bool):
 
 
 if __name__ == "__main__":
-  args = [a for a in sys.argv[1:] if not a.startswith('--')]
+  argv = sys.argv[1:]
+  blocked = blocked_from_argv()
+  # Drop the flags and --block's own value, so the remaining word is the path.
+  args, skip = [], False
+  for a in argv:
+    if skip:
+      skip = False
+      continue
+    if a == '--block':
+      skip = True
+      continue
+    if not a.startswith('--'):
+      args.append(a)
   if len(args) != 1:
-    print(f"usage: {sys.argv[0]} <window.pkl|rlog.zst> [--loop]")
+    print(f"usage: {sys.argv[0]} <window.pkl|rlog.zst> [--loop] [--block a,b]")
     sys.exit(1)
-  main(args[0], '--loop' in sys.argv)
+  main(args[0], '--loop' in sys.argv, blocked)
