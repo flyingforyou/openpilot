@@ -110,6 +110,7 @@ class Track:
     self.dRel_future = 0.0
     self.yRel_future = 0.0
     self.yvRel = 0.0
+    self.aLead = 0.0
     self.jLead = 0.0
     self.score = 0.0
     self._vLead_last = 0.0
@@ -169,7 +170,7 @@ class Track:
     self.dPath, self.in_lane_prob, self.lane_half_width = interp_at(self.dRel, self.yRel)
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float,
-             j_lead: float = 0.0, yv_rel: float = 0.0):
+             j_lead: float = 0.0, yv_rel: float = 0.0, a_lead: float = 0.0):
     prev = None if self.cnt == 0 else (self.dRel, self.yRel, self.vLead, self.measured)
 
     # relative values, copy
@@ -179,6 +180,7 @@ class Track:
     self.vLead = v_lead
     self.measured = measured   # measured or estimate
     self.jLead = j_lead        # filtered in the radar interface, see opendbc MyTrack
+    self.aLead = a_lead
     self.yvRel = yv_rel
 
     # Only accumulate evidence across frames where this is plausibly the same object still
@@ -224,6 +226,7 @@ class Track:
       "modelProb": model_prob,
       "radar": True,
       "radarTrackId": self.identifier,
+      "aLead": float(self.aLead),
       "jLead": float(self.jLead),
       "dPath": float(self.dPath),
       "score": float(self.score),
@@ -455,6 +458,7 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
     "radarTrackId": -1,
     # Vision has no jerk estimate and no radar track to place in a lane; leave them at zero
     # rather than carrying over a previous frame's radar numbers under a vision-only lead.
+    "aLead": float(lead_msg.a[0]),
     "jLead": 0.0,
     "dPath": 0.0,
     "score": 0.0,
@@ -586,7 +590,7 @@ class RadarD:
       if ids not in self.tracks:
         self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
       track = self.tracks[ids]
-      track.update(pt.dRel, pt.yRel, pt.vRel, v_lead, pt.measured, pt.jLead, pt.yvRel)
+      track.update(pt.dRel, pt.yRel, pt.vRel, v_lead, pt.measured, pt.jLead, pt.yvRel, pt.aLead)
 
       # Lane-relative position, and where the track is heading once the turn is accounted for.
       # Both feed match_vision_to_track, so they have to be current before the match runs.

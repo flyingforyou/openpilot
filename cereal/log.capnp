@@ -770,7 +770,10 @@ struct RadarState @0x9a185389d6fdd05f {
     jLead @16 :Float32;
     score @17 :Float32;
 
-    aLeadDEPRECATED @5 :Float32;
+    # Un-deprecated, at its original number, the way CarrotPilot has it: its planner reads
+    # leadOne.aLead to classify how the lead is driving. Nothing in this tree referenced the
+    # deprecated name, so reviving it costs nothing and keeps logs readable by either tree.
+    aLead @5 :Float32;
   }
 
   # deprecated
