@@ -91,6 +91,9 @@ static void tesla_legacy_rx_hook(const CANPacket_t *msg) {
                             (cruise_state == 6) ||  // PRE_FAULT
                             (cruise_state == 7);    // PRE_CANCEL
       vehicle_moving = cruise_state != 3; // STANDSTILL
+      // The park module drives through the ACC channel, so the car reports cruise engaged for
+      // its own manoeuvre. Reading that as openpilot engagement is what shut the gate above.
+      cruise_engaged = cruise_engaged && !tesla_legacy_stock_autopark;
       pcm_cruise_check(cruise_engaged);
    }
 
@@ -124,7 +127,10 @@ static void tesla_legacy_rx_hook(const CANPacket_t *msg) {
     }
 
     // Never hand the car over mid-drive: openpilot wins while it is engaged, and the stock
-    // module only gets the bus back once controls are no longer allowed.
+    // module only gets the bus back once controls are no longer allowed. This stays a continuous
+    // check rather than a rising-edge latch -- the manoeuvre used to close this gate on itself,
+    // but that came from cruise, and the cruise handler above no longer reports engagement
+    // while the manoeuvre runs. Fixing the source leaves this guarantee intact.
     const bool asking = tesla_legacy_autopark_steering || tesla_legacy_autopark_active;
     const uint32_t now = microsecond_timer_get();
     if (asking) {
@@ -264,26 +270,28 @@ static bool tesla_legacy_tx_hook(const CANPacket_t *msg) {
 static bool tesla_legacy_fwd_hook(int bus_num, int addr) {
   bool block_msg = false;
 
-  if (bus_num == 2) {
+  // While the stock module has the manoeuvre, none of the blocking below applies: it needs
+  // steering and the ACC channel continuously, and a single dropped frame is enough for the car
+  // to fault out of the manoeuvre. Structured as an early skip rather than an extra term on each
+  // condition, the way the Model 3/Y port does it -- as separate AND terms, one momentary dip in
+  // the flag turns straight back into blocking, which is exactly the failure this is fixing.
+  if ((bus_num == 2) && !tesla_legacy_stock_autopark) {
     // APS_eacMonitor
     if (!tesla_external_panda && !tesla_hw1 && (addr == 0x27dU)) {
       block_msg = true;
     }
 
     // DAS_steeringControl
-    if (!tesla_external_panda && (addr == 0x488U) && !tesla_legacy_stock_lkas && !tesla_legacy_stock_autopark) {
+    if (!tesla_external_panda && (addr == 0x488U) && !tesla_legacy_stock_lkas) {
       block_msg = true;
     }
 
-    // DAS_control
     // DAS_control. Only openpilot longitudinal replaces this message; otherwise the factory ACC
     // module's frames must reach the car, or it loses TACC and Autopilot along with it. Scoped to
     // HW1: the external-panda configs drive longitudinal through the second panda without ever
-    // carrying TESLA_FLAG_LONG_CONTROL, so they must keep blocking unconditionally. Stock autopark
-    // borrows the same id for the maneuver, so it opens the gate too.
+    // carrying TESLA_FLAG_LONG_CONTROL, so they must keep blocking unconditionally.
     const bool op_owns_das_control = tesla_external_panda || (tesla_hw1 && tesla_legacy_longitudinal);
-    if (op_owns_das_control && (addr == das_control_msg) &&
-        !tesla_legacy_stock_aeb && !tesla_legacy_stock_autopark) {
+    if (op_owns_das_control && (addr == das_control_msg) && !tesla_legacy_stock_aeb) {
       block_msg = true;
     }
   }
