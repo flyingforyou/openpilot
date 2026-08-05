@@ -127,6 +127,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // point of the port is to run what it runs, so these are not retuned here. Stored as
     // integers in hundredths where the code divides by 100, matching carrot's own settings.
     {"CarrotLongEnabled", {PERSISTENT, BOOL, "0"}},
+    // These two carrot reads from params where this tree takes them from the car port. The
+    // defaults are the port's values for this car, not carrot's generic 20/50: vEgoStopping is
+    // set to 0.1 in the Tesla interface specifically, and 0.5 would have the car decide it has
+    // stopped while still rolling at walking pace.
+    {"LongActuatorDelay", {PERSISTENT, INT, "15"}},
+    {"VEgoStopping", {PERSISTENT, INT, "10"}},
     {"MyDrivingMode", {PERSISTENT, INT, "3"}},
     {"MyDrivingModeAuto", {PERSISTENT, INT, "0"}},
     {"TrafficLightDetectMode", {PERSISTENT, INT, "2"}},

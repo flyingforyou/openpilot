@@ -15,7 +15,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc import T_
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.params import Params
+from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_functions import CarrotPlanner
 
 
@@ -137,7 +137,7 @@ class _CarrotLongitudinalPlannerImpl:
     
     self.v_cruise_kph = 0.0
 
-    self.params = Params()
+    self.params = TypedParams()
 
   @staticmethod
   def parse_model(model_msg):
