@@ -38,7 +38,8 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.debug import vehicle_state, video_source
 from openpilot.selfdrive.debug.can_source import CanSource, list_routes
 from openpilot.selfdrive.debug import shadow_replay
-from openpilot.selfdrive.debug.intervention_log import InterventionLog, list_events, read_event
+from openpilot.selfdrive.debug.intervention_log import (InterventionLog, list_events,
+                                                        locate_segment, read_event)
 
 # Options rather than free-form numbers: a typo in a text box goes straight into the braking
 # path, and named choices are also what makes an A/B run reproducible afterwards.
@@ -428,6 +429,10 @@ class Handler(BaseHTTPRequestHandler):
       name = next((p[6:] for p in qs.split('&') if p.startswith('event=')), None)
       if name:
         ev = read_event(name)
+        if ev:
+          # Resolved on read, not at record time: the segment the event landed in is only
+          # knowable once loggerd has closed it, which is after the event is written.
+          ev['segment'] = locate_segment(ev.get('route', ''), ev.get('wallTime', 0))
         return self._send(200 if ev else 404, json.dumps(ev or {'error': 'not found'}))
       return self._send(200, json.dumps({'events': list_events()}))
 
@@ -663,14 +668,27 @@ async function open_(name, el){
   const r = await fetch('/api/events?event=' + encodeURIComponent(name));
   const e = await r.json();
   if (!e.samples) return;
-  const seg = e.route ? `<a class="vid" href="/videos">영상 보기</a>` : '';
+  // Deep-link straight to the segment the event landed in, and to the moment inside it. Without
+  // the segment this was a link to the video index and a minute of scrubbing to find the event.
+  let seg = '';
+  if (e.route) {
+    const s = e.segment;
+    const q = new URLSearchParams({route: e.route});
+    if (s) {
+      q.set('seg', s.seg);
+      if (s.offset != null) q.set('t', s.offset);
+    }
+    const label = s ? `영상 보기 · 세그 ${s.seg}` : '영상 보기';
+    seg = `<a class="vid" href="/videos?${q}">${label}</a>`;
+  }
   const d = document.createElement('div');
   d.className = 'detail';
   d.innerHTML = `<canvas></canvas>
     <div class="legend"><i style="background:var(--radar)"></i>openpilot 요구
       &nbsp;&nbsp;<i style="background:var(--mut)"></i>실제 가속도</div>
     <div class="meta">${seg}<a class="vid" href="/can">CAN 리플레이</a>
-      <b>route</b> ${e.route || '-'}</div>`;
+      <b>route</b> ${e.route || '-'}${e.segment ? ` <b>세그</b> ${e.segment.seg}` +
+        (e.segment.offset != null ? ` (+${e.segment.offset}s)` : '') : ''}</div>`;
   el.appendChild(d);
   el.dataset.open = '1';
   draw(d.querySelector('canvas'), e.samples);
@@ -1859,10 +1877,16 @@ function bestQuality(){
   return document.createElement('video')
     .canPlayType('video/mp4; codecs="hvc1.1.6.L120.B0"') ? 'copy' : 'h264';
 }
-function open_(r,i){
+function open_(r,i,seekTo){
   cur=r;seg=Math.max(0,Math.min(i,r.segments.length-1));
   v.src=`/v/${r.name}/${r.segments[seg].seg}.mp4?cam=${$('cam').value}&q=${bestQuality()}`;
-  v.play().catch(()=>{});   // autoplay may be blocked; controls still work
+  if(seekTo!=null){
+    // Arriving from an intervention: land on the moment, paused. Playing straight into it would
+    // run past the thing you came to look at before the first frame is even decoded.
+    v.onloadedmetadata=()=>{ try{ v.currentTime=seekTo; }catch(e){} v.onloadedmetadata=null; };
+  }else{
+    v.play().catch(()=>{});   // autoplay may be blocked; controls still work
+  }
   drawRoutes();drawSegs();
 }
 $('cam').onchange=()=>{ if(cur) open_(cur, seg); };
@@ -1887,7 +1911,24 @@ document.addEventListener('keydown',e=>{
     $('sub').textContent=routes.length?`${routes.length}개 주행 · ${segs}개 세그먼트 · ${mb(bytes)}`
                                       :'녹화된 영상이 없습니다';
     drawRoutes();
-    if(routes.length)open_(routes[0],0);
+    // ?route=&seg=&t= comes from the intervention log, which knows which segment an event
+    // landed in and how far into it. Fall back to the newest route when it does not resolve --
+    // an event older than the segments still on disk should not leave a blank page.
+    const q=new URLSearchParams(location.search);
+    const want=q.get('route'), wantSeg=q.get('seg'), wantT=q.get('t');
+    let opened=false;
+    if(want){
+      const r=routes.find(x=>x.name===want);
+      if(r){
+        const i=Math.max(0, r.segments.findIndex(x=>String(x.seg)===String(wantSeg)));
+        open_(r, i, wantT!=null?parseFloat(wantT):null);
+        $('now').textContent=`개입 기록에서 이동 · 세그 ${wantSeg}` + (wantT!=null?` · ${wantT}초 지점`:'');
+        opened=true;
+      }else{
+        $('sub').textContent=`${want} 의 영상이 디바이스에 없습니다 (오래되어 삭제됨)`;
+      }
+    }
+    if(!opened && routes.length)open_(routes[0],0);
   }catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}
 })();
 </script></body></html>"""

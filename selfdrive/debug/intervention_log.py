@@ -18,6 +18,8 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 
 EVENT_DIR = '/data/media/0/interventions'
+REALDATA = '/data/media/0/realdata'
+SEGMENT_SECONDS = 60.0
 
 SAMPLE_HZ = 20
 PRE_S = 10.0            # how much lead-up to keep -- enough to see the disagreement build
@@ -195,6 +197,48 @@ def list_events(base: str = EVENT_DIR) -> list[dict]:
       continue
   return out
 
+
+
+def locate_segment(route: str, wall_time: float, base: str = REALDATA) -> dict | None:
+  """Which segment of the route was being written when this happened.
+
+  The event records the route but not the segment -- loggerd rolls segments on its own clock and
+  nothing publishes the current index. Rather than guess from elapsed time, which drifts whenever
+  a segment is cut short, this reads the segments actually on disk and picks the one whose file
+  was being written at that moment. Returns the offset into it too, so the player can seek there
+  instead of making you scrub a minute of video looking for the moment.
+  """
+  if not route or not os.path.isdir(base):
+    return None
+
+  segs = []
+  for entry in os.listdir(base):
+    name, _, num = entry.rpartition('--')
+    if name != route or not num.isdigit():
+      continue
+    # rlog.zst is closed when the segment rolls, so its mtime is when the segment *ended*.
+    path = os.path.join(base, entry, 'rlog.zst')
+    if not os.path.isfile(path):
+      continue
+    try:
+      segs.append((int(num), os.path.getmtime(path)))
+    except OSError:
+      continue
+  if not segs:
+    return None
+  segs.sort()
+
+  for i, (num, ended) in enumerate(segs):
+    started = segs[i - 1][1] if i else ended - SEGMENT_SECONDS
+    if started <= wall_time <= ended:
+      return {'seg': num, 'offset': round(max(0.0, wall_time - started), 1)}
+
+  # Past the last closed segment: the event landed in the one still being recorded, which has no
+  # end time yet. Report it without an offset rather than pointing at the wrong segment.
+  last_num, last_end = segs[-1]
+  if wall_time > last_end:
+    return {'seg': last_num + 1, 'offset': None}
+  return None
 
 def read_event(name: str, base: str = EVENT_DIR) -> dict | None:
   if '/' in name or '\\' in name or '..' in name:
