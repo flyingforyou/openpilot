@@ -550,7 +550,10 @@ class Handler(BaseHTTPRequestHandler):
       if not route or seg is None:
         return self._send(400, json.dumps({'error': '경로와 세그먼트를 지정하세요'}))
       am = req.get('accelMin')
-      out = self.shadow.start(route, int(seg), float(am) if am not in (None, '') else None)
+      # solve defaults true so an old client still gets what it expects; the page sends false
+      # when it only wants what the drive recorded.
+      out = self.shadow.start(route, int(seg), float(am) if am not in (None, '') else None,
+                              solve=bool(req.get('solve', True)))
       return self._send(409 if 'error' in out else 200, json.dumps(out))
 
     if self.path.startswith('/api/replay'):
@@ -1465,27 +1468,30 @@ function pickSeg(){
   DATA=null; SOLVED='';
   $('run').disabled=false;
   $('run').textContent='풀기';
-  $('msg').className='msg';
-  $('msg').textContent='영상은 바로 재생됩니다. 계획선은 "풀기"를 눌러야 계산합니다 (약 17초).';
-  $('chartTitle').textContent='결과 — 아직 풀지 않았습니다';
+  $('chartTitle').textContent='기록값 읽는 중…';
   draw();
+  load(false);                   // recorded lines only -- the log read, not the re-solve
 }
 $('route').onchange=loadSegs;
 $('seg').onchange=pickSeg;
 
 let SOLVED='';                   // 이미 푼(또는 푸는 중인) 구간+하한
-async function solve(force){
+let WANT_SOLVE=false;            // 이번 요청이 재계산까지 하는지
+// load(false) reads the log and draws what the drive recorded -- a few seconds. load(true) adds
+// the re-solve on top, which is the part that costs.
+async function load(doSolve){
   const route=$('route').value, seg=$('seg').value, amin=$('amin').value.trim();
   if(!route || seg==='') return;
-  const key=`${route}/${seg}/${amin}`;
-  if(!force && key===SOLVED) return;
+  const key=`${route}/${seg}/${amin}/${doSolve?1:0}`;
+  if(key===SOLVED) return;
   if(poll) return;               // 앞선 실행이 끝나기 전에는 겹쳐 쏘지 않는다
-  SOLVED=key;
+  SOLVED=key; WANT_SOLVE=doSolve;
   DATA=null;
   $('run').disabled=true; $('msg').className='msg';
-  $('msg').textContent='로그를 읽는 중… (전체 약 17초)';
+  $('msg').textContent = doSolve ? '지금 코드와 CarrotPilot 으로 푸는 중… (약 17초)'
+                                 : '기록값 읽는 중… (약 4초)';
   const res=await fetch('/api/shadow',{method:'POST',
-    body:JSON.stringify({route, seg:+seg, accelMin:amin})});
+    body:JSON.stringify({route, seg:+seg, accelMin:amin, solve:doSolve})});
   const d=await res.json();
   if(d.error){
     $('msg').className='msg err'; $('msg').textContent=d.error;
@@ -1494,7 +1500,7 @@ async function solve(force){
   }
   poll=setInterval(check,700);
 }
-$('run').onclick=()=>solve(true);
+$('run').onclick=()=>{ SOLVED=''; load(true); };
 $('amin').onchange=()=>{
   // Changing the floor invalidates the answer on screen, but does not re-run it: same cost,
   // same reason. Say the number moved and let the button do the work.
@@ -1508,7 +1514,11 @@ async function check(){
   if(d.status==='partial'){ show(d); return; }        // still solving -- keep polling
   clearInterval(poll); poll=null; $('run').disabled=false;
   if(d.status==='error'){ $('msg').className='msg err'; $('msg').textContent=d.error; SOLVED=''; return; }
-  if(d.status==='done'){ $('msg').className='msg'; $('run').textContent='다시 풀기'; show(d); }
+  if(d.status==='done'){
+    $('msg').className='msg';
+    $('run').textContent = d.solved===false ? '풀기' : '다시 풀기';
+    show(d);
+  }
 }
 
 const video=()=>document.getElementById('v');
@@ -1522,8 +1532,16 @@ function show(d){
 
   if(d.status==='partial'){
     $('chartTitle').textContent =
-      `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''}) · 다시 푸는 중…`;
-    $('msg').textContent = `${d.rows.length}프레임 기록값 표시됨 · 지금 코드와 CarrotPilot 으로 푸는 중… (약 13초)`;
+      `기록값 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''})`
+      + (WANT_SOLVE ? ' · 다시 푸는 중…' : '');
+    $('msg').textContent = `${d.rows.length}프레임 기록값 표시됨`
+      + (WANT_SOLVE ? ' · 지금 코드와 CarrotPilot 으로 푸는 중… (약 13초)' : '');
+  } else if(d.solved===false){
+    // Log read only: the recorded lines are real, the recomputed ones were never asked for.
+    $('chartTitle').textContent =
+      `기록값 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''})`;
+    $('msg').textContent = `${d.rows.length}프레임 · 노란/회색선은 주행이 남긴 값입니다. `
+      + `"풀기"를 누르면 지금 코드와 CarrotPilot 선이 더해집니다 (약 13초).`;
   } else {
     $('chartTitle').textContent =
       `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''})`

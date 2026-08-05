@@ -471,18 +471,23 @@ class ShadowReplay:
     with self._lock:
       return dict(self._state)
 
-  def start(self, route: str, seg: int, accel_min: float | None) -> dict:
+  def start(self, route: str, seg: int, accel_min: float | None, solve: bool = True) -> dict:
+    """solve=False stops after extract, which is the cheap half.
+
+    Reading the log costs a few seconds; re-solving it costs four times that. Selecting a segment
+    only needs what the drive already recorded, so it asks for that and stops.
+    """
     with self._lock:
       if self._thread is not None and self._thread.is_alive():
         return {'error': '이미 실행 중입니다', **self._state}
       if self._engaged():
         return {'error': '주행 중에는 실행하지 않습니다'}
       self._state = {'status': 'running', 'route': route, 'seg': seg, 'accelMin': accel_min}
-      self._thread = threading.Thread(target=self._run, args=(route, seg, accel_min), daemon=True)
+      self._thread = threading.Thread(target=self._run, args=(route, seg, accel_min, solve), daemon=True)
       self._thread.start()
       return dict(self._state)
 
-  def _run(self, route: str, seg: int, accel_min: float | None):
+  def _run(self, route: str, seg: int, accel_min: float | None, solve: bool = True):
     try:
       frames = extract(route, seg)
       if not frames:
@@ -511,6 +516,15 @@ class ShadowReplay:
                           'recordedPlanner': frames[0].get('plannerSource', 'stock') if frames else 'stock',
                           'accelMin': accel_min if accel_min is not None else p_floor,
                           'accelMinSrc': p_floor_src}
+
+      if not solve:
+        with self._lock:
+          self._state = {'status': 'done', 'route': route, 'seg': seg, 'rows': partial_rows,
+                         'recordedPlanner': frames[0].get('plannerSource', 'stock') if frames else 'stock',
+                         'accelMin': accel_min if accel_min is not None else p_floor,
+                         'accelMinSrc': p_floor_src, 'solved': False, 'solveSec': 0.0,
+                         'hasCarrot': False}
+        return
 
       solved = resolve(frames, accel_min)
       # CarrotPilot's planner over the same segment, if its port is built here. Optional on
@@ -547,6 +561,7 @@ class ShadowReplay:
           'status': 'done', 'route': route, 'seg': seg,
           'accelMin': solved['accelMin'], 'accelMinSrc': solved['accelMinSrc'],
           'solveSec': solved['solveSec'],
+          'solved': True,
           'hasCarrot': bool(carrot),
           # What produced the recorded (grey) line, so the page can name it rather than
           # implying it is always the stock planner.
