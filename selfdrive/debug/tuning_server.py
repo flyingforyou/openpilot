@@ -42,6 +42,125 @@ from openpilot.selfdrive.debug.intervention_log import InterventionLog, list_eve
 
 # Options rather than free-form numbers: a typo in a text box goes straight into the braking
 # path, and named choices are also what makes an A/B run reproducible afterwards.
+# CarrotPilot's own longitudinal knobs. Grouped separately because none of them do anything
+# unless CarrotLongEnabled is on -- they are read by its planner, not this tree's. Defaults are
+# carrot's; the labels explain what each does rather than restating the parameter name.
+CARROT_SETTINGS = {
+  "MyDrivingMode": {
+    "label": "주행 모드", "type": "int",
+    "help": "가속 곡선과 추종 거리에 한꺼번에 곱해지는 성향입니다. Eco 는 완만하게, "
+            "High 는 20% 더 붙고 세게 갑니다.",
+    "options": [(1, "Eco 절약"), (2, "Safe 안전"), (3, "Normal 표준"), (4, "High 적극")],
+  },
+  "MyDrivingModeAuto": {
+    "label": "주행 모드 자동 전환", "type": "int",
+    "help": "앞차 거동을 보고 모드를 스스로 바꿉니다.",
+    "options": [(0, "고정 (기본)"), (1, "자동")],
+  },
+  "TFollowGap1": {
+    "label": "Gap 1 추종 시간", "type": "int",
+    "help": "가장 가까운 단계입니다. 캐롯은 1.10초 아래로 내려가지 않습니다 -- 그 아래에서 "
+            "FCW 가 도심 감속에 반응하기 시작합니다.",
+    "options": [(110, "1.10초 (기본)"), (120, "1.20초"), (130, "1.30초")],
+  },
+  "TFollowGap2": {
+    "label": "Gap 2 추종 시간", "type": "int", "help": "두 번째 단계입니다.",
+    "options": [(115, "1.15초"), (120, "1.20초 (기본)"), (130, "1.30초"), (140, "1.40초")],
+  },
+  "TFollowGap3": {
+    "label": "Gap 3 추종 시간", "type": "int", "help": "세 번째 단계입니다.",
+    "options": [(130, "1.30초"), (140, "1.40초 (기본)"), (150, "1.50초"), (160, "1.60초")],
+  },
+  "TFollowGap4": {
+    "label": "Gap 4 추종 시간", "type": "int", "help": "가장 먼 단계입니다.",
+    "options": [(150, "1.50초"), (160, "1.60초 (기본)"), (180, "1.80초"), (200, "2.00초")],
+  },
+  "DynamicTFollow": {
+    "label": "앞차 거동 따라 간격 조정", "type": "int",
+    "help": "앞차가 감속하면 간격을 벌리고 멀어지면 좁힙니다. 0 이면 사용 안 함.",
+    "options": [(0, "사용 안 함 (기본)"), (50, "약하게 0.5"), (100, "표준 1.0"), (150, "강하게 1.5")],
+  },
+  "DynamicTFollowLC": {
+    "label": "차선변경 시 간격", "type": "int",
+    "help": "차선을 바꾸는 동안 추종 시간에 곱합니다.",
+    "options": [(80, "좁게 0.8"), (100, "그대로 1.0 (기본)"), (120, "넓게 1.2")],
+  },
+  "EnableSpeedTF": {
+    "label": "속도별 간격 조정", "type": "int",
+    "help": "저속에서 간격을 줄이고 고속에서 늘립니다.",
+    "options": [(0, "사용 안 함 (기본)"), (1, "사용")],
+  },
+  "TFollowDecelBoost": {
+    "label": "감속 시 간격 확대", "type": "int",
+    "help": "내가 감속 중일 때 목표 간격을 추가로 벌리는 정도입니다.",
+    "options": [(0, "없음"), (50, "표준 0.5 (기본)"), (100, "크게 1.0")],
+  },
+  "StopDistanceCarrot": {
+    "label": "정지 시 앞차 간격", "type": "int",
+    "help": "앞차 뒤에 멈출 때 남기는 거리입니다. 위 '정지 시 앞차 간격'은 기존 플래너용이고, "
+            "캐롯 플래너는 이 값을 씁니다.",
+    "options": [(450, "4.5m"), (550, "5.5m (기본)"), (600, "6.0m"), (700, "7.0m")],
+  },
+  "JLeadFactor3": {
+    "label": "앞차 저크 반영", "type": "int",
+    "help": "앞차의 가속도 변화율을 계획에 얼마나 반영할지입니다. 브레이크를 막 밟은 앞차와 "
+            "이미 풀고 있는 앞차를 구분하는 값이라, 이 포팅이 레이더 쪽 jLead 를 함께 "
+            "가져온 이유이기도 합니다. 0 이면 사용 안 함.",
+    "options": [(0, "사용 안 함 (기본)"), (50, "약하게 0.5"), (100, "표준 1.0")],
+  },
+  "AChangeCostStarting": {
+    "label": "출발 시 가속 상승 자유도", "type": "int",
+    "help": "정지에서 출발할 때 가속을 얼마나 자유롭게 올릴지입니다. 낮을수록 빠르게 붙습니다.",
+    "options": [(10, "자유롭게 10 (기본)"), (40, "보통 40"), (100, "부드럽게 100"), (200, "매우 부드럽게 200")],
+  },
+  "CruiseEcoControl": {
+    "label": "설정속도 초과 허용", "type": "int",
+    "help": "가속할 때 설정 속도를 잠깐 넘겨 탄력을 붙입니다.",
+    "options": [(0, "사용 안 함"), (2, "2km/h (기본)"), (4, "4km/h"), (6, "6km/h")],
+  },
+  "TrafficLightDetectMode": {
+    "label": "신호등 인식 동작", "type": "int",
+    "help": "모델이 본 신호등·정지선에 어떻게 반응할지입니다. Stop&Go 는 초록으로 바뀌면 "
+            "다시 출발까지 합니다. 네비 서버가 없으므로 신호 상태는 카메라 판단만 씁니다.",
+    "options": [(0, "사용 안 함"), (1, "정지만"), (2, "정지 후 출발 (기본)")],
+  },
+  "TrafficStopDistanceAdjust": {
+    "label": "정지선 앞 여유", "type": "int",
+    "help": "정지선에서 얼마나 앞뒤로 멈출지 조정합니다. 음수면 더 앞에 섭니다.",
+    "options": [(-250, "2.5m 앞"), (-150, "1.5m 앞 (기본)"), (0, "정지선"), (150, "1.5m 뒤")],
+  },
+  "CruiseMaxVals0": {
+    "label": "가속 상한 · 정지~", "type": "int",
+    "help": "속도 구간별 가속 상한입니다. 여기부터 6개가 캐롯의 가속 곡선을 이룹니다. "
+            "정지 상태에서의 값입니다.",
+    "options": [(120, "1.2"), (160, "1.6 (기본)"), (200, "2.0"), (240, "2.4")],
+  },
+  "CruiseMaxVals1": {
+    "label": "가속 상한 · 10km/h", "type": "int", "help": "10km/h 지점의 가속 상한입니다.",
+    "options": [(150, "1.5"), (200, "2.0 (기본)"), (240, "2.4")],
+  },
+  "CruiseMaxVals2": {
+    "label": "가속 상한 · 40km/h", "type": "int", "help": "40km/h 지점의 가속 상한입니다.",
+    "options": [(120, "1.2"), (160, "1.6 (기본)"), (200, "2.0")],
+  },
+  "CruiseMaxVals3": {
+    "label": "가속 상한 · 60km/h", "type": "int", "help": "60km/h 지점의 가속 상한입니다.",
+    "options": [(100, "1.0"), (130, "1.3 (기본)"), (160, "1.6")],
+  },
+  "CruiseMaxVals4": {
+    "label": "가속 상한 · 80km/h", "type": "int", "help": "80km/h 지점의 가속 상한입니다.",
+    "options": [(90, "0.9"), (110, "1.1 (기본)"), (140, "1.4")],
+  },
+  "CruiseMaxVals5": {
+    "label": "가속 상한 · 110km/h", "type": "int", "help": "110km/h 지점의 가속 상한입니다.",
+    "options": [(75, "0.75"), (95, "0.95 (기본)"), (120, "1.2")],
+  },
+  "CruiseMaxVals6": {
+    "label": "가속 상한 · 140km/h", "type": "int", "help": "140km/h 지점의 가속 상한입니다.",
+    "options": [(60, "0.6"), (80, "0.8 (기본)"), (100, "1.0")],
+  },
+}
+
 SETTINGS = {
   "StoppedLeadMatchEnabled": {
     "label": "정지차 매칭 보정", "type": "bool",
@@ -293,18 +412,24 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, json.dumps({'events': list_events()}))
 
     if self.path.startswith('/api/settings'):
-      out = {}
-      for k, cfg in SETTINGS.items():
-        try:
-          # not get_bool(): it ignores the declared default and reads False until first write
-          v = self.params.get(k, return_default=True)
-          v = int(bool(v)) if cfg['type'] == 'bool' else int(v)
-        except Exception:
-          v = None
-        out[k] = {'value': v, 'label': cfg['label'], 'help': cfg['help'],
-                  'options': [{'v': ov, 'label': ol} for ov, ol in cfg['options']]}
+      def pack(table):
+        out = {}
+        for k, cfg in table.items():
+          try:
+            # not get_bool(): it ignores the declared default and reads False until first write
+            v = self.params.get(k, return_default=True)
+            v = int(bool(v)) if cfg['type'] == 'bool' else int(v)
+          except Exception:
+            v = None
+          out[k] = {'value': v, 'label': cfg['label'], 'help': cfg['help'],
+                    'options': [{'v': ov, 'label': ol} for ov, ol in cfg['options']]}
+        return out
       return self._send(200, json.dumps({
-        'settings': out,
+        'settings': pack(SETTINGS),
+        'carrot': pack(CARROT_SETTINGS),
+        # The carrot block only does anything when its planner is the one running, and that is
+        # read at startup -- so the page can say plainly whether these are live right now.
+        'carrotActive': bool(self.params.get('CarrotLongEnabled', return_default=True)),
         'engaged': bool(self.state.get().get('engaged')),
       }))
 
@@ -430,12 +555,13 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
 
     changes = req.get('changes') or {}
-    unknown = [k for k in changes if k not in SETTINGS]
+    known = {**SETTINGS, **CARROT_SETTINGS}
+    unknown = [k for k in changes if k not in known]
     if unknown:
       return self._send(400, json.dumps({'error': f'알 수 없는 설정: {", ".join(unknown)}'}))
 
     for key, value in changes.items():
-      cfg = SETTINGS[key]
+      cfg = known[key]
       if value not in [v for v, _ in cfg['options']]:
         return self._send(400, json.dumps({'error': f'{cfg["label"]}: 허용되지 않은 값'}))
       try:
@@ -626,7 +752,13 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
   </div>
 </div>
 
-<div class="card"><div class="h">Settings</div><div id="settings"></div>
+<div class="card"><div class="h">Settings</div><div id="settings"></div></div>
+
+<div class="card"><div class="h">CarrotPilot 종방향 <span id="carrotState" class="hlp"></span></div>
+  <div id="carrotSettings"></div>
+</div>
+
+<div class="card">
   <div class="applybar">
     <button class="apply" id="apply" disabled>반영</button>
     <span class="dirtynote" id="dirty"></span>
@@ -666,11 +798,21 @@ async function poll(){
   }catch(e){$('conn').textContent='디바이스에 연결할 수 없습니다';}
 }
 
-let cfg={}, staged={};
+let cfg={}, carrotCfg={}, staged={}, carrotActive=false;
 
 function renderSettings(){
-  const box=$('settings');box.innerHTML='';
-  for(const[k,c]of Object.entries(cfg)){
+  renderInto($('settings'), cfg);
+  renderInto($('carrotSettings'), carrotCfg);
+  // These only take effect when carrot's planner is the one running, and that is decided at
+  // startup -- so say so rather than letting them look live when they are not.
+  $('carrotState').textContent = carrotActive
+    ? '· 사용 중'
+    : '· 꺼져 있음 (위 "CarrotPilot 종방향"을 켜고 재시작해야 아래 값이 적용됩니다)';
+}
+
+function renderInto(box, table){
+  box.innerHTML='';
+  for(const[k,c]of Object.entries(table)){
     const row=document.createElement('div');row.className='row';
     const left=document.createElement('div');
     left.innerHTML=`<div class="lab">${c.label}</div><div class="hlp">${c.help}</div>`;
@@ -703,7 +845,7 @@ function updateApply(){
 
 async function loadSettings(){
   const d=await(await fetch('/api/settings')).json();
-  cfg=d.settings;engaged=d.engaged;
+  cfg=d.settings; carrotCfg=d.carrot||{}; carrotActive=!!d.carrotActive; engaged=d.engaged;
   renderSettings();updateApply();
 }
 
