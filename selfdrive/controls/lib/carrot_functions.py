@@ -78,7 +78,7 @@ class CarrotPlanner:
     self.user_stop_distance = -1
 
     self.t_follow_last = 1.5
-    self.tFollowGaps = [1.10, 1.20, 1.30, 1.38, 1.45, 1.52, 1.60]
+    self.tFollowGaps = [1.10, 1.15, 1.20, 1.30, 1.40, 1.50, 1.60]   # matches params_keys.h
     # The stalk reads 0 until it reports for the first time; substituting the last real value
     # is what the stock planner does, and falling through to personality instead would silently
     # change the follow distance on every engage before the first gap message.
