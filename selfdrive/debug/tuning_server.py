@@ -19,8 +19,17 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 import threading
 import time
+
+# The shadow replay's background thread spends most of a solve inside C calls (zstandard,
+# capnp, acados) that hold the GIL for the default 5ms slice before the interpreter checks
+# whether another thread wants it -- long enough that a poll from the page waiting on
+# /api/shadow could sit for multiple seconds behind it. This makes that check happen more
+# often, so the HTTP threads stay responsive while a solve is running, at a small unmeasurable
+# cost to solve throughput.
+sys.setswitchinterval(0.001)
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cereal.messaging as messaging
