@@ -140,6 +140,9 @@ enum LongitudinalPersonality {
   aggressive @0;
   standard @1;
   relaxed @2;
+  # CarrotPilot's fourth level. Appended, so the three existing values keep their numbers and
+  # every log written before this still reads correctly. Only the carrot planner selects it.
+  moreRelaxed @3;
 }
 
 struct InitData {
