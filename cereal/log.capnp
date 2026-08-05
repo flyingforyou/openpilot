@@ -88,6 +88,13 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     lowMemory @51;
     stockAeb @52;
     stockLkas @98;
+
+    # CarrotPilot's traffic-light alerts. capnp enums must be dense, so these take the next free
+    # ordinals here rather than carrot's own 100/101/116 -- the names match, the numbers cannot.
+    # Only its planner raises them.
+    trafficSignGreen @99;
+    trafficSignChanged @100;
+    trafficStopping @101;
     ldw @53;
     carUnrecognized @54;
     invalidLkasSetting @55;
