@@ -24,13 +24,3 @@ class TypedParams:
 
   def __getattr__(self, name):
     return getattr(self._p, name)
-
-import numpy as np
-from openpilot.common.realtime import DT_MDL
-from openpilot.common.constants import CV
-from openpilot.common.filter_simple import MyMovingAverage
-from openpilot.selfdrive.controls.lib.carrot_t_follow import ramp_t_follow
-from openpilot.selfdrive.selfdrived.events import Events
-
-EventName = log.OnroadEvent.EventName
-LaneChangeState = log.LaneChangeState
