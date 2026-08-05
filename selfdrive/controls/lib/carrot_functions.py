@@ -78,6 +78,12 @@ class CarrotPlanner:
     self.user_stop_distance = -1
 
     self.t_follow_last = 1.5
+    self.tFollowGaps = [1.10, 1.20, 1.30, 1.38, 1.45, 1.52, 1.60]
+    # The stalk reads 0 until it reports for the first time; substituting the last real value
+    # is what the stock planner does, and falling through to personality instead would silently
+    # change the follow distance on every engage before the first gap message.
+    self.gap_adjust = 0
+    self.last_gap_adjust = 0
 
     self.startSignCount = 0
     self.stopSignCount = 0
@@ -163,10 +169,12 @@ class CarrotPlanner:
       self.myHighModeFactor = 1.2 #float(self.params.get_int("MyHighModeFactor")) / 100.
       self.trafficLightDetectMode = self.params.get_int("TrafficLightDetectMode") # 0: None, 1:Stop, 2:Stop&Go
     elif self.params_count == 20:
-      self.tFollowGap1 = self.params.get_float("TFollowGap1") / 100.
-      self.tFollowGap2 = self.params.get_float("TFollowGap2") / 100.
-      self.tFollowGap3 = self.params.get_float("TFollowGap3") / 100.
-      self.tFollowGap4 = self.params.get_float("TFollowGap4") / 100.
+      # Seven, not carrot's four. Its four exist because the cars it targets have a four-position
+      # gap button, which openpilot maps onto the four personality levels. This car reports a
+      # seven-position stalk in cruiseState.gapAdjust, so the knob has resolution the four-entry
+      # table cannot express. Same endpoints (1.10 and 1.60), finer steps between.
+      self.tFollowGaps = [self.params.get_float(f"TFollowGap{i}") / 100. for i in range(1, 8)]
+      self.tFollowGap1, self.tFollowGap2, self.tFollowGap3, self.tFollowGap4 = self.tFollowGaps[:4]
       self.dynamicTFollow = self.params.get_float("DynamicTFollow") / 100.
       self.dynamicTFollowLC = self.params.get_float("DynamicTFollowLC") / 100.
       self.enableSpeedTF = self.params.get_int("EnableSpeedTF")
@@ -225,6 +233,15 @@ class CarrotPlanner:
       else:
         raise NotImplementedError("Longitudinal personality not supported")
 
+    elif 1 <= self.gap_adjust <= 7:
+      # The gap stalk is the driver's own instruction, so it wins over personality whenever the
+      # car actually reports one. jerk_factor follows the same axis: the closer the requested
+      # gap, the more freely acceleration is allowed to change.
+      tf_base = self.tFollowGaps[self.gap_adjust - 1]
+      self.jerk_factor = float(np.interp(self.gap_adjust, [1, 4, 7], [0.5, 0.7, 1.0]))
+      if self.myDrivingMode == DrivingMode.Safe:
+        self.jerk_factor = 1.0
+
     else:
       if personality == log.LongitudinalPersonality.moreRelaxed:
         self.jerk_factor = 1.0
@@ -281,8 +298,10 @@ class CarrotPlanner:
 
 
   def _clip_t_follow(self, t_follow):
-    tf_min = float(min(self.tFollowGap1, self.tFollowGap2, self.tFollowGap3, self.tFollowGap4))
-    tf_max = float(max(self.tFollowGap1, self.tFollowGap2, self.tFollowGap3, self.tFollowGap4))
+    # Over all seven, so the clamp range always matches the table the base came from. Keying it
+    # off four while the base came from seven would quietly flatten the top of the knob.
+    tf_min = float(min(self.tFollowGaps))
+    tf_max = float(max(self.tFollowGaps))
     tf_max = min(2.0, tf_max + max(0.0, self._tf_decel_extra))
     return float(np.clip(t_follow, max(0.3, tf_min), tf_max))
 
@@ -432,6 +451,10 @@ class CarrotPlanner:
 
     self.events = Events()
     carstate = sm['carState']
+    gap = int(carstate.cruiseState.gapAdjust)
+    if gap != 0:
+      self.last_gap_adjust = gap
+    self.gap_adjust = gap if gap != 0 else self.last_gap_adjust
     # No vCluRatio on this car: it scales cruise speed to the cluster's own display
     # rounding, which this port does not model. 1.0 leaves v_cruise as given.
     vCluRatio = 1.0

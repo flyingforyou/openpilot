@@ -136,10 +136,18 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"MyDrivingMode", {PERSISTENT, INT, "3"}},
     {"MyDrivingModeAuto", {PERSISTENT, INT, "0"}},
     {"TrafficLightDetectMode", {PERSISTENT, INT, "2"}},
+    // Seven entries, one per position of this car's gap stalk. carrot ships four because the
+    // cars it target have a four-position button, which openpilot maps onto the four
+    // personality levels; this car reports seven. Same curve, subdivided: carrot's own
+    // 1.10/1.20/1.40/1.60 land on gaps 1/3/5/7 and the even positions are interpolated between
+    // them, so the endpoints and the shape are carrot's and only the resolution is ours.
     {"TFollowGap1", {PERSISTENT, INT, "110"}},
-    {"TFollowGap2", {PERSISTENT, INT, "120"}},
-    {"TFollowGap3", {PERSISTENT, INT, "140"}},
-    {"TFollowGap4", {PERSISTENT, INT, "160"}},
+    {"TFollowGap2", {PERSISTENT, INT, "115"}},
+    {"TFollowGap3", {PERSISTENT, INT, "120"}},
+    {"TFollowGap4", {PERSISTENT, INT, "130"}},
+    {"TFollowGap5", {PERSISTENT, INT, "140"}},
+    {"TFollowGap6", {PERSISTENT, INT, "150"}},
+    {"TFollowGap7", {PERSISTENT, INT, "160"}},
     {"DynamicTFollow", {PERSISTENT, INT, "0"}},
     {"DynamicTFollowLC", {PERSISTENT, INT, "100"}},
     {"EnableSpeedTF", {PERSISTENT, INT, "0"}},
