@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import cereal.messaging as messaging
@@ -320,6 +321,10 @@ class Handler(BaseHTTPRequestHandler):
       qs = self.path.split('?', 1)[1] if '?' in self.path else ''
       cam = next((p[4:] for p in qs.split('&') if p.startswith('cam=')), 'road')
       codec = next((p[2:] for p in qs.split('&') if p.startswith('q=')), 'copy')
+      # Timed and printed on purpose: log_message is silenced against poll spam, but a video
+      # load is rare enough, and expensive enough when it misses cache, to be worth a line --
+      # this is the only way to tell a slow build from a slow network hop after the fact.
+      t0 = time.monotonic()
       try:
         route, seg = page[3:].rsplit('/', 1)
         path = self.videos.get(route, int(seg.removesuffix('.mp4')), cam=cam, codec=codec)
@@ -327,6 +332,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, '{}')
       except Exception as e:
         return self._send(500, json.dumps({'error': f'{type(e).__name__}: {e}'}))
+      build_ms = int((time.monotonic() - t0) * 1000)
+      print(f'[video] {route}--{seg} cam={cam} q={codec} build={build_ms}ms size={os.path.getsize(path)}',
+            flush=True)
       return self._send_file(path, 'video/mp4')
 
     # /dl/<route>/<seg>/<file> -- the originals, untouched
