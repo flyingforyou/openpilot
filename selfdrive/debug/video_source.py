@@ -16,8 +16,12 @@ import threading
 import av
 
 REALDATA = '/data/media/0/realdata'
-CACHE = '/data/tmp/qcam-mp4'   # /tmp is a small tmpfs here
-CACHE_BUDGET = 400 * 1024 * 1024
+CACHE = '/data/tmp/qcam-mp4'   # /tmp is a small tmpfs here; this is on /data's disk, not RAM
+# H.264 transcoding is the expensive path (~40s/segment, no hardware encoder on this device), so
+# an evicted segment is not a cache miss, it is another 40s wait. 400MB held about 13 segments --
+# less than one route's worth of scanning -- so browsing a scan strip kept re-paying that cost on
+# segments already visited. /data has 21GB free; this trades a slice of it for not doing that.
+CACHE_BUDGET = 4 * 1024 * 1024 * 1024
 
 PREVIEW = 'qcamera.ts'
 
