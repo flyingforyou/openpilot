@@ -12,7 +12,26 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from cereal import car
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc import LongitudinalMpc, N
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc import T_IDXS as T_IDXS_MPC
-from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
+from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
+
+
+def get_accel_from_plan(speeds, accels, t_idxs, action_t=DT_MDL, vEgoStopping=0.05):
+  """carrot's variant, which also reports the trajectory's current and peak speed.
+
+  Local rather than shared: the stock planner takes the two-value form from drive_helpers, and
+  widening that would mean editing a call path this port is meant to leave alone.
+  """
+  if len(speeds) == len(t_idxs):
+    v_now = speeds[0]
+    a_now = accels[0]
+    v_target = np.interp(action_t, t_idxs, speeds)
+    a_target = 2 * (v_target - v_now) / action_t - a_now
+    v_target_1sec = np.interp(action_t + 1.0, t_idxs, speeds)
+    v_max = np.max(speeds)
+  else:
+    v_now = a_now = v_target = v_target_1sec = a_target = v_max = 0.0
+  should_stop = (v_target < vEgoStopping and v_target_1sec < vEgoStopping)
+  return a_target, should_stop, v_now, v_max
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
@@ -279,7 +298,10 @@ class _CarrotLongitudinalPlannerImpl:
                                                                         action_t=action_t, vEgoStopping=vEgoStopping)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
-    output_v_target_now_e2e = sm['modelV2'].action.desiredVelocity
+    # This tree's model does not publish action.desiredVelocity; carrot's does. Without it the
+    # blended branch below would take min(mpc, 0) and report a target of zero, so fall back to
+    # the MPC's own value, which is what the blend reduces to when the model has no opinion.
+    output_v_target_now_e2e = output_v_target_mpc
 
     if self.mpc.mode == 'acc':
       output_a_target = output_a_target_mpc
