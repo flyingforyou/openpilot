@@ -104,6 +104,14 @@ SETTINGS = {
             "아직 실험적이라고 부르는 기능이라 정지 판단이 늦거나 틀릴 수 있습니다.",
     "options": [(0, "사용 안 함 (기본)"), (1, "사용")],
   },
+  "CarrotLongEnabled": {
+    "label": "CarrotPilot 종방향", "type": "bool",
+    "help": "속도 계획 전체를 CarrotPilot 의 플래너로 바꿉니다. 별도의 MPC(파라미터 8개, "
+            "comfort_brake 와 stop_distance 가 런타임 값)와 자체 갭/가속 곡선, 리드 저크 "
+            "기반 조정, 예측 위험 비용을 씁니다. 두 솔버가 각각 빌드되어 있고 어느 쪽을 "
+            "쓸지는 시작할 때 한 번만 읽으므로 재시작해야 반영됩니다. 실도로 검증 전입니다.",
+    "options": [(0, "기존 플래너 (기본)"), (1, "CarrotPilot")],
+  },
   "TeslaCoopSteer": {
     "label": "핸들 같이 돌리기", "type": "bool",
     "help": "운전자가 핸들을 돌리면 손을 놓는 대신 목표 각도를 그쪽으로 옮깁니다. EPS가 조향을 "
