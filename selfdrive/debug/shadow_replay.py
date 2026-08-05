@@ -353,6 +353,107 @@ def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
           'solveSec': round(time.monotonic() - t_start, 1)}
 
 
+
+class _ReplaySM:
+  """The parts of SubMaster a planner touches, backed by log messages instead of sockets."""
+
+  def __init__(self):
+    self.data: dict = {}
+    self.logMonoTime: dict = {}
+    self.updated: dict = {}
+    self.recv_frame: dict = {}
+    self.seen: dict = {}
+    self.alive: dict = {}
+    self.frame = 0
+
+  def __getitem__(self, key):
+    return self.data[key]
+
+  def __contains__(self, key):
+    return key in self.data
+
+  def all_checks(self, *a, **k):
+    return True
+
+  def valid(self, *a, **k):
+    return True
+
+
+def resolve_carrot(route: str, seg: int) -> list[dict] | None:
+  """CarrotPilot's planner over the same segment, on the same time grid.
+
+  Re-reads the log rather than working from extract()'s frames: carrot's planner reads modelV2
+  in full -- lane lines, position, the stop-line estimate -- and reducing that to a handful of
+  scalars would mean comparing against something carrot does not actually run. Returns None if
+  the port is not importable, which is the normal state on a machine without its solver built.
+  """
+  try:
+    from openpilot.selfdrive.controls.lib.longitudinal_planner_carrot import CarrotLongitudinalPlanner
+  except Exception:
+    cloudlog.exception('shadow: carrot planner unavailable')
+    return None
+
+  path = os.path.join(_seg_dir(route, seg), 'rlog.zst')
+  if not os.path.isfile(path):
+    return None
+
+  NEEDED = ('carControl', 'carState', 'controlsState', 'radarState', 'modelV2',
+            'selfdriveState', 'liveParameters')
+  CP = None
+  planner = None
+  sm = _ReplaySM()
+  t0 = None
+  next_t = 0.0
+  out: list[dict] = []
+  cur = {'a': 0.0, 'tFollow': 0.0, 'xState': 0, 'stop': False}
+
+  for evt in _read_events(path):
+    w = evt.which()
+    if w == 'carParams' and CP is None:
+      CP = evt.carParams
+      continue
+    if w == 'roadEncodeIdx' and t0 is None and evt.roadEncodeIdx.segmentId == 0:
+      t0 = evt.logMonoTime / 1e9
+      continue
+    if w in NEEDED:
+      sm.data[w] = getattr(evt, w)
+      sm.logMonoTime[w] = evt.logMonoTime
+      sm.seen[w] = sm.alive[w] = True
+      sm.recv_frame[w] = sm.frame
+    if w != 'modelV2' or CP is None or len(sm.data) < len(NEEDED):
+      continue
+
+    t = evt.logMonoTime / 1e9
+    if t0 is None:
+      t0 = t
+    dt = t - t0
+    if dt < 0:
+      continue
+
+    if planner is None:
+      planner = CarrotLongitudinalPlanner(CP)
+    sm.frame += 1
+    sm.updated = dict.fromkeys(sm.data, True)
+    try:
+      planner.update(sm)
+      cur = {
+        'a': float(planner.planner.output_a_target),
+        'tFollow': float(planner.planner.mpc.t_follow),
+        'xState': int(planner.carrot.xState.value),
+        'stop': bool(planner.planner.output_should_stop),
+      }
+    except Exception:
+      cloudlog.exception('shadow: carrot planner failed mid-segment')
+      return None
+
+    while dt >= next_t:
+      out.append({'t': round(next_t, 2), 'aCarrot': round(cur['a'], 3),
+                  'tFollowCarrot': round(cur['tFollow'], 3),
+                  'xState': cur['xState'], 'stopCarrot': cur['stop']})
+      next_t += DT
+  return out or None
+
+
 class ShadowReplay:
   """One replay at a time, in the background, never while the car is being driven."""
 
@@ -395,6 +496,7 @@ class ShadowReplay:
           f['gap'], None,
           round(f['stockMin'], 3) if f['stockMin'] is not None else None,
           round(f['stockMax'], 3) if f['stockMax'] is not None else None,
+          None, None, None,
         ])
       # car_floor is a lookup, not a solve -- cheap enough to afford here so the chart's scale and
       # reference line are right from the first paint instead of jumping when 'done' replaces it.
@@ -406,9 +508,15 @@ class ShadowReplay:
                           'accelMinSrc': p_floor_src}
 
       solved = resolve(frames, accel_min)
+      # CarrotPilot's planner over the same segment, if its port is built here. Optional on
+      # purpose: the page is still useful without it, and a missing solver must not take the
+      # whole replay down.
+      carrot = resolve_carrot(route, seg)
+      carrot_by_t = {c['t']: c for c in carrot} if carrot else {}
       rows = []
       for f, s in zip(frames, solved['rows'], strict=False):
         ld = f['lead']
+        c = carrot_by_t.get(f['t'], {})
         flags = (f['flags'] | (32 if s['aFloorHit'] else 0)
                  | (64 if s['stopExp'] else 0) | (128 if s['stopMpc'] else 0)
                  | (256 if s['aCeilHit'] else 0))
@@ -425,12 +533,16 @@ class ShadowReplay:
           s['tFollow'],
           round(f['stockMin'], 3) if f['stockMin'] is not None else None,
           round(f['stockMax'], 3) if f['stockMax'] is not None else None,
+          c.get('aCarrot'),                                    # 12
+          c.get('tFollowCarrot'),                              # 13
+          c.get('xState'),                                     # 14
         ])
       with self._lock:
         self._state = {
           'status': 'done', 'route': route, 'seg': seg,
           'accelMin': solved['accelMin'], 'accelMinSrc': solved['accelMinSrc'],
           'solveSec': solved['solveSec'],
+          'hasCarrot': bool(carrot),
           'rows': rows,
         }
     except Exception as e:                                  # noqa: BLE001 - surfaced to the page

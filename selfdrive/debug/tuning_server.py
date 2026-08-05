@@ -1307,6 +1307,7 @@ font-size:10px;text-align:center}
     <span><i style="background:#FF9F4A"></i>순정 ACC 커맨드 밴드 (bus2 직접 수신)</span>
     <span><span class="sw" style="background:#FF6B5A;display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;opacity:.5"></span>제동 하한에 붙은 구간</span>
     <span><span class="sw" style="background:#F5B942;display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;opacity:.45"></span>가속 상한에 붙은 구간</span>
+    <span><i style="background:#4ED88A"></i>CarrotPilot 플래너</span>
     <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#B58AFF;margin-right:5px;vertical-align:1px"></span>모델만 정지 원함 (신호등·정지선 등)</span>
   </div>
   <div class="pad" style="padding-top:0">
@@ -1587,7 +1588,7 @@ function draw(){
 
   // col 3/4 (재계산 값) 는 재계산이 끝나기 전에는 null -- 그 프레임에서 선을 끊는다. 0 으로
   // 읽으면 계산 중인 구간이 실선으로 이어져 이미 다 푼 것처럼 보인다.
-  for(const [col,color,lw] of [[1,'#F5B942',1.8],[2,'#8A97A6',1.2],[3,'#5AC8FA',1.8],[4,'#B58AFF',1.6]]){
+  for(const [col,color,lw] of [[1,'#F5B942',1.8],[2,'#8A97A6',1.2],[3,'#5AC8FA',1.8],[4,'#B58AFF',1.6],[12,'#4ED88A',1.8]]){
     g.strokeStyle=color; g.lineWidth=lw; g.beginPath(); let pen=false;
     rows.forEach(r=>{
       if(r[col]==null){ pen=false; return; }
@@ -1616,7 +1617,7 @@ function draw(){
   g.fillStyle=css('--radar');
   g.beginPath(); g.moveTo(px-5,T-8); g.lineTo(px+5,T-8); g.lineTo(px,T-1); g.closePath(); g.fill();
   const r=rows[Math.min(rows.length-1,Math.round(vt*20))];
-  if(r) for(const [col,color] of [[1,'#F5B942'],[3,'#5AC8FA'],[4,'#B58AFF'],[10,'#FF9F4A']]){
+  if(r) for(const [col,color] of [[1,'#F5B942'],[3,'#5AC8FA'],[4,'#B58AFF'],[12,'#4ED88A'],[10,'#FF9F4A']]){
     if(r[col]==null) continue;
     g.beginPath(); g.arc(px,y(r[col]),4,0,7); g.fillStyle=color; g.fill();
     g.strokeStyle=css('--card'); g.lineWidth=1.8; g.stroke();
@@ -1647,7 +1648,12 @@ function readout(r){
       `<span style="color:#FF9F4A">${(r[10]*MPH).toFixed(1)} … ${(r[11]*MPH).toFixed(1)}<small>mph/s</small></span>`],
     ['속도',`${(r[5]*MPH).toFixed(0)}<small>mph</small>`],
     ['리드',r[6]==null?'—':`${(r[6]*3.28084).toFixed(0)}<small>ft</small>`],
+    ['CarrotPilot',r[12]==null?'<span style="opacity:.5">해당 없음</span>':
+      `<span style="color:#4ED88A">${(r[12]*MPH).toFixed(1)}<small>mph/s</small></span>`],
     ['tFollow',r[9]==null?solving:`${r[9].toFixed(2)}<small>s</small>`],
+    ['tFollow (Carrot)',r[13]==null?'—':`${r[13].toFixed(2)}<small>s</small>`],
+    ['xState (Carrot)',r[14]==null?'—':
+      ['lead','cruise','e2eCruise','e2eStop','e2ePrepare','e2eStopped'][r[14]]||r[14]],
     ['갭',r[8]||'—'],
     ['정지 판단',stopLabel],
     ['제동 하한',(flags&32)?`<span style="color:${css('--bad')}">닿음</span>`:'—'],
