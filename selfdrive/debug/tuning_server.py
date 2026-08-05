@@ -306,8 +306,11 @@ class State:
           'blindspot': [bool(cs.leftBlindspot), bool(cs.rightBlindspot)],
           'aTarget': round(sm['longitudinalPlan'].aTarget, 2),
           # What is actually running, not what the parameter says -- the parameter is read
-          # once at startup, so the two disagree between a change and the next restart.
-          'planner': str(sm['longitudinalPlan'].plannerSource),
+          # once at startup, so the two disagree between a change and the next restart. None
+          # when plannerd has not published yet: the enum's zero is 'stock', and reporting that
+          # for "no data" would be the same misleading answer the parameter already gives.
+          'planner': (str(sm['longitudinalPlan'].plannerSource)
+                      if sm.seen['longitudinalPlan'] else None),
           'lead': {
             'status': bool(lead.status),
             'source': ('R' if lead.radar else 'V') if lead.status else None,
