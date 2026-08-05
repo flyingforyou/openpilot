@@ -305,6 +305,9 @@ class State:
           'gap': int(cs.cruiseState.gapAdjust),
           'blindspot': [bool(cs.leftBlindspot), bool(cs.rightBlindspot)],
           'aTarget': round(sm['longitudinalPlan'].aTarget, 2),
+          # What is actually running, not what the parameter says -- the parameter is read
+          # once at startup, so the two disagree between a change and the next restart.
+          'planner': str(sm['longitudinalPlan'].plannerSource),
           'lead': {
             'status': bool(lead.status),
             'source': ('R' if lead.radar else 'V') if lead.status else None,
@@ -798,16 +801,23 @@ async function poll(){
   }catch(e){$('conn').textContent='디바이스에 연결할 수 없습니다';}
 }
 
-let cfg={}, carrotCfg={}, staged={}, carrotActive=false;
+let cfg={}, carrotCfg={}, staged={}, carrotActive=false, livePlanner=null;
 
 function renderSettings(){
   renderInto($('settings'), cfg);
   renderInto($('carrotSettings'), carrotCfg);
   // These only take effect when carrot's planner is the one running, and that is decided at
   // startup -- so say so rather than letting them look live when they are not.
-  $('carrotState').textContent = carrotActive
-    ? '· 사용 중'
-    : '· 꺼져 있음 (위 "CarrotPilot 종방향"을 켜고 재시작해야 아래 값이 적용됩니다)';
+  // livePlanner is what plannerd actually published; carrotActive is only what the parameter
+  // says. They differ between changing the toggle and restarting, which is exactly when a
+  // misleading label would cost the most.
+  if(livePlanner === 'carrot')      $('carrotState').textContent = '· 사용 중 (plannerd 확인됨)';
+  else if(livePlanner === 'stock')  $('carrotState').textContent = carrotActive
+      ? '· 켜져 있지만 아직 기존 플래너가 돌고 있습니다 — 재시작 필요'
+      : '· 꺼져 있음 (기존 플래너)';
+  else                              $('carrotState').textContent = carrotActive
+      ? '· 켜짐 (주행 시작하면 확인됩니다)'
+      : '· 꺼져 있음';
 }
 
 function renderInto(box, table){
@@ -936,8 +946,13 @@ async function tick(){
   try{
     const s=await(await fetch('/api/state')).json();
     const stateTxt=s.connected?(s.onroad?'주행 중 · onroad':'정차 · offroad'):'openpilot 대기 중';
+    // Which planner plannerd actually published, straight from longitudinalPlan. Shown up top
+    // because it is the one thing about a drive you cannot recover afterwards by guessing.
+    if(s.planner && s.planner !== livePlanner){ livePlanner=s.planner; renderSettings(); }
+    const plannerTxt = s.planner === 'carrot' ? ' · 종방향 CarrotPilot'
+                     : s.planner === 'stock'  ? ' · 종방향 기존' : '';
     document.getElementById('sub').textContent=
-      s.commit?`${stateTxt} · commit ${s.commit}`:stateTxt;
+      (s.commit?`${stateTxt} · commit ${s.commit}`:stateTxt) + plannerTxt;
     const e=document.getElementById('p-eng');
     e.textContent=s.engaged?'engaged':'disengaged';e.className='pill'+(s.engaged?' on':'');
     const L=s.lead||{},l=document.getElementById('p-lead');
@@ -1459,7 +1474,8 @@ function show(d){
     $('msg').textContent = `${d.rows.length}프레임 기록값 표시됨 · 지금 코드로 다시 푸는 중…`;
   } else {
     $('chartTitle').textContent =
-      `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''}) · 푸는 데 ${d.solveSec}초`;
+      `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''})`
+      + ` · 기록 당시 ${d.recordedPlanner==='carrot'?'CarrotPilot':'기존 플래너'} · 푸는 데 ${d.solveSec}초`;
     const hit=d.rows.filter(r=>r[7]&32).length;
     const ceilHit=d.rows.filter(r=>r[7]&256).length;
     const stopFrames=d.rows.filter(r=>(r[7]&64) && !(r[7]&128)).length;
@@ -1639,7 +1655,8 @@ function readout(r){
   $('read').innerHTML=[
     ['시각',`${r[0].toFixed(1)}<small>s</small>`],
     ['순정 실제',`${(r[1]*MPH).toFixed(1)}<small>mph/s</small>`],
-    ['당시 계획',`${(r[2]*MPH).toFixed(1)}<small>mph/s</small>`],
+    [`당시 계획${DATA&&DATA.recordedPlanner==='carrot'?' (Carrot)':''}`,
+      `${(r[2]*MPH).toFixed(1)}<small>mph/s</small>`],
     ['지금 코드 (MPC)',r[3]==null?solving:
       `<span style="color:${css('--radar')}">${(r[3]*MPH).toFixed(1)}<small>mph/s</small></span>`],
     ['지금 코드 (Experimental)',r[4]==null?solving:

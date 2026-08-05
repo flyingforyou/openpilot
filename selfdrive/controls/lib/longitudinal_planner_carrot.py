@@ -336,6 +336,7 @@ class _CarrotLongitudinalPlannerImpl:
 
     longitudinalPlan.hasLead = sm['radarState'].leadOne.status
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
+    longitudinalPlan.plannerSource = 'carrot'
     longitudinalPlan.fcw = self.fcw
 
     longitudinalPlan.aTarget = float(self.output_a_target)

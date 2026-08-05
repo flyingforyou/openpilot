@@ -253,6 +253,7 @@ class LongitudinalPlanner:
 
     longitudinalPlan.hasLead = sm['radarState'].leadOne.status
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
+    longitudinalPlan.plannerSource = 'stock'
     longitudinalPlan.fcw = self.fcw
 
     longitudinalPlan.aTarget = float(self.output_a_target)

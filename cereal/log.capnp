@@ -1283,6 +1283,16 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   myDrivingMode @47: Int32;       # eco / safe / normal / high
   events @48 :List(OnroadEvent);  # carrot raises its own alerts from the planner
 
+  # Which planner produced this. Recorded rather than inferred: the parameter that chooses is
+  # read once at startup, so a log tells you nothing about which one actually ran unless the
+  # plan itself says. /shadow needs this to know what the recorded line is being compared to.
+  plannerSource @49 :PlannerSource;
+
+  enum PlannerSource {
+    stock @0;
+    carrot @1;
+  }
+
 
   solverExecutionTime @35 :Float32;
 

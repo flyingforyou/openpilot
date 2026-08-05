@@ -75,7 +75,7 @@ def extract(route: str, seg: int) -> list[dict]:
   cur: dict = {'vEgo': 0.0, 'aEgo': 0.0, 'vCruise': 0.0, 'gap': 0, 'aTarget': 0.0,
                'brake': False, 'gas': False, 'eng': False, 'lead': None,
                'e2eAccel': None, 'e2eStop': False, 'stockMin': None, 'stockMax': None,
-               'standstill': False}
+               'standstill': False, 'plannerSource': 'stock'}
   t0 = None
   next_t = 0.0
   frames: list[dict] = []
@@ -118,6 +118,9 @@ def extract(route: str, seg: int) -> list[dict]:
       cur['stockMax'] = cs.stockAccelMax if cs.stockAccelMax < 5.43 else None
     elif w == 'longitudinalPlan':
       cur['aTarget'] = evt.longitudinalPlan.aTarget
+      # Which planner recorded that aTarget. Without it the grey line is unlabelled and the
+      # comparison silently changes meaning between drives.
+      cur['plannerSource'] = str(evt.longitudinalPlan.plannerSource)
     elif w == 'radarState':
       ld = evt.radarState.leadOne
       cur['lead'] = {
@@ -145,6 +148,7 @@ def extract(route: str, seg: int) -> list[dict]:
         'lead': ld, 'e2eAccel': cur['e2eAccel'], 'e2eStop': cur['e2eStop'],
         'stockMin': cur['stockMin'], 'stockMax': cur['stockMax'],
         'standstill': cur['standstill'],
+        'plannerSource': cur['plannerSource'],
         'flags': ((F_LEAD if ld else 0) | (F_RADAR if ld and ld['radar'] else 0)
                   | (F_ENG if cur['eng'] else 0) | (F_BRAKE if cur['brake'] else 0)
                   | (F_GAS if cur['gas'] else 0)),
@@ -504,6 +508,7 @@ class ShadowReplay:
       with self._lock:
         if self._state.get('status') == 'running':   # a newer request has not already superseded this one
           self._state = {'status': 'partial', 'route': route, 'seg': seg, 'rows': partial_rows,
+                          'recordedPlanner': frames[0].get('plannerSource', 'stock') if frames else 'stock',
                           'accelMin': accel_min if accel_min is not None else p_floor,
                           'accelMinSrc': p_floor_src}
 
@@ -543,6 +548,9 @@ class ShadowReplay:
           'accelMin': solved['accelMin'], 'accelMinSrc': solved['accelMinSrc'],
           'solveSec': solved['solveSec'],
           'hasCarrot': bool(carrot),
+          # What produced the recorded (grey) line, so the page can name it rather than
+          # implying it is always the stock planner.
+          'recordedPlanner': frames[0].get('plannerSource', 'stock') if frames else 'stock',
           'rows': rows,
         }
     except Exception as e:                                  # noqa: BLE001 - surfaced to the page
