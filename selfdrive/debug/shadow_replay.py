@@ -382,6 +382,29 @@ class ShadowReplay:
       frames = extract(route, seg)
       if not frames:
         raise ValueError('세그먼트에 데이터가 없습니다')
+      # aEgo/aTarget/vEgo are already in the log -- extract() is a decompress and a capnp parse,
+      # not a solve, and it costs a small fraction of what resolve()'s ~1200 acados calls do. The
+      # video and the recorded lines can be on screen while the re-solve is still running instead
+      # of waiting behind it, so publish them the moment they're ready.
+      partial_rows = []
+      for f in frames:
+        ld = f['lead']
+        partial_rows.append([
+          f['t'], round(f['aEgo'], 3), round(f['aTarget'], 3), None, None,
+          round(f['vEgo'], 2), round(ld['dRel'], 1) if ld else None, f['flags'],
+          f['gap'], None,
+          round(f['stockMin'], 3) if f['stockMin'] is not None else None,
+          round(f['stockMax'], 3) if f['stockMax'] is not None else None,
+        ])
+      # car_floor is a lookup, not a solve -- cheap enough to afford here so the chart's scale and
+      # reference line are right from the first paint instead of jumping when 'done' replaces it.
+      p_floor, p_floor_src = car_floor(frames[0].get('fingerprint') if frames else None)
+      with self._lock:
+        if self._state.get('status') == 'running':   # a newer request has not already superseded this one
+          self._state = {'status': 'partial', 'route': route, 'seg': seg, 'rows': partial_rows,
+                          'accelMin': accel_min if accel_min is not None else p_floor,
+                          'accelMinSrc': p_floor_src}
+
       solved = resolve(frames, accel_min)
       rows = []
       for f, s in zip(frames, solved['rows'], strict=False):

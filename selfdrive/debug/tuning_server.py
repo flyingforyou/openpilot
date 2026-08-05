@@ -1278,6 +1278,7 @@ $('amin').onchange=()=>solve();
 async function check(){
   const d=await (await fetch('/api/shadow')).json();
   if(d.status==='running') return;
+  if(d.status==='partial'){ show(d); return; }        // still solving -- keep polling
   clearInterval(poll); poll=null; $('run').disabled=false;
   if(d.status==='error'){ $('msg').className='msg err'; $('msg').textContent=d.error; SOLVED=''; return; }
   if(d.status==='done'){ $('msg').className='msg'; show(d); }
@@ -1286,16 +1287,28 @@ async function check(){
 const video=()=>document.getElementById('v');
 
 function show(d){
-  DATA=d; vt=0; VOFF=0;
-  $('chartTitle').textContent =
-    `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''}) · 푸는 데 ${d.solveSec}초`;
-  const hit=d.rows.filter(r=>r[7]&32).length;
-  const ceilHit=d.rows.filter(r=>r[7]&256).length;
-  const stopFrames=d.rows.filter(r=>(r[7]&64) && !(r[7]&128)).length;
-  $('msg').textContent = `${d.rows.length}프레임, 제동 하한 ${hit}개 (${(hit/20).toFixed(1)}초) · 가속 상한 ${ceilHit}개 (${(ceilHit/20).toFixed(1)}초)`
-    + (stopFrames ? ` · Experimental 모드만 정지를 원한 프레임 ${stopFrames}개 (${(stopFrames/20).toFixed(1)}초)` : '');
+  // 같은 구간의 두 번째 그림(partial -> done)인지 확인한다. 맞으면 재생 위치를 그대로 두고
+  // 선만 마저 그린다 -- 계산이 끝났다고 보던 위치가 처음으로 튀면 안 된다.
+  const fresh = !DATA || DATA.route!==d.route || DATA.seg!==d.seg;
+  DATA=d;
+  if(fresh){ vt=0; VOFF=0; }
 
-  // 지금 코드(MPC)가 순정보다 가장 많이 더 감속을 원한 순간
+  if(d.status==='partial'){
+    $('chartTitle').textContent =
+      `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''}) · 다시 푸는 중…`;
+    $('msg').textContent = `${d.rows.length}프레임 기록값 표시됨 · 지금 코드로 다시 푸는 중…`;
+  } else {
+    $('chartTitle').textContent =
+      `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''}) · 푸는 데 ${d.solveSec}초`;
+    const hit=d.rows.filter(r=>r[7]&32).length;
+    const ceilHit=d.rows.filter(r=>r[7]&256).length;
+    const stopFrames=d.rows.filter(r=>(r[7]&64) && !(r[7]&128)).length;
+    $('msg').textContent = `${d.rows.length}프레임, 제동 하한 ${hit}개 (${(hit/20).toFixed(1)}초) · 가속 상한 ${ceilHit}개 (${(ceilHit/20).toFixed(1)}초)`
+      + (stopFrames ? ` · Experimental 모드만 정지를 원한 프레임 ${stopFrames}개 (${(stopFrames/20).toFixed(1)}초)` : '');
+  }
+
+  // 지금 코드(MPC)가 순정보다 가장 많이 더 감속을 원한 순간 -- 재계산 값이 아직 없는 프레임은
+  // (null-1) 이 NaN 이 되어 비교에서 자연히 걸러진다.
   let best=0; worstT=null;
   for(const r of d.rows){ const g=r[3]-r[1]; if(g<best){best=g; worstT=r[0];} }
 
@@ -1305,7 +1318,7 @@ function show(d){
   for(const r of d.rows){ if((r[7]&64) && !(r[7]&128)){ worstStopT=r[0]; break; } }
   $('worstStop').disabled = worstStopT==null;
 
-  mountVideo(d.route, d.seg);
+  if(fresh) mountVideo(d.route, d.seg);
   draw();
 }
 
@@ -1413,9 +1426,15 @@ function draw(){
   });
   g.stroke();
 
+  // col 3/4 (재계산 값) 는 재계산이 끝나기 전에는 null -- 그 프레임에서 선을 끊는다. 0 으로
+  // 읽으면 계산 중인 구간이 실선으로 이어져 이미 다 푼 것처럼 보인다.
   for(const [col,color,lw] of [[1,'#F5B942',1.8],[2,'#8A97A6',1.2],[3,'#5AC8FA',1.8],[4,'#B58AFF',1.6]]){
-    g.strokeStyle=color; g.lineWidth=lw; g.beginPath();
-    rows.forEach((r,i)=>{ const px=x(r[0]),py=y(r[col]); i?g.lineTo(px,py):g.moveTo(px,py); });
+    g.strokeStyle=color; g.lineWidth=lw; g.beginPath(); let pen=false;
+    rows.forEach(r=>{
+      if(r[col]==null){ pen=false; return; }
+      const px=x(r[0]),py=y(r[col]);
+      pen?g.lineTo(px,py):g.moveTo(px,py); pen=true;
+    });
     g.stroke();
   }
 
@@ -1454,17 +1473,22 @@ function readout(r){
   let stopLabel='—';
   if(stopExp && !stopMpc) stopLabel=`<span style="color:#B58AFF">모델만 정지 원함</span>`;
   else if(stopMpc) stopLabel=`<span style="color:${css('--bad')}">정지</span>`;
+  // r[3]/r[4]/r[9] (재계산 값) 는 재계산이 끝나기 전에는 null -- 이미 기록된 값(1,2)은 즉시
+  // 나오지만 이 셋은 아직 없다는 뜻이라, 0 으로 잘못 읽지 않도록 계산 중임을 그대로 보여준다.
+  const solving = '<span style="opacity:.5">계산 중…</span>';
   $('read').innerHTML=[
     ['시각',`${r[0].toFixed(1)}<small>s</small>`],
     ['순정 실제',`${(r[1]*MPH).toFixed(1)}<small>mph/s</small>`],
     ['당시 계획',`${(r[2]*MPH).toFixed(1)}<small>mph/s</small>`],
-    ['지금 코드 (MPC)',`<span style="color:${css('--radar')}">${(r[3]*MPH).toFixed(1)}<small>mph/s</small></span>`],
-    ['지금 코드 (Experimental)',`<span style="color:#B58AFF">${(r[4]*MPH).toFixed(1)}<small>mph/s</small></span>`],
+    ['지금 코드 (MPC)',r[3]==null?solving:
+      `<span style="color:${css('--radar')}">${(r[3]*MPH).toFixed(1)}<small>mph/s</small></span>`],
+    ['지금 코드 (Experimental)',r[4]==null?solving:
+      `<span style="color:#B58AFF">${(r[4]*MPH).toFixed(1)}<small>mph/s</small></span>`],
     ['순정 커맨드 밴드',r[10]==null?'침묵':
       `<span style="color:#FF9F4A">${(r[10]*MPH).toFixed(1)} … ${(r[11]*MPH).toFixed(1)}<small>mph/s</small></span>`],
     ['속도',`${(r[5]*MPH).toFixed(0)}<small>mph</small>`],
     ['리드',r[6]==null?'—':`${(r[6]*3.28084).toFixed(0)}<small>ft</small>`],
-    ['tFollow',`${r[9].toFixed(2)}<small>s</small>`],
+    ['tFollow',r[9]==null?solving:`${r[9].toFixed(2)}<small>s</small>`],
     ['갭',r[8]||'—'],
     ['정지 판단',stopLabel],
     ['제동 하한',(flags&32)?`<span style="color:${css('--bad')}">닿음</span>`:'—'],
