@@ -174,10 +174,8 @@ class _CarrotLongitudinalPlannerImpl:
     self.mpc.mode = carrot.mode
     v_cruise = self.v_cruise_kph * CV.KPH_TO_MS
 
-    vCluRatio = sm['carState'].vCluRatio
-    if vCluRatio > 0.5:
-      self.vCluRatio = vCluRatio
-      v_cruise *= vCluRatio
+    # vCluRatio scales cruise speed to the cluster's own display rounding. This car does not
+    # report it, so v_cruise is used as given -- same as the ratio being 1.0 upstream.
 
     v_cruise_initialized = sm['carState'].vCruise != V_CRUISE_UNSET
 
