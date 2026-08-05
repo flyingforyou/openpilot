@@ -251,6 +251,7 @@ SConscript([
   'selfdrive/pandad/SConscript',
   'selfdrive/controls/lib/lateral_mpc_lib/SConscript',
   'selfdrive/controls/lib/longitudinal_mpc_lib/SConscript',
+  'selfdrive/controls/lib/longitudinal_mpc_carrot/SConscript',
   'selfdrive/locationd/SConscript',
   'selfdrive/modeld/SConscript',
   'selfdrive/ui/SConscript',

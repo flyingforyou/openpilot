@@ -1265,6 +1265,18 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   allowThrottle @38: Bool;
   allowBrake @39: Bool;
 
+  # CarrotPilot's longitudinal planner publishes these; field numbers match its own schema so a
+  # log from either tree reads the same way. Zero on the stock planner, which never sets them.
+  xState @40: Int32;              # lead / cruise / e2eCruise / e2eStop / e2ePrepare / e2eStopped
+  trafficState @41: Int32;        # carrot's own traffic-light state, off without the navi service
+  vTargetNow @42: Float32;
+  cruiseTarget @43: Float32;
+  jTargetNow @44: Float32;
+  tFollow @45: Float32;           # the follow time actually solved with, after all adjustments
+  desiredDistance @46: Float32;
+  myDrivingMode @47: Int32;       # eco / safe / normal / high
+  events @48 :List(OnroadEvent);  # carrot raises its own alerts from the planner
+
 
   solverExecutionTime @35 :Float32;
 
