@@ -33,7 +33,7 @@ SCRATCH = '/data/tmp/shadow'
 # The handful of Tesla ADAS/map messages the /shadow page's "풀기" table decodes alongside the
 # usual planner columns. Names are the DBC message names in tesla_can.dbc.
 ADAS_DBC = 'tesla_can'
-ADAS_ADDRS = (0x3E8, 0x3C8, 0x238, 0x2C8, 0x2E8, 0x2D8, 0x2B8)
+ADAS_ADDRS = (0x3E8, 0x3C8, 0x238, 0x2C8, 0x2E8, 0x2D8, 0x2B8, 0x399, 0x2F8)
 
 # UI_driverAssistRoadSign (0x238) multiplexes unrelated map data onto the same bits via
 # UI_roadSign -- decoding every signal unconditionally (like the other 6 messages) would read
@@ -140,7 +140,7 @@ def extract(route: str, seg: int) -> list[dict]:
   cur: dict = {'vEgo': 0.0, 'aEgo': 0.0, 'vCruise': 0.0, 'gap': 0, 'aTarget': 0.0,
                'brake': False, 'gas': False, 'eng': False, 'lead': None,
                'e2eAccel': None, 'e2eStop': False, 'stockMin': None, 'stockMax': None,
-               'standstill': False, 'plannerSource': 'stock'}
+               'standstill': False, 'plannerSource': 'stock', 'cruiseEnabled': False}
   t0 = None
   next_t = 0.0
   frames: list[dict] = []
@@ -178,6 +178,7 @@ def extract(route: str, seg: int) -> list[dict]:
       cs = evt.carState
       cur['vEgo'], cur['aEgo'] = cs.vEgo, cs.aEgo
       cur['vCruise'] = cs.cruiseState.speed
+      cur['cruiseEnabled'] = bool(cs.cruiseState.enabled)
       cur['gap'] = int(cs.cruiseState.gapAdjust)
       cur['brake'], cur['gas'] = bool(cs.brakePressed), bool(cs.gasPressed)
       cur['standstill'] = bool(cs.standstill)
@@ -218,6 +219,7 @@ def extract(route: str, seg: int) -> list[dict]:
         'stockMin': cur['stockMin'], 'stockMax': cur['stockMax'],
         'standstill': cur['standstill'],
         'plannerSource': cur['plannerSource'],
+        'cruiseEnabled': cur['cruiseEnabled'],
         'flags': ((F_LEAD if ld else 0) | (F_RADAR if ld and ld['radar'] else 0)
                   | (F_ENG if cur['eng'] else 0) | (F_BRAKE if cur['brake'] else 0)
                   | (F_GAS if cur['gas'] else 0)),
@@ -461,7 +463,8 @@ class ShadowReplay:
       # re-solve is still running instead of waiting behind it, so publish them the moment
       # they're ready. Columns 3/4/9 are the retired stock re-solve's (aNew, aExp, tFollow) --
       # left in the row shape rather than renumbered, so they stay None forever now. Column 15
-      # is the ADAS/map signal snapshot (see _AdasDecoder) -- available immediately, no re-solve.
+      # is the ADAS/map signal snapshot (see _AdasDecoder), 16 is cruiseState.speed (m/s), 17 is
+      # cruiseState.enabled -- all available immediately, no re-solve.
       planner_source = frames[0].get('plannerSource', 'stock') if frames else 'stock'
       floor, floor_src = car_floor(frames[0].get('fingerprint') if frames else None)
       rows = []
@@ -475,6 +478,7 @@ class ShadowReplay:
           round(f['stockMax'], 3) if f['stockMax'] is not None else None,
           None, None, None,
           f.get('adas', {}),
+          round(f['vCruise'], 2), bool(f.get('cruiseEnabled')),
         ])
       with self._lock:
         if self._state.get('status') == 'running':   # a newer request has not already superseded this one
