@@ -250,114 +250,6 @@ def car_floor(fingerprint: str | None) -> tuple[float, str]:
   return ACCEL_MIN, ('ISO 기본값' if fingerprint else 'ISO 기본값 (차종 미상)')
 
 
-def resolve(frames: list[dict], accel_min: float | None = None) -> dict:
-  """Solve the MPC again over the same inputs, with the code as it stands now.
-
-  State is re-seeded from the log every frame rather than integrated forward. Letting it run
-  open-loop would drift away from the recorded situation within a second or two and the two
-  lines would stop being about the same moment.
-  """
-  # Imported here, not at module scope: this pulls in the compiled acados solver, and the tuning
-  # server has to start on machines and states where that is not importable.
-  from openpilot.common.realtime import DT_MDL
-  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
-    LongitudinalMpc, T_IDXS as T_IDXS_MPC)
-  from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
-  from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
-  from openpilot.selfdrive.modeld.constants import ModelConstants
-
-  fingerprint = frames[0].get('fingerprint') if frames else None
-  CP = car_params(fingerprint)
-  if accel_min is None:
-    floor = float(CP.minAccel) if CP is not None and CP.minAccel < 0 else -3.5
-    floor_src = f'{fingerprint} 포트값' if CP is not None and CP.minAccel < 0 else 'ISO 기본값'
-  else:
-    floor, floor_src = float(accel_min), '직접 지정'
-  # Matches plannerd's own call: get_accel_from_plan(..., action_t=CP.longitudinalActuatorDelay
-  # + DT_MDL, vEgoStopping=CP.vEgoStopping). Falling back to openpilot's stock defaults if the
-  # car is unknown, rather than get_accel_from_plan's own (unrelated) 0.05/DT_MDL defaults.
-  action_t = (CP.longitudinalActuatorDelay if CP is not None else 0.2) + DT_MDL
-  v_ego_stopping = CP.vEgoStopping if CP is not None else 0.5
-  ctrl_t = ModelConstants.T_IDXS[:CONTROL_N]
-
-  mpc = LongitudinalMpc(accel_min=floor)
-  # plannerd's refresh_tuning(): the gap profile, rise rate and stop distance all live in params,
-  # and they feed t_follow, which feeds the cruise obstacle -- so they change the plan even with
-  # no lead in sight. Leaving them at the class defaults made the recomputed line disagree with
-  # the recorded one on a car whose GapProfile is not 0.
-  from openpilot.common.params import Params
-  _p = Params()
-  mpc.set_tuning(int(_p.get('GapProfile', return_default=True) or 0),
-                 int(_p.get('TFollowRiseRatePct', return_default=True) or 35) / 100.0,
-                 int(_p.get('StopDistanceCm', return_default=True) or 600) / 100.0)
-  personality = int(_p.get('LongitudinalPersonality', return_default=True) or 1)
-  # Tesla remembers the last real gap: the knob reads 0 whenever the stalk has not reported one
-  # yet, and plannerd substitutes rather than falling through to the personality default.
-  last_gap = int(_p.get('TeslaLastGapAdjust', return_default=True) or 0)
-
-  out = []
-  # plannerd rate-limits the clip itself, not just the output, so it has to carry across frames
-  # exactly as LongitudinalPlanner.prev_accel_clip does.
-  prev_accel_clip = [floor, 2.0]
-  t_start = time.monotonic()
-  for f in frames:
-    # The MPC alone is not the plan. plannerd re-weights every frame and then clips its output
-    # against a speed-dependent, rate-limited ceiling; skipping that made the recomputed line
-    # read about twice the recorded one wherever the car sat still with a cruise speed set.
-    # plannerd: prev_accel_constraint = not (reset_state or standstill), where reset_state means
-    # long control is off -- which it is whenever openpilot is not driving. Keying this off
-    # standstill alone left the change cost switched on through every disengaged stretch, and the
-    # solver answered a different question than the one the drive actually asked.
-    reset_state = not bool(f['flags'] & F_ENG)
-    # Resolved first: the gap knob sets the change cost and the accel ceiling as well as tFollow.
-    gap_adjust = f['gap'] or last_gap
-    mpc.set_weights(prev_accel_constraint=not (reset_state or f.get('standstill', False)),
-                    personality=personality, gap_adjust=gap_adjust)
-    mpc.set_cur_state(f['vEgo'], f['aEgo'])
-    mpc.update(_radarstate(f['lead']), max(f['vCruise'], 1.0),
-               personality=personality, gap_adjust=gap_adjust)
-    v_traj = np.interp(ctrl_t, T_IDXS_MPC, mpc.v_solution)
-    a_traj = np.interp(ctrl_t, T_IDXS_MPC, mpc.a_solution)
-    a_mpc, stop_mpc = get_accel_from_plan(v_traj, a_traj, ctrl_t, action_t=action_t, vEgoStopping=v_ego_stopping)
-
-    # The Experimental Mode blend from longitudinal_planner.py, applied here regardless of
-    # whether the drive actually had openpilotLongitudinalControl or the toggle on: the model's
-    # own action.desiredAcceleration/shouldStop were computed unconditionally, so this shows
-    # what the same driving model wanted to do, mixed in the same way plannerd would mix it.
-    a_e2e = f.get('e2eAccel')
-    stop_e2e = bool(f.get('e2eStop'))
-    if a_e2e is not None:
-      a_exp = min(a_e2e, a_mpc)
-      stop_exp = stop_e2e or stop_mpc
-    else:
-      a_exp, stop_exp = a_mpc, stop_mpc
-
-    # The ceiling tightens with speed and both ends ramp at 0.05 m/s^2 per frame, so it depends
-    # on its own previous value -- carried across frames the way plannerd carries it.
-    accel_clip = [floor, float(get_max_accel(f['vEgo'], gap_adjust))]
-    for i in range(2):
-      accel_clip[i] = float(np.clip(accel_clip[i], prev_accel_clip[i] - 0.05, prev_accel_clip[i] + 0.05))
-    ceil_hit = a_mpc >= accel_clip[1] - 1e-3
-    a_mpc = float(np.clip(a_mpc, accel_clip[0], accel_clip[1]))
-    a_exp = float(np.clip(a_exp, accel_clip[0], accel_clip[1]))
-    prev_accel_clip = accel_clip
-
-    out.append({
-      'aNew': round(float(a_mpc), 3),
-      'aExp': round(float(a_exp), 3),
-      'aE2e': round(float(a_e2e), 3) if a_e2e is not None else None,
-      'stopMpc': bool(stop_mpc), 'stopE2e': stop_e2e, 'stopExp': bool(stop_exp),
-      # a_solution[0] is the measured state we just seeded, so the constraint only shows in [1:]
-      'aFloorHit': bool(np.min(mpc.a_solution[1:]) <= floor + 1e-3),
-      'aCeilHit': bool(ceil_hit),
-      'accelCeil': round(float(accel_clip[1]), 3),
-      'tFollow': round(float(mpc.t_follow), 3),
-    })
-  return {'rows': out, 'accelMin': floor, 'accelMinSrc': floor_src,
-          'solveSec': round(time.monotonic() - t_start, 1)}
-
-
-
 class _ReplaySM:
   """The parts of SubMaster a planner touches, backed by log messages instead of sockets."""
 
@@ -471,35 +363,40 @@ class ShadowReplay:
     with self._lock:
       return dict(self._state)
 
-  def start(self, route: str, seg: int, accel_min: float | None, solve: bool = True) -> dict:
+  def start(self, route: str, seg: int, solve: bool = True) -> dict:
     """solve=False stops after extract, which is the cheap half.
 
-    Reading the log costs a few seconds; re-solving it costs four times that. Selecting a segment
-    only needs what the drive already recorded, so it asks for that and stops.
+    Reading the log costs a few seconds; CarrotPilot's re-solve costs several times that --
+    it is the only re-solve this page does now, since the stock planner it used to also replay
+    was retired once nothing in the car ran it anymore. Selecting a segment only needs what the
+    drive already recorded, so it asks for that and stops.
     """
     with self._lock:
       if self._thread is not None and self._thread.is_alive():
         return {'error': '이미 실행 중입니다', **self._state}
       if self._engaged():
         return {'error': '주행 중에는 실행하지 않습니다'}
-      self._state = {'status': 'running', 'route': route, 'seg': seg, 'accelMin': accel_min}
-      self._thread = threading.Thread(target=self._run, args=(route, seg, accel_min, solve), daemon=True)
+      self._state = {'status': 'running', 'route': route, 'seg': seg}
+      self._thread = threading.Thread(target=self._run, args=(route, seg, solve), daemon=True)
       self._thread.start()
       return dict(self._state)
 
-  def _run(self, route: str, seg: int, accel_min: float | None, solve: bool = True):
+  def _run(self, route: str, seg: int, solve: bool = True):
     try:
       frames = extract(route, seg)
       if not frames:
         raise ValueError('세그먼트에 데이터가 없습니다')
       # aEgo/aTarget/vEgo are already in the log -- extract() is a decompress and a capnp parse,
-      # not a solve, and it costs a small fraction of what resolve()'s ~1200 acados calls do. The
-      # video and the recorded lines can be on screen while the re-solve is still running instead
-      # of waiting behind it, so publish them the moment they're ready.
-      partial_rows = []
+      # not a solve. The video and the recorded lines can be on screen while CarrotPilot's
+      # re-solve is still running instead of waiting behind it, so publish them the moment
+      # they're ready. Columns 3/4/9 are the retired stock re-solve's (aNew, aExp, tFollow) --
+      # left in the row shape rather than renumbered, so they stay None forever now.
+      planner_source = frames[0].get('plannerSource', 'stock') if frames else 'stock'
+      floor, floor_src = car_floor(frames[0].get('fingerprint') if frames else None)
+      rows = []
       for f in frames:
         ld = f['lead']
-        partial_rows.append([
+        rows.append([
           f['t'], round(f['aEgo'], 3), round(f['aTarget'], 3), None, None,
           round(f['vEgo'], 2), round(ld['dRel'], 1) if ld else None, f['flags'],
           f['gap'], None,
@@ -507,65 +404,35 @@ class ShadowReplay:
           round(f['stockMax'], 3) if f['stockMax'] is not None else None,
           None, None, None,
         ])
-      # car_floor is a lookup, not a solve -- cheap enough to afford here so the chart's scale and
-      # reference line are right from the first paint instead of jumping when 'done' replaces it.
-      p_floor, p_floor_src = car_floor(frames[0].get('fingerprint') if frames else None)
       with self._lock:
         if self._state.get('status') == 'running':   # a newer request has not already superseded this one
-          self._state = {'status': 'partial', 'route': route, 'seg': seg, 'rows': partial_rows,
-                          'recordedPlanner': frames[0].get('plannerSource', 'stock') if frames else 'stock',
-                          'accelMin': accel_min if accel_min is not None else p_floor,
-                          'accelMinSrc': p_floor_src}
+          self._state = {'status': 'partial', 'route': route, 'seg': seg, 'rows': rows,
+                          'recordedPlanner': planner_source, 'accelMin': floor, 'accelMinSrc': floor_src}
 
       if not solve:
         with self._lock:
-          self._state = {'status': 'done', 'route': route, 'seg': seg, 'rows': partial_rows,
-                         'recordedPlanner': frames[0].get('plannerSource', 'stock') if frames else 'stock',
-                         'accelMin': accel_min if accel_min is not None else p_floor,
-                         'accelMinSrc': p_floor_src, 'solved': False, 'solveSec': 0.0,
-                         'hasCarrot': False}
+          self._state = {'status': 'done', 'route': route, 'seg': seg, 'rows': rows,
+                         'recordedPlanner': planner_source, 'accelMin': floor, 'accelMinSrc': floor_src,
+                         'solved': False, 'solveSec': 0.0, 'hasCarrot': False}
         return
 
-      solved = resolve(frames, accel_min)
+      t_start = time.monotonic()
       # CarrotPilot's planner over the same segment, if its port is built here. Optional on
       # purpose: the page is still useful without it, and a missing solver must not take the
       # whole replay down.
       carrot = resolve_carrot(route, seg)
       carrot_by_t = {c['t']: c for c in carrot} if carrot else {}
-      rows = []
-      for f, s in zip(frames, solved['rows'], strict=False):
-        ld = f['lead']
-        c = carrot_by_t.get(f['t'], {})
-        flags = (f['flags'] | (32 if s['aFloorHit'] else 0)
-                 | (64 if s['stopExp'] else 0) | (128 if s['stopMpc'] else 0)
-                 | (256 if s['aCeilHit'] else 0))
-        rows.append([
-          f['t'],
-          round(f['aEgo'], 3),          # 순정 ACC 실제
-          round(f['aTarget'], 3),       # 주행 당시 계획
-          s['aNew'],                    # 지금 코드, MPC 단독
-          s['aExp'],                    # 지금 코드 + Experimental Mode 블렌드
-          round(f['vEgo'], 2),
-          round(ld['dRel'], 1) if ld else None,
-          flags,
-          f['gap'],
-          s['tFollow'],
-          round(f['stockMin'], 3) if f['stockMin'] is not None else None,
-          round(f['stockMax'], 3) if f['stockMax'] is not None else None,
-          c.get('aCarrot'),                                    # 12
-          c.get('tFollowCarrot'),                              # 13
-          c.get('xState'),                                     # 14
-        ])
+      for row in rows:
+        c = carrot_by_t.get(row[0])
+        if c:
+          row[12], row[13], row[14] = c.get('aCarrot'), c.get('tFollowCarrot'), c.get('xState')
       with self._lock:
         self._state = {
           'status': 'done', 'route': route, 'seg': seg,
-          'accelMin': solved['accelMin'], 'accelMinSrc': solved['accelMinSrc'],
-          'solveSec': solved['solveSec'],
-          'solved': True,
-          'hasCarrot': bool(carrot),
-          # What produced the recorded (grey) line, so the page can name it rather than
-          # implying it is always the stock planner.
-          'recordedPlanner': frames[0].get('plannerSource', 'stock') if frames else 'stock',
+          'accelMin': floor, 'accelMinSrc': floor_src,
+          'solveSec': round(time.monotonic() - t_start, 1),
+          'solved': True, 'hasCarrot': bool(carrot),
+          'recordedPlanner': planner_source,
           'rows': rows,
         }
     except Exception as e:                                  # noqa: BLE001 - surfaced to the page

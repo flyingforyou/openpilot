@@ -6,44 +6,27 @@ import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
-from openpilot.selfdrive.controls.lib.curve_speed.curve_speed_controller import CurveSpeedController
-from openpilot.selfdrive.controls.lib.curve_speed.lateral_load_governor import LateralLoadGovernor
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
-# Ceiling on requested acceleration, by speed -- and, on Tesla, by the gap knob. Gap 7 keeps the
-# stock openpilot curve. Gap 1 is the factory ACC's own measured behaviour on this car: p95 of
-# achieved aEgo with the driver's feet off the pedals, over six drives, sampled at these same
-# breakpoints. The 40 m/s point is unchanged in both because no drive in the set reaches it.
-# This is a comfort curve, not a capability limit -- panda's envelope sits well above either.
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
-A_CRUISE_MAX_VALS_GAP1 = [1.7, 1.85, 1.2, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
-PARAM_REFRESH_FRAMES = int(0.5 / DT_MDL)  # params hit disk; don't read every frame
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
 
-def get_max_accel(v_ego, gap_adjust: int = 0):
-  """gap_adjust 1..7 blends between the assertive curve and the stock one; 0 (no gap signal
-  yet) keeps stock, so a car that never reports a gap behaves exactly as before."""
-  if gap_adjust in (0, 7) or not 1 <= gap_adjust <= 7:
-    vals = A_CRUISE_MAX_VALS
-  else:
-    w = (7 - gap_adjust) / 6.0          # 1 at gap 1, 0 at gap 7
-    vals = [a * w + b * (1 - w) for a, b in zip(A_CRUISE_MAX_VALS_GAP1, A_CRUISE_MAX_VALS, strict=True)]
-  return np.interp(v_ego, A_CRUISE_MAX_BP, vals)
+def get_max_accel(v_ego):
+  return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
 
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
@@ -65,41 +48,20 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
 class LongitudinalPlanner:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
-    # Ports that leave minAccel at 0 fall back to the ISO limit.
-    self.accel_min = CP.minAccel if CP.minAccel < 0 else ACCEL_MIN
-    self.mpc = LongitudinalMpc(dt=dt, accel_min=self.accel_min)
+    self.mpc = LongitudinalMpc(dt=dt)
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
-    self.curve = CurveSpeedController()     # feedforward curve-speed profile + backward pass
-    self.governor = LateralLoadGovernor()   # reactive lateral-load backstop + throttle-fade interlock
 
     self.a_desired = init_a
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
-    self.prev_accel_clip = [self.accel_min, ACCEL_MAX]
+    self.prev_accel_clip = [ACCEL_MIN, ACCEL_MAX]
     self.output_a_target = 0.0
     self.output_should_stop = False
 
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
-
-    # Tesla legacy gap setting doesn't reliably re-announce itself on every boot (may be a
-    # momentary request rather than a continuous status). Persist the last known value so a
-    # fresh boot uses it immediately instead of silently falling back to the personality tFollow.
-    self.params = Params()
-    self.tesla_last_gap_adjust = self.params.get("TeslaLastGapAdjust", return_default=True) if CP.brand == "tesla" else 0
-
-    self.frame = 0
-    self.refresh_tuning()
-
-  def refresh_tuning(self) -> None:
-    """Only called while disengaged, so a change made mid-drive lands at the next engage
-    rather than shifting the target distance under the car that is already following."""
-    gap_profile = int(self.params.get("GapProfile", return_default=True) or 0)
-    rise_pct = int(self.params.get("TFollowRiseRatePct", return_default=True) or 35)
-    stop_cm = int(self.params.get("StopDistanceCm", return_default=True) or 600)
-    self.mpc.set_tuning(gap_profile, rise_pct / 100.0, stop_cm / 100.0)
 
   @staticmethod
   def parse_model(model_msg):
@@ -132,10 +94,6 @@ class LongitudinalPlanner:
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
     v_cruise_initialized = sm['carState'].vCruise != V_CRUISE_UNSET
 
-    self.frame += 1
-    if not sm['selfdriveState'].enabled and self.frame % PARAM_REFRESH_FRAMES == 0:
-      self.refresh_tuning()
-
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
     force_slow_decel = sm['controlsState'].forceDecel
 
@@ -147,17 +105,7 @@ class LongitudinalPlanner:
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
-    # Resolved before the clip, because the ceiling rides the gap knob too.
-    gap_adjust = int(sm['carState'].cruiseState.gapAdjust)
-    if self.CP.brand == "tesla":
-      if gap_adjust != 0:
-        if gap_adjust != self.tesla_last_gap_adjust:
-          self.tesla_last_gap_adjust = gap_adjust
-          self.params.put_nonblocking("TeslaLastGapAdjust", gap_adjust)
-      else:
-        gap_adjust = self.tesla_last_gap_adjust
-
-    accel_clip = [self.accel_min, get_max_accel(v_ego, gap_adjust)]
+    accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
     steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
     accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
 
@@ -177,31 +125,12 @@ class LongitudinalPlanner:
       clipped_accel_coast_interp = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED*2], [accel_clip[1], clipped_accel_coast])
       accel_clip[1] = min(accel_clip[1], clipped_accel_coast_interp)
 
-    # Curve-aware longitudinal: the feedforward curve-speed profile, with the reactive lateral-load
-    # governor folded in as a tighter cap (whichever wants the lower speed). Always enabled; both
-    # return V_UNSET when they are not constraining, so this can only ever slow the car down.
-    long_enabled = sm['carControl'].enabled
-    long_override = sm['carControl'].cruiseControl.override
-    self.curve.update(sm, long_enabled, long_override, self.v_desired_filter.x, self.a_desired, v_cruise)
-    self.governor.update(sm, long_enabled, long_override, v_ego)
-
-    curve_v, curve_a = self.curve.output_v_target, self.curve.output_a_target
-    if self.governor.output_v_target < curve_v:
-      curve_v, curve_a = self.governor.output_v_target, min(curve_a, 0.0)
-    if curve_v < v_cruise:
-      v_cruise, self.a_desired = curve_v, curve_a
-
-    # Throttle-fade interlock: don't add throttle while the steering is near or at its lateral limit.
-    if self.a_desired > 0.0:
-      self.a_desired *= self.governor.throttle_scale()
-
     if force_slow_decel:
       v_cruise = 0.0
 
-    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality,
-                         gap_adjust=gap_adjust)
+    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
-    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality, gap_adjust=gap_adjust)
+    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -253,7 +182,6 @@ class LongitudinalPlanner:
 
     longitudinalPlan.hasLead = sm['radarState'].leadOne.status
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
-    longitudinalPlan.plannerSource = 'stock'
     longitudinalPlan.fcw = self.fcw
 
     longitudinalPlan.aTarget = float(self.output_a_target)

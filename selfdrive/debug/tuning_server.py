@@ -229,24 +229,6 @@ SETTINGS = {
             "짧으면 빨리 반응하고, 길면 오검출에 보수적입니다.",
     "options": [(300, "빠르게 0.3초"), (500, "표준 0.5초"), (800, "신중히 0.8초"), (1200, "매우 신중 1.2초")],
   },
-  "StopDistanceCm": {
-    "label": "정지 시 앞차 간격", "type": "int",
-    "help": "앞차 뒤에 멈출 때 남기는 거리입니다. 모든 속도의 추종 거리에 같은 값이 더해집니다.",
-    "options": [(450, "가깝게 4.5m"), (500, "조금 가깝게 5.0m"), (600, "표준 6.0m"),
-                (700, "여유 7.0m"), (800, "넓게 8.0m")],
-  },
-  "GapProfile": {
-    "label": "차간거리 프로파일", "type": "int",
-    "help": "스티어링 휠 Gap 1~7이 각각 몇 초 간격을 요구할지 정합니다.",
-    "options": [(0, "표준 0.80~1.75초"), (1, "가깝게 0.80~1.60초"),
-                (2, "멀게 0.95~1.90초"), (3, "넓게 0.80~1.90초")],
-  },
-  "TFollowRiseRatePct": {
-    "label": "Gap 확대 반영 속도", "type": "int",
-    "help": "Gap을 크게 바꿨을 때 목표 거리가 늘어나는 속도입니다. 빠르면 즉각적이지만 "
-            "감속이 급해질 수 있습니다. 줄일 때는 항상 즉시 반영됩니다.",
-    "options": [(10, "느리게 0.10초/초"), (35, "표준 0.35초/초"), (60, "빠르게 0.60초/초")],
-  },
   "RadarLeadHoldCm": {
     "label": "근거리 레이더 유지", "type": "int",
     "help": "비전 신뢰도가 잠깐 떨어져도 이 거리 안쪽이면 따라가던 레이더 트랙을 계속 씁니다. "
@@ -590,11 +572,9 @@ class Handler(BaseHTTPRequestHandler):
       route, seg = req.get('route'), req.get('seg')
       if not route or seg is None:
         return self._send(400, json.dumps({'error': '경로와 세그먼트를 지정하세요'}))
-      am = req.get('accelMin')
       # solve defaults true so an old client still gets what it expects; the page sends false
       # when it only wants what the drive recorded.
-      out = self.shadow.start(route, int(seg), float(am) if am not in (None, '') else None,
-                              solve=bool(req.get('solve', True)))
+      out = self.shadow.start(route, int(seg), solve=bool(req.get('solve', True)))
       return self._send(409 if 'error' in out else 200, json.dumps(out))
 
     if self.path.startswith('/api/replay'):
@@ -1381,9 +1361,6 @@ font-size:10px;text-align:center}
   <div class="pad">
     <span class="lbl">주행</span><select id="route"></select>
     <span class="lbl">세그먼트</span><select id="seg"></select>
-    <span class="lbl">제동 하한</span>
-    <input id="amin" size="6" title="이 차의 포트값이 들어갑니다. 고쳐 넣으면 그 값으로 풉니다">
-    <span class="lbl">m/s²</span>
     <button id="run">풀기</button>
   </div>
   <div class="msg" id="msg">주행 중에는 실행하지 않습니다. MPC 를 매 프레임 다시 풀기 때문에 60초 구간에 수 초 걸립니다.</div>
@@ -1396,18 +1373,14 @@ font-size:10px;text-align:center}
   <div class="legend">
     <span><i style="background:#F5B942"></i>순정 ACC 실제 (aEgo)</span>
     <span><i style="background:#8A97A6"></i>주행 당시 계획 (기록된 aTarget)</span>
-    <span><i style="background:#5AC8FA"></i>지금 코드 · MPC 단독</span>
-    <span><i style="background:#B58AFF"></i>지금 코드 · Experimental Mode 블렌드</span>
     <span><i style="background:#FF9F4A"></i>순정 ACC 커맨드 밴드 (bus2 직접 수신)</span>
-    <span><span class="sw" style="background:#FF6B5A;display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;opacity:.5"></span>제동 하한에 붙은 구간</span>
-    <span><span class="sw" style="background:#F5B942;display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;vertical-align:-1px;opacity:.45"></span>가속 상한에 붙은 구간</span>
-    <span><i style="background:#4ED88A"></i>CarrotPilot 플래너</span>
-    <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#B58AFF;margin-right:5px;vertical-align:1px"></span>모델만 정지 원함 (신호등·정지선 등)</span>
+    <span><i style="background:#4ED88A"></i>CarrotPilot 재계산</span>
+    <span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#4ED88A;margin-right:5px;vertical-align:1px"></span>CarrotPilot 이 정지를 결정한 순간 (e2eStop)</span>
   </div>
   <div class="pad" style="padding-top:0">
     <button id="play">▶ 재생</button>
-    <button id="worst" title="지금 코드와 순정이 가장 크게 갈린 순간">최대 격차로</button>
-    <button id="worstStop" disabled title="Experimental 블렌드에서만 정지를 원했던 첫 순간">모델 정지 순간으로</button>
+    <button id="worst" title="CarrotPilot과 순정이 가장 크게 갈린 순간">최대 격차로</button>
+    <button id="worstStop" disabled title="CarrotPilot이 정지를 결정한 첫 순간 (xState=e2eStop)">모델 정지 순간으로</button>
     <span class="lbl" id="tt" style="margin-left:auto;font-family:var(--m)">—</span>
   </div>
   <div class="read" id="read"></div>
@@ -1417,11 +1390,8 @@ font-size:10px;text-align:center}
   <h2>읽는 법</h2>
   <div class="note">
     노란 선과 회색 선은 <b>로그에 있는 그대로</b>라 코드를 고쳐도 움직이지 않습니다.
-    파란 선만 지금 소스로 다시 푼 결과이므로, 상수를 바꾸고 다시 돌렸을 때
-    <b>파란 선이 어떻게 달라지는지</b>가 그 변경의 효과입니다.
-    <br><br>
-    빨간 구간은 계획이 제동 하한에 닿아 <b>더 내려가지 못한</b> 구간입니다. 여기서 노란 선이
-    파란 선보다 아래에 있으면, openpilot 이 보수적이었던 것이 아니라 한계에 막힌 것입니다.
+    초록 선(CarrotPilot)만 지금 소스로 다시 푼 결과이므로, 상수를 바꾸고 다시 돌렸을 때
+    <b>초록 선이 어떻게 달라지는지</b>가 그 변경의 효과입니다.
     <br><br>
     상태는 매 프레임 로그값으로 다시 심습니다. 그대로 굴리면 1~2초 만에 실제 상황에서
     멀어져 같은 순간을 비교하는 의미가 사라지기 때문입니다.
@@ -1495,16 +1465,14 @@ async function loadSegs(){
   const r=$('route').value;
   const d=await (await fetch('/api/shadow?route='+encodeURIComponent(r))).json();
   $('seg').innerHTML=(d.segments||[]).map(s=>`<option>${s}</option>`).join('');
-  // 포트가 이 차에 주는 값을 그대로 채운다. 빈 칸이면 무엇과 비교하고 있는지 알 수 없다.
-  if(d.floor!=null){ $('amin').value=(+d.floor).toFixed(2); $('amin').title=d.floorSrc||''; }
   pickSeg();
 }
 function pickSeg(){
   if($('seg').value==='') return;
-  // Video only. Solving a segment costs about 17s on this device -- 3.4 decompressing and
-  // parsing the log, 4.8 re-solving the stock MPC over 1200 frames, 8.8 replaying it through
-  // carrot's planner, which reads the log a second time. Paying that on every dropdown change
-  // meant the page was unusable for picking a moment to look at. It runs when asked now.
+  // Video only. Solving a segment costs about 13s on this device -- 3.4 decompressing and
+  // parsing the log, 8.8 replaying it through carrot's planner, which reads the log a second
+  // time. Paying that on every dropdown change meant the page was unusable for picking a moment
+  // to look at. It runs when asked now.
   mountVideo($('route').value, +$('seg').value);
   DATA=null; SOLVED='';
   $('run').disabled=false;
@@ -1521,18 +1489,18 @@ let WANT_SOLVE=false;            // 이번 요청이 재계산까지 하는지
 // load(false) reads the log and draws what the drive recorded -- a few seconds. load(true) adds
 // the re-solve on top, which is the part that costs.
 async function load(doSolve){
-  const route=$('route').value, seg=$('seg').value, amin=$('amin').value.trim();
+  const route=$('route').value, seg=$('seg').value;
   if(!route || seg==='') return;
-  const key=`${route}/${seg}/${amin}/${doSolve?1:0}`;
+  const key=`${route}/${seg}/${doSolve?1:0}`;
   if(key===SOLVED) return;
   if(poll) return;               // 앞선 실행이 끝나기 전에는 겹쳐 쏘지 않는다
   SOLVED=key; WANT_SOLVE=doSolve;
   DATA=null;
   $('run').disabled=true; $('msg').className='msg';
-  $('msg').textContent = doSolve ? '지금 코드와 CarrotPilot 으로 푸는 중… (약 17초)'
+  $('msg').textContent = doSolve ? 'CarrotPilot 으로 푸는 중… (약 13초)'
                                  : '기록값 읽는 중… (약 4초)';
   const res=await fetch('/api/shadow',{method:'POST',
-    body:JSON.stringify({route, seg:+seg, accelMin:amin, solve:doSolve})});
+    body:JSON.stringify({route, seg:+seg, solve:doSolve})});
   const d=await res.json();
   if(d.error){
     $('msg').className='msg err'; $('msg').textContent=d.error;
@@ -1542,13 +1510,6 @@ async function load(doSolve){
   poll=setInterval(check,700);
 }
 $('run').onclick=()=>{ SOLVED=''; load(true); };
-$('amin').onchange=()=>{
-  // Changing the floor invalidates the answer on screen, but does not re-run it: same cost,
-  // same reason. Say the number moved and let the button do the work.
-  SOLVED='';
-  $('run').disabled=false;
-  if(DATA){ $('msg').className='msg'; $('msg').textContent='하한이 바뀌었습니다 — 다시 풀려면 "풀기"를 누르세요.'; }
-};
 async function check(){
   const d=await (await fetch('/api/shadow')).json();
   if(d.status==='running') return;
@@ -1585,24 +1546,21 @@ function show(d){
       + `"풀기"를 누르면 지금 코드와 CarrotPilot 선이 더해집니다 (약 13초).`;
   } else {
     $('chartTitle').textContent =
-      `결과 — ${d.route} 세그 ${d.seg} · 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''})`
+      `결과 — ${d.route} 세그 ${d.seg} · 제동 하한 ${(+d.accelMin).toFixed(2)} m/s² (${d.accelMinSrc||''})`
       + ` · 기록 당시 ${d.recordedPlanner==='carrot'?'CarrotPilot':'기존 플래너'} · 푸는 데 ${d.solveSec}초`;
-    const hit=d.rows.filter(r=>r[7]&32).length;
-    const ceilHit=d.rows.filter(r=>r[7]&256).length;
-    const stopFrames=d.rows.filter(r=>(r[7]&64) && !(r[7]&128)).length;
-    $('msg').textContent = `${d.rows.length}프레임, 제동 하한 ${hit}개 (${(hit/20).toFixed(1)}초) · 가속 상한 ${ceilHit}개 (${(ceilHit/20).toFixed(1)}초)`
-      + (stopFrames ? ` · Experimental 모드만 정지를 원한 프레임 ${stopFrames}개 (${(stopFrames/20).toFixed(1)}초)` : '');
+    const stopFrames=d.rows.filter(r=>r[14]===3||r[14]===5).length;
+    $('msg').textContent = `${d.rows.length}프레임`
+      + (stopFrames ? ` · CarrotPilot 정지 상태(e2eStop/e2eStopped) ${stopFrames}개 (${(stopFrames/20).toFixed(1)}초)` : '');
   }
 
-  // 지금 코드(MPC)가 순정보다 가장 많이 더 감속을 원한 순간 -- 재계산 값이 아직 없는 프레임은
+  // CarrotPilot이 순정보다 가장 많이 더 감속을 원한 순간 -- 재계산 값이 아직 없는 프레임은
   // (null-1) 이 NaN 이 되어 비교에서 자연히 걸러진다.
   let best=0; worstT=null;
-  for(const r of d.rows){ const g=r[3]-r[1]; if(g<best){best=g; worstT=r[0];} }
+  for(const r of d.rows){ const g=r[12]-r[1]; if(g<best){best=g; worstT=r[0];} }
 
-  // 리드 기반 MPC 는 정지를 안 원했는데 e2e 모델만 정지를 원했던 첫 순간 -- 신호등·정지선처럼
-  // 화면으로만 보이는 것을 모델이 인식했다는 가장 직접적인 신호다.
+  // CarrotPilot이 정지를 결정한 첫 순간 -- xState가 e2eStop(3)으로 넘어간 프레임.
   worstStopT=null;
-  for(const r of d.rows){ if((r[7]&64) && !(r[7]&128)){ worstStopT=r[0]; break; } }
+  for(const r of d.rows){ if(r[14]===3){ worstStopT=r[0]; break; } }
   $('worstStop').disabled = worstStopT==null;
 
   if(fresh) mountVideo(d.route, d.seg);
@@ -1676,16 +1634,6 @@ function draw(){
   const L=46,R=14,T=14,B=h-24, iw=w-L-R, ih=B-T;
   const x=t=>L+iw*(t/dur), y=a=>T+ih*(0.5-(a/S)/2);
 
-  // 하한(제동)에 붙은 구간과 상한(가속)에 붙은 구간. 하한만 칠하면 상한에 막힌 건 눈으로
-  // 추측할 수밖에 없어서, 같은 방식으로 둘 다 표시한다.
-  g.fillStyle=css('--bad'); g.globalAlpha=.22;
-  for(let i=0;i<rows.length-1;i++) if(rows[i][7]&32)
-    g.fillRect(x(rows[i][0]),T,Math.max(1,x(rows[i+1][0])-x(rows[i][0])),ih);
-  g.fillStyle=css('--hot'); g.globalAlpha=.18;
-  for(let i=0;i<rows.length-1;i++) if(rows[i][7]&256)
-    g.fillRect(x(rows[i][0]),T,Math.max(1,x(rows[i+1][0])-x(rows[i][0])),ih);
-  g.globalAlpha=1;
-
   g.font='10px '+css('--m'); g.textAlign='right'; g.lineWidth=1;
   for(const a of [2.0,0,DATA.accelMin]){
     const yy=Math.round(y(a))+.5;
@@ -1713,9 +1661,9 @@ function draw(){
   });
   g.stroke();
 
-  // col 3/4 (재계산 값) 는 재계산이 끝나기 전에는 null -- 그 프레임에서 선을 끊는다. 0 으로
-  // 읽으면 계산 중인 구간이 실선으로 이어져 이미 다 푼 것처럼 보인다.
-  for(const [col,color,lw] of [[1,'#F5B942',1.8],[2,'#8A97A6',1.2],[3,'#5AC8FA',1.8],[4,'#B58AFF',1.6],[12,'#4ED88A',1.8]]){
+  // col 12 (CarrotPilot 재계산) 는 재계산이 끝나기 전에는 null -- 그 프레임에서 선을 끊는다.
+  // 0 으로 읽으면 계산 중인 구간이 실선으로 이어져 이미 다 푼 것처럼 보인다.
+  for(const [col,color,lw] of [[1,'#F5B942',1.8],[2,'#8A97A6',1.2],[12,'#4ED88A',1.8]]){
     g.strokeStyle=color; g.lineWidth=lw; g.beginPath(); let pen=false;
     rows.forEach(r=>{
       if(r[col]==null){ pen=false; return; }
@@ -1725,10 +1673,9 @@ function draw(){
     g.stroke();
   }
 
-  // Experimental Mode 블렌드에서만 정지를 원한 순간 -- MPC(리드 추종) 혼자서는 안 잡히는,
-  // 모델이 화면에서 직접 본 무언가(신호등·정지선 등) 때문에 멈추고 싶어했다는 뜻이다.
-  g.fillStyle='#B58AFF';
-  for(const r of rows) if((r[7]&64) && !(r[7]&128)){
+  // CarrotPilot이 정지를 결정한 프레임 (xState=e2eStop) 을 아래쪽에 점으로 찍는다.
+  g.fillStyle='#4ED88A';
+  for(const r of rows) if(r[14]===3){
     g.beginPath(); g.arc(x(r[0]), B+10, 3, 0, 7); g.fill();
   }
 
@@ -1744,7 +1691,7 @@ function draw(){
   g.fillStyle=css('--radar');
   g.beginPath(); g.moveTo(px-5,T-8); g.lineTo(px+5,T-8); g.lineTo(px,T-1); g.closePath(); g.fill();
   const r=rows[Math.min(rows.length-1,Math.round(vt*20))];
-  if(r) for(const [col,color] of [[1,'#F5B942'],[3,'#5AC8FA'],[4,'#B58AFF'],[12,'#4ED88A'],[10,'#FF9F4A']]){
+  if(r) for(const [col,color] of [[1,'#F5B942'],[12,'#4ED88A'],[10,'#FF9F4A']]){
     if(r[col]==null) continue;
     g.beginPath(); g.arc(px,y(r[col]),4,0,7); g.fillStyle=color; g.fill();
     g.strokeStyle=css('--card'); g.lineWidth=1.8; g.stroke();
@@ -1755,37 +1702,22 @@ function draw(){
 
 function readout(r){
   if(!r) return;
-  const flags=r[7];
-  const stopExp=!!(flags&64), stopMpc=!!(flags&128);
-  let stopLabel='—';
-  if(stopExp && !stopMpc) stopLabel=`<span style="color:#B58AFF">모델만 정지 원함</span>`;
-  else if(stopMpc) stopLabel=`<span style="color:${css('--bad')}">정지</span>`;
-  // r[3]/r[4]/r[9] (재계산 값) 는 재계산이 끝나기 전에는 null -- 이미 기록된 값(1,2)은 즉시
-  // 나오지만 이 셋은 아직 없다는 뜻이라, 0 으로 잘못 읽지 않도록 계산 중임을 그대로 보여준다.
   const solving = '<span style="opacity:.5">계산 중…</span>';
   $('read').innerHTML=[
     ['시각',`${r[0].toFixed(1)}<small>s</small>`],
     ['순정 실제',`${(r[1]*MPH).toFixed(1)}<small>mph/s</small>`],
     [`당시 계획${DATA&&DATA.recordedPlanner==='carrot'?' (Carrot)':''}`,
       `${(r[2]*MPH).toFixed(1)}<small>mph/s</small>`],
-    ['지금 코드 (MPC)',r[3]==null?solving:
-      `<span style="color:${css('--radar')}">${(r[3]*MPH).toFixed(1)}<small>mph/s</small></span>`],
-    ['지금 코드 (Experimental)',r[4]==null?solving:
-      `<span style="color:#B58AFF">${(r[4]*MPH).toFixed(1)}<small>mph/s</small></span>`],
     ['순정 커맨드 밴드',r[10]==null?'침묵':
       `<span style="color:#FF9F4A">${(r[10]*MPH).toFixed(1)} … ${(r[11]*MPH).toFixed(1)}<small>mph/s</small></span>`],
     ['속도',`${(r[5]*MPH).toFixed(0)}<small>mph</small>`],
     ['리드',r[6]==null?'—':`${(r[6]*3.28084).toFixed(0)}<small>ft</small>`],
-    ['CarrotPilot',r[12]==null?'<span style="opacity:.5">해당 없음</span>':
+    ['CarrotPilot',r[12]==null?(DATA&&DATA.hasCarrot===false?'<span style="opacity:.5">해당 없음</span>':solving):
       `<span style="color:#4ED88A">${(r[12]*MPH).toFixed(1)}<small>mph/s</small></span>`],
-    ['tFollow',r[9]==null?solving:`${r[9].toFixed(2)}<small>s</small>`],
     ['tFollow (Carrot)',r[13]==null?'—':`${r[13].toFixed(2)}<small>s</small>`],
     ['xState (Carrot)',r[14]==null?'—':
       ['lead','cruise','e2eCruise','e2eStop','e2ePrepare','e2eStopped'][r[14]]||r[14]],
     ['갭',r[8]||'—'],
-    ['정지 판단',stopLabel],
-    ['제동 하한',(flags&32)?`<span style="color:${css('--bad')}">닿음</span>`:'—'],
-    ['가속 상한',(flags&256)?`<span style="color:${css('--hot')}">닿음</span>`:'—'],
   ].map(([k,v])=>`<div class="rd"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
 }
 
