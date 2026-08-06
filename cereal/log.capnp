@@ -150,6 +150,13 @@ enum LongitudinalPersonality {
   # CarrotPilot's fourth level. Appended, so the three existing values keep their numbers and
   # every log written before this still reads correctly. Only the carrot planner selects it.
   moreRelaxed @3;
+  # This car's gap stalk has 7 positions, not 4, so the stalk is mapped straight onto personality
+  # instead of a separate axis (matching carrot's own car-button -> personality wiring). These
+  # three fill out the remaining steps between the four above; also append-only for the same
+  # log-compatibility reason.
+  moreAggressive @4;
+  lessAggressive @5;
+  lessRelaxed @6;
 }
 
 struct InitData {

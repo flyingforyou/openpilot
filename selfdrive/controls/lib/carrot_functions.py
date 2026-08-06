@@ -45,10 +45,28 @@ class TrafficState(Enum):
 
 A_CRUISE_MAX_BP_CARROT = [0., 10 * CV.KPH_TO_MS, 40 * CV.KPH_TO_MS, 60 * CV.KPH_TO_MS, 80 * CV.KPH_TO_MS, 110 * CV.KPH_TO_MS, 140 * CV.KPH_TO_MS]
 
+# This car's gap stalk (1-7) maps straight onto personality, the same way carrot's own
+# selfdrive/car/cruise.py wires a car's reported gap button onto LongitudinalPersonality
+# (`personality = clip(CS.pcmCruiseGap - 1, 0, longitudinalPersonalityMax)`). Position 1 is
+# tightest, 7 is loosest.
+GAP_TO_PERSONALITY = [
+  log.LongitudinalPersonality.moreAggressive,
+  log.LongitudinalPersonality.aggressive,
+  log.LongitudinalPersonality.lessAggressive,
+  log.LongitudinalPersonality.standard,
+  log.LongitudinalPersonality.lessRelaxed,
+  log.LongitudinalPersonality.relaxed,
+  log.LongitudinalPersonality.moreRelaxed,
+]
+PERSONALITY_TO_GAP_POS = {p: i + 1 for i, p in enumerate(GAP_TO_PERSONALITY)}
+# The param on disk holds the enum's raw numeric value. Those are append-only (see log.capnp),
+# so the four carried over from carrot keep 0/1/2/3 and the three new ones are 4/5/6 -- not a
+# plain gap-position offset.
+GAP_TO_PERSONALITY_INT = [4, 0, 5, 1, 6, 2, 3]
+
 # carrot's own personality multiplier (aggressive/standard/relaxed/moreRelaxed = 1.0/1.3/1.6/2.0),
-# carried over to the Tesla gap stalk's 7 positions at the same anchors (1/3/5/7) the base t_follow
-# table itself uses, so a driver moving the stalk sees the same shape carrot's personality button
-# gives -- steps 2/4/6 are the straight-line interpolation between them, not separately tuned.
+# now spread across all 7 gap positions at the same anchors (1/3/5/7) the base t_follow table
+# itself uses -- steps 2/4/6 are the straight-line interpolation between them, not separately tuned.
 GAP_MULT_BPS = [1, 3, 5, 7]
 GAP_MULT_VALS = [1.0, 1.3, 1.6, 2.0]
 
@@ -91,6 +109,9 @@ class CarrotPlanner:
     # change the follow distance on every engage before the first gap message.
     self.gap_adjust = 0
     self.last_gap_adjust = 0
+    # Gap position last written to LongitudinalPersonality, so update() only writes the param on
+    # an actual change rather than every frame.
+    self._personality_synced_gap = 0
 
     self.startSignCount = 0
     self.stopSignCount = 0
@@ -204,20 +225,16 @@ class CarrotPlanner:
     factor = self.myHighModeFactor if self.myDrivingMode == DrivingMode.High else self.mySafeFactor
     return np.interp(v_ego, A_CRUISE_MAX_BP_CARROT, cruiseMaxVals) * factor
 
-  def _personality_mult(self, personality):
-    """carrot's own personality multiplier -- the fallback for when the gap stalk isn't reporting."""
-    if personality == log.LongitudinalPersonality.moreRelaxed:
-      return 2.0
-    elif personality == log.LongitudinalPersonality.relaxed:
-      return 1.6
-    elif personality == log.LongitudinalPersonality.standard:
-      return 1.3
-    elif personality == log.LongitudinalPersonality.aggressive:
-      return 1.0
-    else:
+  def _get_base_t_follow(self, personality, v_ego):
+    # personality carries the gap stalk's position directly now -- update() writes it there on
+    # every stalk change, the same way carrot's own car/cruise.py writes a car's gap button
+    # straight to LongitudinalPersonality. So there is one lookup, not a separate gap_adjust
+    # branch: gap_pos is where personality (fresh from the stalk, or the last value on disk
+    # before the stalk has reported this drive) says to look in the table.
+    gap_pos = PERSONALITY_TO_GAP_POS.get(personality)
+    if gap_pos is None:
       raise NotImplementedError("Longitudinal personality not supported")
 
-  def _get_base_t_follow(self, personality, v_ego):
     if self.enableSpeedTF < 0:
       TF_SPEED_BPS = {
         -1: [0, 30, 60, 90],
@@ -228,8 +245,8 @@ class CarrotPlanner:
       v_kph = v_ego * CV.MS_TO_KPH
       bp = TF_SPEED_BPS.get(self.enableSpeedTF, [0, 30, 60, 90])
 
-      # carrot's own 4 breakpoint targets are gap 1/3/5/7 of the 7-position table, the same
-      # anchors the gap branch below indexes directly -- not the table's first four slots.
+      # carrot's own 4 breakpoint targets are gap 1/3/5/7 of the 7-position table -- the same
+      # anchors the branch below indexes directly, not the table's first four slots.
       tf_base = float(np.interp(
         v_kph,
         bp,
@@ -237,43 +254,13 @@ class CarrotPlanner:
       ))
 
       self.jerk_factor = float(np.interp(v_kph, bp, [1.0, 0.7, 0.5, 0.5]))
-
-      # Same precedence as the branch below: the gap stalk is the driver's own instruction, so
-      # it wins over personality whenever the car actually reports one.
-      if 1 <= self.gap_adjust <= 7:
-        tf_base *= float(np.interp(self.gap_adjust, GAP_MULT_BPS, GAP_MULT_VALS))
-      else:
-        tf_base *= self._personality_mult(personality)
-
-    elif 1 <= self.gap_adjust <= 7:
-      # The gap stalk is the driver's own instruction, so it wins over personality whenever the
-      # car actually reports one. jerk_factor follows the same axis: the closer the requested
-      # gap, the more freely acceleration is allowed to change.
-      tf_base = self.tFollowGaps[self.gap_adjust - 1]
-      self.jerk_factor = float(np.interp(self.gap_adjust, [1, 4, 7], [0.5, 0.7, 1.0]))
-      if self.myDrivingMode == DrivingMode.Safe:
-        self.jerk_factor = 1.0
+      tf_base *= float(np.interp(gap_pos, GAP_MULT_BPS, GAP_MULT_VALS))
 
     else:
-      # No gap signal at all -- a stalk read of 0, before the car has reported one this drive.
-      # Fall back to carrot's own personality-indexed table: gap 1/3/5/7 are carrot's own
-      # aggressive/standard/relaxed/moreRelaxed anchors (110/120/140/160). The table's first
-      # four slots are gap positions 1-4, not carrot's four personalities -- using those here
-      # would compress the whole fallback into the tight end of the gap range.
-      if personality == log.LongitudinalPersonality.moreRelaxed:
+      tf_base = self.tFollowGaps[gap_pos - 1]
+      self.jerk_factor = float(np.interp(gap_pos, [1, 4, 7], [0.5, 0.7, 1.0]))
+      if self.myDrivingMode == DrivingMode.Safe:
         self.jerk_factor = 1.0
-        tf_base = self.tFollowGaps[6]
-      elif personality == log.LongitudinalPersonality.relaxed:
-        self.jerk_factor = 1.0
-        tf_base = self.tFollowGaps[4]
-      elif personality == log.LongitudinalPersonality.standard:
-        self.jerk_factor = 1.0 if self.myDrivingMode == DrivingMode.Safe else 0.7
-        tf_base = self.tFollowGaps[2]
-      elif personality == log.LongitudinalPersonality.aggressive:
-        self.jerk_factor = 1.0 if self.myDrivingMode == DrivingMode.Safe else 0.5
-        tf_base = self.tFollowGaps[0]
-      else:
-        raise NotImplementedError("Longitudinal personality not supported")
 
     return float(tf_base)
 
@@ -472,6 +459,14 @@ class CarrotPlanner:
     if gap != 0:
       self.last_gap_adjust = gap
     self.gap_adjust = gap if gap != 0 else self.last_gap_adjust
+
+    # Same wiring as carrot's own car/cruise.py gapAdjustCruise handler: the gap stalk is the
+    # driver's own instruction, written straight to LongitudinalPersonality so everything that
+    # reads personality (not just this planner) sees it, not just _get_base_t_follow. Only writes
+    # on an actual change -- Params.put is disk I/O, and this runs every frame.
+    if 1 <= self.gap_adjust <= 7 and self.gap_adjust != self._personality_synced_gap:
+      self.params.put_int_nonblocking('LongitudinalPersonality', GAP_TO_PERSONALITY_INT[self.gap_adjust - 1])
+      self._personality_synced_gap = self.gap_adjust
     # No vCluRatio on this car: it scales cruise speed to the cluster's own display
     # rounding, which this port does not model. 1.0 leaves v_cruise as given.
     vCluRatio = 1.0
