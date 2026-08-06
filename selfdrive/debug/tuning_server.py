@@ -214,12 +214,10 @@ CARROT_SETTINGS = {
     "label": "가속 상한 · 140km/h", "type": "int", "help": "140km/h 지점의 가속 상한입니다.",
     "options": [(60, "0.6"), (80, "0.8 (기본)"), (100, "1.0")],
   },
-}
-
-SETTINGS = {
   "StoppedLeadMatchEnabled": {
     "label": "정지차 매칭 보정", "type": "bool",
-    "help": "비전이 정지차를 달리는 차로 오독할 때 레이더 트랙을 유지합니다.",
+    "help": "비전이 정지차를 달리는 차로 오독할 때 레이더 트랙을 유지합니다. 캐롯의 3단계 "
+            "매칭(일반/정지차/컷인) 중 정지차 패스를 켭니다.",
     "options": [(1, "사용"), (0, "미사용")],
   },
   "StoppedLeadHoldMs": {
@@ -239,6 +237,9 @@ SETTINGS = {
     "help": "위 유지가 최대 얼마나 이어질지입니다. 길면 끊김에 강하고, 짧으면 오래된 트랙을 덜 붙듭니다.",
     "options": [(500, "0.5초"), (1000, "표준 1.0초"), (2000, "2.0초")],
   },
+}
+
+SETTINGS = {
   "TeslaStockLong": {
     "label": "순정 ACC 사용", "type": "bool",
     "help": "속도 제어를 차의 순정 ACC에 맡기고 openpilot은 조향만 합니다. 순정 ACC는 이미 "
