@@ -46,6 +46,7 @@ YAW_COMP_MAX_YVREL_CORRECTION = 1.5
 YAW_COMP_MAX_VREL_CORRECTION = 0.6
 
 # How far ahead a track is projected when deciding whether it is heading into our lane.
+# carrot ships this at 0 -- projection off -- and exposes it as RadarLatFactor.
 RADAR_LAT_PROJECTION_S = 0.6
 
 # A track that jumps this much between frames isn't the same object; drop its evidence.
@@ -526,6 +527,7 @@ class RadarD:
     # so it is smoothed before anything is projected with it.
     self.yaw_rate_filter = FirstOrderFilter(0.0, 0.20, DT_MDL)
     self.radar_reaction_factor = 1.0
+    self.radar_lat_factor = RADAR_LAT_PROJECTION_S
     self.frame = 0
     self.refresh_tuning()
 
@@ -552,6 +554,8 @@ class RadarD:
     # 100% is stock behaviour. Lower reacts to the lead's acceleration sooner and holds it
     # longer; higher assumes it fades faster and responds more gently.
     self.radar_reaction_factor = (self.params.get("RadarReactionFactor", return_default=True) or 100) / 100.0
+    lat = self.params.get("RadarLatFactor", return_default=True)
+    self.radar_lat_factor = (int(lat) / 100.0) if lat is not None else RADAR_LAT_PROJECTION_S
 
     hold_cm = self.params.get("RadarLeadHoldCm", return_default=True) or 0
     lead_hold_ms = self.params.get("RadarLeadHoldMs", return_default=True) or RADAR_LEAD_HOLD_DEFAULT_MS
@@ -608,8 +612,8 @@ class RadarD:
       # Both feed match_vision_to_track, so they have to be current before the match runs.
       if self.ready:
         v_rel_future, yv_rel_future = track.yaw_compensated_velocities(yaw_rate)
-        track.dRel_future = track.dRel + v_rel_future * RADAR_LAT_PROJECTION_S
-        track.yRel_future = track.yRel + yv_rel_future * RADAR_LAT_PROJECTION_S
+        track.dRel_future = track.dRel + v_rel_future * self.radar_lat_factor
+        track.yRel_future = track.yRel + yv_rel_future * self.radar_lat_factor
         track.d_path(sm['modelV2'])
 
     # *** publish radarState ***

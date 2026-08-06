@@ -167,6 +167,16 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // How long the lead's measured acceleration is assumed to last, as a percentage. Lower
     // reacts sooner and holds it longer; higher assumes it fades and responds more gently.
     {"RadarReactionFactor", {PERSISTENT, INT, "100"}},
+    // Longitudinal PID, exposed the way carrot exposes it. This port leaves kpV and kiV at
+    // [0.], so the loop is feedforward-only until these are set -- Kp 100 is 1.00, Ki is in
+    // thousandths, Kf 100 leaves a_target passing through unchanged.
+    {"LongTuningKpV", {PERSISTENT, INT, "100"}},
+    {"LongTuningKiV", {PERSISTENT, INT, "0"}},
+    {"LongTuningKf", {PERSISTENT, INT, "100"}},
+    // How far ahead a radar track is projected when judging whether it is moving into our lane,
+    // in hundredths of a second. carrot ships 0, which turns the projection off entirely; 60
+    // keeps what this tree has been doing since the radard port.
+    {"RadarLatFactor", {PERSISTENT, INT, "60"}},
     {"JLeadFactor3", {PERSISTENT, INT, "0"}},
     {"CruiseEcoControl", {PERSISTENT, INT, "2"}},
     {"AutoNaviSpeedDecelRate", {PERSISTENT, INT, "120"}},

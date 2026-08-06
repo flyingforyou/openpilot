@@ -49,6 +49,7 @@ class Controls:
     # means "leave it alone".
     self._carrot_long = self.params.get_bool("CarrotLongEnabled")
     self._stopping_accel = 0.0
+    self._gains: tuple[float, float, float] | None = None
     self._param_frame = 0
     self.curvature = 0.0
     self.desired_curvature = 0.0
@@ -123,12 +124,19 @@ class Controls:
     # Params.get hits disk, so not every frame.
     self._param_frame += 1
     if self._carrot_long and self._param_frame % 50 == 0:
-      raw = self.params.get("StoppingAccel", return_default=True)
-      self._stopping_accel = (int(raw) if raw is not None else 0) * 0.01
+      def _p(key, default):
+        v = self.params.get(key, return_default=True)
+        return int(v) if v is not None else default
+      self._stopping_accel = _p("StoppingAccel", 0) * 0.01
+      # carrot's own scaling: Kp and Kf in hundredths, Ki in thousandths.
+      self._gains = (_p("LongTuningKpV", 100) * 0.01,
+                     _p("LongTuningKiV", 0) * 0.001,
+                     _p("LongTuningKf", 100) * 0.01)
     lead = self.sm['radarState'].leadOne
     lead_d_rel = float(lead.dRel) if lead.status else None
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop,
-                                            pid_accel_limits, self._stopping_accel, lead_d_rel))
+                                            pid_accel_limits, self._stopping_accel, lead_d_rel,
+                                            self._gains))
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
