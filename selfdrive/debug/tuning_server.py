@@ -779,7 +779,7 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
 
 <div class="card"><div class="h">Vehicle</div>
   <div class="grid">
-    <div><div class="k">속도</div><div class="v"><span id="vego">–</span><small>m/s</small></div></div>
+    <div><div class="k">속도</div><div class="v"><span id="vego">–</span><small>mph</small></div></div>
     <div><div class="k">gap</div><div class="v" id="gap">–</div></div>
     <div><div class="k">aTarget</div><div class="v" id="atgt">–</div></div>
     <div><div class="k">상태</div><div class="v" style="font-size:13px"><span id="eng" class="pill">–</span></div></div>
@@ -822,7 +822,7 @@ async function poll(){
     $('vlead').textContent=L.status?L.vLead:'–';
     $('trk').textContent=L.status&&L.trackId>=0?L.trackId:'–';
     $('prob').textContent=L.status?L.prob:'–';
-    $('vego').textContent=s.vEgo??'–';
+    $('vego').textContent=s.vEgo!=null?(s.vEgo*2.23694).toFixed(1):'–';
     $('gap').textContent=s.gap||'–';
     $('atgt').textContent=s.aTarget??'–';
     const e=$('eng');e.textContent=s.engaged?'engaged':'disengaged';
