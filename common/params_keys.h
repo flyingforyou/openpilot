@@ -126,7 +126,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // CarrotPilot longitudinal, behind CarrotLongEnabled. Defaults are carrot's own -- the
     // point of the port is to run what it runs, so these are not retuned here. Stored as
     // integers in hundredths where the code divides by 100, matching carrot's own settings.
-    {"CarrotLongEnabled", {PERSISTENT, BOOL, "0"}},
+    // Defaults on (2026-08): the old plain-openpilot planner is retired -- CarrotPilot and the
+    // car's stock ACC (TeslaStockLong) are the only two paths anyone runs going forward.
+    {"CarrotLongEnabled", {PERSISTENT, BOOL, "1"}},
     // These two carrot reads from params where this tree takes them from the car port. The
     // defaults are the port's values for this car, not carrot's generic 20/50: vEgoStopping is
     // set to 0.1 in the Tesla interface specifically, and 0.5 would have the car decide it has
