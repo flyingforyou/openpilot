@@ -42,6 +42,11 @@ so they cannot be piped.
 | `replay_coop.py <route> <from> <to>` | Replays a recorded override through the cooperative steering controller |
 | `shadow_compare.py <seg>...` | Grades the stock ACC against openpilot's shadow plan at every driver takeover, and counts how often a "more conservative wins" gate would have fired without one |
 
+`adas_signal_survey.md` is not a script -- it's a findings writeup (2026-08-06) on which of the
+`/shadow` page's decoded Tesla ADAS/map CAN signals (0x3E8/0x3C8/0x238/0x2C8/0x2E8/0x2D8/0x2B8)
+actually carry useful variation across 24k real frames, versus which turned out to be static
+config broadcasts. Read that before wiring any of those signals into the planner.
+
 ## A warning about foreign signal databases
 
 `talas9/tesla_can_signals` was used as a cross-reference. Only its `CH` bus matches this car's
