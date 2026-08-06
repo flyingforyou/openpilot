@@ -119,8 +119,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RadarLeadHoldMs", {PERSISTENT, INT, "1000"}},
     {"SshEnabled", {PERSISTENT, BOOL}},
     {"StopDistanceCm", {PERSISTENT, INT, "600"}},
-    {"StoppedLeadHoldMs", {PERSISTENT, INT, "500"}},
-    {"StoppedLeadMatchEnabled", {PERSISTENT, BOOL, "1"}},
     {"TFollowRiseRatePct", {PERSISTENT, INT, "35"}},
 
     // CarrotPilot longitudinal, behind CarrotLongEnabled. Defaults are carrot's own -- the
