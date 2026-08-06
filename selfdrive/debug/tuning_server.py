@@ -248,26 +248,7 @@ SETTINGS = {
     "label": "순정 ACC 사용", "type": "bool",
     "help": "속도 제어를 차의 순정 ACC에 맡기고 openpilot은 조향만 합니다. 순정 ACC는 이미 "
             "다듬어져 있으므로 롱 튜닝을 아예 건너뛰는 선택지입니다. 재시작해야 반영됩니다.",
-    "options": [(0, "openpilot 롱 (기본)"), (1, "순정 ACC")],
-  },
-  "ExperimentalMode": {
-    "label": "알파: 신호등·정지선 인식", "type": "bool",
-    "help": "주행 모델 자신의 판단(action.desiredAcceleration/shouldStop)을 종방향 계획에 "
-            "섞습니다. 리드 차 없이도 화면에서 정지선·신호등을 직접 인식해 멈추자고 할 수 "
-            "있는 유일한 경로입니다 -- 리드 기반 MPC 는 애초에 할 수 없는 판단입니다. 위 "
-            "'순정 ACC 사용'이 꺼져 있을 때만(openpilot 롱, 재시작 필요) 효과가 있고, 이 "
-            "토글 자체는 0.1초마다 다시 읽으므로 재시작 없이 바로 반영됩니다. comma 가 "
-            "아직 실험적이라고 부르는 기능이라 정지 판단이 늦거나 틀릴 수 있습니다.",
-    "options": [(0, "사용 안 함 (기본)"), (1, "사용")],
-  },
-  "CarrotLongEnabled": {
-    "label": "CarrotPilot 종방향", "type": "bool",
-    "help": "속도 계획 전체를 CarrotPilot 의 플래너로 바꿉니다. 별도의 MPC(파라미터 8개, "
-            "comfort_brake 와 stop_distance 가 런타임 값)와 자체 갭/가속 곡선, 리드 저크 "
-            "기반 조정, 예측 위험 비용을 씁니다. 어느 쪽을 쓸지는 시작할 때 한 번만 읽으므로 "
-            "재시작해야 반영됩니다. 실도로 검증되어 기본으로 켜져 있습니다 -- 끄면 이 아래 "
-            "설정은 아무것도 반영되지 않는, 더 이상 튜닝하지 않는 기존 플래너로 돌아갑니다.",
-    "options": [(1, "CarrotPilot (기본)"), (0, "기존 플래너")],
+    "options": [(0, "CarrotPilot 롱 (기본)"), (1, "순정 ACC")],
   },
   "TeslaCoopSteer": {
     "label": "핸들 같이 돌리기", "type": "bool",
@@ -816,7 +797,7 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
 
 <div class="card"><div class="h">Settings</div><div id="settings"></div></div>
 
-<div class="card"><div class="h">CarrotPilot 종방향 <span id="carrotState" class="hlp"></span></div>
+<div class="card"><div class="h">CarrotPilot 설정 <span id="carrotState" class="hlp"></span></div>
   <div id="carrotSettings"></div>
 </div>
 
