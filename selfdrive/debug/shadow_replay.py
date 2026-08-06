@@ -24,9 +24,74 @@ import zstandard
 
 from cereal import log as capnp_log, messaging
 from openpilot.common.swaglog import cloudlog
+from opendbc.can.dbc import DBC
+from opendbc.can.parser import get_raw_value
 
 REALDATA = '/data/media/0/realdata'
 SCRATCH = '/data/tmp/shadow'
+
+# The handful of Tesla ADAS/map messages the /shadow page's "풀기" table decodes alongside the
+# usual planner columns. Names are the DBC message names in tesla_can.dbc.
+ADAS_DBC = 'tesla_can'
+ADAS_ADDRS = (0x3E8, 0x3C8, 0x238, 0x2C8, 0x2E8, 0x2D8, 0x2B8)
+
+# UI_driverAssistRoadSign (0x238) multiplexes unrelated map data onto the same bits via
+# UI_roadSign -- decoding every signal unconditionally (like the other 6 messages) would read
+# whichever mux group isn't active as garbage. Only the fields for the current mux value get
+# decoded; the rest are simply absent from that frame's snapshot.
+ROAD_SIGN_COMMON = ('UI_roadSign', 'UI_splineLocConfidence', 'UI_splineID')
+ROAD_SIGN_MUX = {
+  0: ('UI_dummyData',),
+  1: ('UI_stopSignStopLineDist', 'UI_stopSignStopLineConf'),
+  2: ('UI_trafficLightStopLineDist', 'UI_trafficLightStopLineConf'),
+  3: ('UI_baseMapSpeedLimitMPS', 'UI_bottomQrtlFleetSpeedMPS', 'UI_topQrtlFleetSpeedMPS'),
+  4: ('UI_meanFleetSplineSpeedMPS', 'UI_medianFleetSpeedMPS', 'UI_meanFleetSplineAccelMPS2', 'UI_rampType'),
+  5: ('UI_currSplineIdFull',),
+}
+
+
+class _AdasDecoder:
+  """Latest known value of each ADAS/map signal, decoded from raw `can` events as they arrive.
+
+  Not a live view of the bus -- a held-value snapshot, same as the rest of extract()'s `cur`
+  dict, so a message sent slower than 20Hz still has a value at every sampled frame.
+  """
+
+  def __init__(self):
+    try:
+      dbc = DBC(ADAS_DBC)
+      self.msgs = {addr: dbc.addr_to_msg[addr] for addr in ADAS_ADDRS if addr in dbc.addr_to_msg}
+    except Exception:
+      cloudlog.exception('shadow: ADAS dbc load failed')
+      self.msgs = {}
+    self.last: dict[int, dict] = {}
+
+  @staticmethod
+  def _value(sig, dat: bytes) -> float:
+    raw = get_raw_value(dat, sig)
+    if sig.is_signed:
+      raw -= ((raw >> (sig.size - 1)) & 0x1) * (1 << sig.size)
+    return round(raw * sig.factor + sig.offset, 6)
+
+  def ingest(self, frames) -> None:
+    for frame in frames:
+      msg = self.msgs.get(frame.address)
+      if msg is None:
+        continue
+      dat = bytes(frame.dat)
+      if len(dat) < msg.size:
+        continue
+      if frame.address == 0x238:
+        out = {name: self._value(msg.sigs[name], dat) for name in ROAD_SIGN_COMMON if name in msg.sigs}
+        for name in ROAD_SIGN_MUX.get(int(out.get('UI_roadSign', -1)), ()):
+          if name in msg.sigs:
+            out[name] = self._value(msg.sigs[name], dat)
+        self.last[frame.address] = out
+      else:
+        self.last[frame.address] = {name: self._value(sig, dat) for name, sig in msg.sigs.items()}
+
+  def snapshot(self) -> dict:
+    return dict(self.last)
 
 # Sample grid for the returned series. longitudinalPlan runs at 20Hz, so this neither invents
 # detail nor throws any away; carState (100Hz) is held between samples.
@@ -87,6 +152,7 @@ def extract(route: str, seg: int) -> list[dict]:
   # and carState appears, which slid the whole chart against the video by that much.
   DATA = ('carState', 'longitudinalPlan', 'radarState', 'selfdriveState', 'modelV2')
   fingerprint = None
+  adas = _AdasDecoder()
 
   for evt in _read_events(path):
     w = evt.which()
@@ -95,6 +161,9 @@ def extract(route: str, seg: int) -> list[dict]:
       continue
     if w == 'roadEncodeIdx' and t0 is None and evt.roadEncodeIdx.segmentId == 0:
       t0 = evt.logMonoTime / 1e9
+      continue
+    if w == 'can':
+      adas.ingest(evt.can)
       continue
     if w not in DATA:
       continue
@@ -152,6 +221,7 @@ def extract(route: str, seg: int) -> list[dict]:
         'flags': ((F_LEAD if ld else 0) | (F_RADAR if ld and ld['radar'] else 0)
                   | (F_ENG if cur['eng'] else 0) | (F_BRAKE if cur['brake'] else 0)
                   | (F_GAS if cur['gas'] else 0)),
+        'adas': adas.snapshot(),
       })
       next_t += DT
 
@@ -390,7 +460,8 @@ class ShadowReplay:
       # not a solve. The video and the recorded lines can be on screen while CarrotPilot's
       # re-solve is still running instead of waiting behind it, so publish them the moment
       # they're ready. Columns 3/4/9 are the retired stock re-solve's (aNew, aExp, tFollow) --
-      # left in the row shape rather than renumbered, so they stay None forever now.
+      # left in the row shape rather than renumbered, so they stay None forever now. Column 15
+      # is the ADAS/map signal snapshot (see _AdasDecoder) -- available immediately, no re-solve.
       planner_source = frames[0].get('plannerSource', 'stock') if frames else 'stock'
       floor, floor_src = car_floor(frames[0].get('fingerprint') if frames else None)
       rows = []
@@ -403,6 +474,7 @@ class ShadowReplay:
           round(f['stockMin'], 3) if f['stockMin'] is not None else None,
           round(f['stockMax'], 3) if f['stockMax'] is not None else None,
           None, None, None,
+          f.get('adas', {}),
         ])
       with self._lock:
         if self._state.get('status') == 'running':   # a newer request has not already superseded this one

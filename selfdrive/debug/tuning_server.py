@@ -1297,6 +1297,16 @@ background:var(--line);border-top:1px solid var(--line)}
 .rd .v small{font-size:10px;color:var(--mut);margin-left:2px}
 .msg{padding:0 13px 13px;font-size:12px;color:var(--mut)}
 .msg.err{color:var(--bad);font-family:var(--m);font-size:11.5px}
+
+/* ADAS/지도 신호 -- 세그먼트를 풀면 채워지고 재생 중 계속 갱신되는 신호 테이블 */
+.adasMsg{border-top:1px solid var(--line)}
+.adasMsg h3{font-size:12px;padding:10px 13px 2px;color:var(--tx)}
+.adasMsg .addr{font-family:var(--m);color:var(--dim);font-weight:400;margin-left:6px}
+.adasTbl{display:grid;grid-template-columns:1fr auto;font-size:11.5px}
+.adasTbl>div{padding:4px 13px;border-top:1px solid var(--line)}
+.adasTbl .k{color:var(--mut)}
+.adasTbl .v{font-family:var(--m);text-align:right;font-variant-numeric:tabular-nums}
+.adasTbl .v.na{color:var(--dim)}
 .note{font-size:11.5px;color:var(--mut);line-height:1.6;padding:13px}
 .note b{color:var(--tx);font-weight:600}
 
@@ -1371,13 +1381,185 @@ font-size:10px;text-align:center}
   </div>
 </div>
 
+<div class="card">
+  <h2>ADAS / 지도 신호</h2>
+  <div class="note">
+    "풀기"로 읽은 로그의 raw CAN에서 직접 디코딩됩니다 (재계산 불필요, 로그를 읽는 즉시 채워짐).
+    재생 중 커서를 따라 실시간으로 갱신됩니다. 값이 <span class="v na">—</span>이면 이 세그먼트에서
+    해당 메시지가 아직 관측되지 않았거나(0x238은 다른 mux 그룹이 활성인 경우 포함) 이 순간까지
+    로그에 없는 것입니다.
+  </div>
+  <div id="adasTables"></div>
+</div>
+
 <script>
 const MPH=2.2369363;
 let DATA=null, poll=null, vt=0, VOFF=0, worstT=null, worstStopT=null;
 const $=id=>document.getElementById(id);
 const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 
+// column 15 of a row is {addr: {sigName: value}}, decoded straight off raw CAN in shadow_replay's
+// _AdasDecoder -- see that module for the mux handling 0x238 needs. Labels here are display-only.
+const ADAS_MSGS=[
+ {addr:0x3E8,name:'UI_driverAssistControl',label:'ADAS 전체 기능 활성화 설정',sigs:[
+   ['UI_autopilotControlRequest','Autopilot control request'],
+   ['UI_ulcStalkConfirm','ULC stalk confirm'],
+   ['UI_summonHeartbeat','Summon heartbeat'],
+   ['UI_summonEntryType','Summon 진입 방식'],
+   ['UI_summonExitType','Summon 종료 방식'],
+   ['UI_summonReverseDist','Summon 후진 거리'],
+   ['UI_curvSpeedAdaptDisable','곡률 속도 적응 disable'],
+   ['UI_dasDeveloper','개발자 모드'],
+   ['UI_enableVinAssociation','VIN association'],
+   ['UI_lssLkaEnabled','LKA'],
+   ['UI_lssLdwEnabled','LDW'],
+   ['UI_lssElkEnabled','ELK'],
+   ['UI_autoSummonEnable','Auto Summon'],
+   ['UI_exceptionListEnable','exception list enable'],
+   ['UI_roadCheckDisable','도로 검사 disable'],
+   ['UI_driveOnMapsEnable','지도 기반 주행'],
+   ['UI_handsOnRequirementDisable','hands-on requirement disable'],
+   ['UI_forksEnable','fork 처리'],
+   ['UI_fuseLanesDisable','lane fusion disable'],
+   ['UI_fuseHPPDisable','HPP fusion disable'],
+   ['UI_fuseVehiclesDisable','vehicle fusion disable'],
+   ['UI_enableNextGenACC','next-generation ACC'],
+   ['UI_visionSpeedType','vision speed type'],
+   ['UI_curvatureDatabaseOnly','curvature database only'],
+   ['UI_selfParkRequest','self-park request'],
+   ['UI_undertakeAssistEnable','undertake assist'],
+   ['UI_adaptiveSetSpeedEnable','adaptive set speed'],
+   ['UI_drivingSide','좌·우측 통행 방향'],
+   ['UI_enableClipTelemetry','clip telemetry 활성화'],
+   ['UI_enableTripTelemetry','trip telemetry 활성화'],
+   ['UI_enableRoadSegmentTelemetry','road segment telemetry 활성화'],
+   ['UI_followNavRouteEnable','내비 경로 추종'],
+   ['UI_ulcSpeedConfig','ULC speed 설정'],
+   ['UI_ulcBlindSpotConfig','ULC blind-spot 설정'],
+   ['UI_autopilotAlwaysOn','Autopilot always-on'],
+   ['UI_accFromZero','정지 상태 ACC'],
+   ['UI_alcOffHighwayEnable','비고속도로 자동 차선변경'],
+   ['UI_validationLoop','validation loop'],
+   ['UI_ulcOffHighway','ULC off-highway'],
+   ['UI_enableNavRouteCSA','내비 경로 CSA'],
+   ['UI_enableCutinExperiments','cut-in 실험 기능'],
+   ['UI_source3D','3D source'],
+   ['UI_enableVisionOnlyStops','vision-only stop'],
+ ]},
+ {addr:0x3C8,name:'UI_driverAssistMapData',label:'도로표지 지원 지도 데이터',sigs:[
+   ['UI_mapSpeedLimitDependency','제한속도 조건 종류 (학교·날씨·시간·계절·차선 등)'],
+   ['UI_roadClass','지도상 도로 등급'],
+   ['UI_inSuperchargerGeofence','슈퍼차저 geofence 내부 여부'],
+   ['UI_mapSpeedUnits','지도 제한속도 단위 (mph/km-h)'],
+   ['UI_mapSpeedLimit','제한속도 (단위 신호와 함께 해석)'],
+   ['UI_mapSpeedLimitType','제한속도 유형 (일반·권고·조건부)'],
+   ['UI_countryCode','지도 데이터 국가 코드'],
+   ['UI_streetCount','현재 지도 매칭 도로 수/후보 수'],
+   ['UI_gpsRoadMatch','GPS-지도 도로 매칭 여부'],
+   ['UI_navRouteActive','Tesla 순정 내비 경로 활성 여부'],
+   ['UI_parallelAutoparkEnabled','평행주차 가능 상태'],
+   ['UI_perpendicularAutoparkEnabled','직각주차 가능 상태'],
+   ['UI_nextBranchDist','다음 분기까지 거리 (raw 31=SNA)'],
+   ['UI_controlledAccess','출입 통제 도로 여부 (고속도로 등)'],
+   ['UI_nextBranchLeftOffRamp','다음 분기가 좌측 오프램프'],
+   ['UI_nextBranchRightOffRamp','다음 분기가 우측 오프램프'],
+   ['UI_rejectLeftLane','좌측 차선 후보 거부'],
+   ['UI_rejectRightLane','우측 차선 후보 거부'],
+   ['UI_rejectHPP','HPP 거부'],
+   ['UI_rejectNav','내비 경로 거부'],
+   ['UI_rejectLeftFreeSpace','좌측 free-space 거부'],
+   ['UI_rejectRightFreeSpace','우측 free-space 거부'],
+   ['UI_rejectAutosteer','Autosteer 거부/불가'],
+   ['UI_rejectHandsOn','hands-on 관련 거부'],
+   ['UI_acceptBottsDots',"Botts' dots 차선 표시 허용"],
+   ['UI_autosteerRestricted','Autosteer 제한 상태'],
+   ['UI_pmmEnabled','PMM 활성 상태'],
+   ['UI_scaEnabled','SCA 활성 상태'],
+   ['UI_mapDataCounter','순환 카운터'],
+   ['UI_mapDataChecksum','체크섬'],
+ ]},
+ {addr:0x238,name:'UI_driverAssistRoadSign',label:'도로표지와 Tesla 지도 spline (mux)',mux:true,sigs:[
+   ['UI_roadSign','멀티플렉서 (mux 그룹 선택)'],
+   ['UI_splineLocConfidence','현재 spline 매칭 신뢰도'],
+   ['UI_splineID','축약된 spline ID'],
+   ['UI_dummyData','[mux0] placeholder (유효 데이터 없음)'],
+   ['UI_stopSignStopLineDist','[mux1] 정지표지 정지선까지 거리'],
+   ['UI_stopSignStopLineConf','[mux1] 정지표지 정지선 신뢰도'],
+   ['UI_trafficLightStopLineDist','[mux2] 신호등 정지선까지 거리'],
+   ['UI_trafficLightStopLineConf','[mux2] 신호등 정지선 신뢰도'],
+   ['UI_baseMapSpeedLimitMPS','[mux3] 지도 기본 제한속도'],
+   ['UI_bottomQrtlFleetSpeedMPS','[mux3] fleet 속도 하위 사분위'],
+   ['UI_topQrtlFleetSpeedMPS','[mux3] fleet 속도 상위 사분위'],
+   ['UI_meanFleetSplineSpeedMPS','[mux4] spline별 fleet 평균속도'],
+   ['UI_medianFleetSpeedMPS','[mux4] fleet 중앙값 속도'],
+   ['UI_meanFleetSplineAccelMPS2','[mux4] fleet 평균 가속도'],
+   ['UI_rampType','[mux4] 램프 유형 (진입·출구·인터체인지)'],
+   ['UI_currSplineIdFull','[mux5] 전체 Tesla 지도 spline ID'],
+ ]},
+ {addr:0x2C8,name:'UI_roadCurvature',label:'지도 기반 도로 곡률',sigs:[
+   ['UI_roadCurvC0','도로 다항식 계수 C0'],
+   ['UI_roadCurvC1','도로 다항식 계수 C1'],
+   ['UI_roadCurvC2','도로 다항식 계수 C2'],
+   ['UI_roadCurvC3','도로 다항식 계수 C3'],
+   ['UI_roadCurvRange','유효거리'],
+   ['UI_roadCurvHealth','health'],
+   ['UI_roadCurvChecksum','체크섬'],
+ ]},
+ {addr:0x2E8,name:'UI_csaRoadCurvature',label:'일반 도로 CSA 곡률',sigs:[
+   ['UI_csaRoadCurvC2','계수 C2'],
+   ['UI_csaRoadCurvC3','계수 C3'],
+   ['UI_csaRoadCurvRange','유효거리'],
+   ['UI_csaRoadCurvCounter','counter'],
+   ['UI_csaRoadCurvUsingTspline','T-spline 사용 여부'],
+   ['UI_csaRoadCurvReserved','reserved'],
+   ['UI_csaRoadCurvChecksum','체크섬'],
+ ]},
+ {addr:0x2D8,name:'UI_csaOfframpCurvature',label:'오프램프 CSA 곡률',sigs:[
+   ['UI_csaOfframpCurvC2','계수 C2'],
+   ['UI_csaOfframpCurvC3','계수 C3'],
+   ['UI_csaOfframpCurvRange','유효거리'],
+   ['UI_csaOfframpCurvCounter','counter'],
+   ['UI_csaOfframpCurvUsingTspline','T-spline 사용 여부'],
+   ['UI_csaOfframpCurvReserved','reserved'],
+   ['UI_csaOfframpCurvChecksum','체크섬'],
+ ]},
+ {addr:0x2B8,name:'UI_radarMapData',label:'지도 기반 레이더 보조 데이터',sigs:[
+   ['UI_radarTargetDx','레이더 대상 시작 거리'],
+   ['UI_radarTargetDxEnd','대상 종료 거리'],
+   ['UI_radarTargetTrustMap','지도 신뢰도'],
+   ['UI_radarEnableBraking','제동 허용 여부'],
+   ['UI_radarMapDataCounter','counter'],
+   ['UI_radarMapDataChecksum','체크섬'],
+ ]},
+];
+
+function renderAdasSkeleton(){
+  $('adasTables').innerHTML = ADAS_MSGS.map(m=>`
+    <div class="adasMsg">
+      <h3>${m.label}<span class="addr">0x${m.addr.toString(16).toUpperCase()} · ${m.name}</span></h3>
+      <div class="adasTbl">${m.sigs.map(([sig,lbl])=>`
+        <div class="k">${lbl}<br><small style="color:var(--dim)">${sig}</small></div>
+        <div class="v na" id="adas_${m.addr}_${sig}">–</div>`).join('')}
+      </div>
+    </div>`).join('');
+}
+
+function updateAdas(r){
+  const adas = (r && r[15]) || {};
+  for(const m of ADAS_MSGS){
+    const vals = adas[m.addr] || {};
+    for(const [sig] of m.sigs){
+      const el = document.getElementById(`adas_${m.addr}_${sig}`);
+      if(!el) continue;
+      const v = vals[sig];
+      if(v===undefined){ el.textContent='–'; el.className='v na'; }
+      else{ el.textContent = Number.isInteger(v) ? v : v.toFixed(4); el.className='v'; }
+    }
+  }
+}
+
 async function boot(){
+  renderAdasSkeleton();
   const d=await (await fetch('/api/shadow')).json();
   $('sub').textContent = `커밋 ${d.commit||''} · 녹화 주행 ${(d.routes||[]).length}개`;
   $('route').innerHTML = (d.routes||[]).map(r=>`<option>${r}</option>`).join('');
@@ -1670,6 +1852,7 @@ function draw(){
     g.strokeStyle=css('--card'); g.lineWidth=1.8; g.stroke();
   }
   readout(r);
+  updateAdas(r);
   $('tt').textContent=`${vt.toFixed(2)}s / ${dur.toFixed(0)}s`;
 }
 
