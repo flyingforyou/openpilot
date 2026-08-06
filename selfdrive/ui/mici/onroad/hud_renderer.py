@@ -46,10 +46,24 @@ class FontSizes:
   set_speed: int = 112
 
 
+# CarrotPilot's traffic-light state, published on longitudinalPlan.
+TRAFFIC_OFF, TRAFFIC_RED, TRAFFIC_GREEN = 0, 1, 2
+# xState: which longitudinal state its planner is in. Only the stopping ones matter here.
+XSTATE_E2E_STOP, XSTATE_E2E_STOPPED = 3, 5
+# Below this the plan is neither accelerating nor braking enough to draw an arrow for.
+ACCEL_DEADBAND = 0.15  # m/s^2
+LIGHT_RADIUS = 40
+
+
 @dataclass(frozen=True)
 class Colors:
   WHITE = rl.WHITE
   WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
+  BLACK_TRANSLUCENT = rl.Color(0, 0, 0, 166)
+  LIGHT_RED = rl.Color(226, 44, 44, 255)
+  LIGHT_GREEN = rl.Color(60, 200, 110, 255)
+  ACCEL_UP = rl.Color(128, 216, 166, 255)
+  ACCEL_DOWN = rl.Color(226, 120, 90, 255)
 
 
 FONT_SIZES = FontSizes()
@@ -130,6 +144,9 @@ class HudRenderer(Widget):
     self._gap_popup_until: float = 0.0
     self._lead_d_rel: float | None = None
 
+    self._traffic_state: int = TRAFFIC_OFF
+    self._x_state: int = 0
+    self._plan_accel: float = 0.0
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
 
@@ -179,6 +196,9 @@ class HudRenderer(Widget):
       self._last_gap_adjust = 0
       self._gap_popup_until = 0.0
       self._lead_d_rel = None
+      self._traffic_state = TRAFFIC_OFF
+      self._x_state = 0
+      self._plan_accel = 0.0
       return
 
     controls_state = sm['controlsState']
@@ -215,6 +235,13 @@ class HudRenderer(Widget):
     lead_one = sm['radarState'].leadOne if sm.valid['radarState'] else None
     self._lead_d_rel = lead_one.dRel if (lead_one and lead_one.status) else None
 
+    # Only the carrot planner fills these; the stock one leaves them zero, which reads as
+    # "no traffic light seen" and draws nothing.
+    plan = sm['longitudinalPlan']
+    self._traffic_state = int(plan.trafficState)
+    self._x_state = int(plan.xState)
+    self._plan_accel = float(plan.aTarget)
+
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
 
@@ -237,6 +264,46 @@ class HudRenderer(Widget):
 
     if self._gap_alpha_filter.x > 0.01:
       self._draw_gap_popup(rect)
+
+    self._draw_traffic_light(rect)
+
+  def _draw_traffic_light(self, rect: rl.Rectangle) -> None:
+    """A lamp for what the model sees, and an arrow for what the plan does about it.
+
+    Drawn only when there is something to say: no lamp when no light is seen, no arrow when the
+    plan is neither accelerating nor braking. A permanently-lit indicator stops being read.
+    """
+    if self._traffic_state == TRAFFIC_OFF:
+      return
+
+    cx = int(rect.x + rect.width - LIGHT_RADIUS - 60)
+    cy = int(rect.y + LIGHT_RADIUS + 60)
+
+    lit = COLORS.LIGHT_RED if self._traffic_state == TRAFFIC_RED else COLORS.LIGHT_GREEN
+    rl.draw_circle(cx, cy, LIGHT_RADIUS + 6, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_circle(cx, cy, LIGHT_RADIUS, lit)
+    rl.draw_circle_lines(cx, cy, LIGHT_RADIUS, COLORS.WHITE_TRANSLUCENT)
+
+    # The planner can still be holding a stop after the light goes green -- show that, rather
+    # than a green lamp over a car that is not moving, which reads as a fault.
+    if self._x_state in (XSTATE_E2E_STOP, XSTATE_E2E_STOPPED):
+      rl.draw_circle_lines(cx, cy, LIGHT_RADIUS + 12, lit)
+
+    if abs(self._plan_accel) < ACCEL_DEADBAND:
+      return
+
+    up = self._plan_accel > 0
+    colour = COLORS.ACCEL_UP if up else COLORS.ACCEL_DOWN
+    ay = cy + LIGHT_RADIUS + 32
+    half, height = 18, 24
+    tip = rl.Vector2(cx, ay - height / 2 if up else ay + height / 2)
+    left = rl.Vector2(cx - half, ay + height / 2 if up else ay - height / 2)
+    right = rl.Vector2(cx + half, ay + height / 2 if up else ay - height / 2)
+    # raylib fills triangles wound counter-clockwise; swapping the base covers both directions.
+    if up:
+      rl.draw_triangle(tip, left, right, colour)
+    else:
+      rl.draw_triangle(tip, right, left, colour)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
