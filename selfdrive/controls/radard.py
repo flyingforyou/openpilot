@@ -170,7 +170,8 @@ class Track:
     self.dPath, self.in_lane_prob, self.lane_half_width = interp_at(self.dRel, self.yRel)
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float,
-             j_lead: float = 0.0, yv_rel: float = 0.0, a_lead: float = 0.0):
+             j_lead: float = 0.0, yv_rel: float = 0.0, a_lead: float = 0.0,
+             reaction_factor: float = 1.0):
     prev = None if self.cnt == 0 else (self.dRel, self.yRel, self.vLead, self.measured)
 
     # relative values, copy
@@ -204,9 +205,14 @@ class Track:
     self.vLeadK = float(self.kf.x[SPEED][0])
     self.aLeadK = float(self.kf.x[ACCEL][0])
 
-    # Learn if constant acceleration
-    if abs(self.aLeadK) < 0.5:
-      self.aLeadTau.x = _LEAD_ACCEL_TAU
+    # How long the lead's current acceleration is assumed to persist. CarrotPilot scales both
+    # the threshold and the time constant by one factor, and judges "steady" on the measured
+    # acceleration and jerk rather than the Kalman estimate -- the filtered value lags exactly
+    # when the lead changes what it is doing, which is when this decision matters.
+    a_threshold = 0.5 * reaction_factor
+    steady = abs(self.aLead) < a_threshold if self.measured else abs(self.aLeadK) < a_threshold
+    if steady and abs(self.jLead) < 0.5:
+      self.aLeadTau.x = _LEAD_ACCEL_TAU * reaction_factor
     else:
       self.aLeadTau.update(0.0)
 
@@ -519,6 +525,7 @@ class RadarD:
     # The yaw estimate is noisy frame to frame and it scales a correction applied out to 50m,
     # so it is smoothed before anything is projected with it.
     self.yaw_rate_filter = FirstOrderFilter(0.0, 0.20, DT_MDL)
+    self.radar_reaction_factor = 1.0
     self.frame = 0
     self.refresh_tuning()
 
@@ -542,6 +549,10 @@ class RadarD:
 
     # Close-range radar lead hold. Distance is in cm on the param so the tuning page can offer
     # whole-metre steps without a float param; 0 disables.
+    # 100% is stock behaviour. Lower reacts to the lead's acceleration sooner and holds it
+    # longer; higher assumes it fades faster and responds more gently.
+    self.radar_reaction_factor = (self.params.get("RadarReactionFactor", return_default=True) or 100) / 100.0
+
     hold_cm = self.params.get("RadarLeadHoldCm", return_default=True) or 0
     lead_hold_ms = self.params.get("RadarLeadHoldMs", return_default=True) or RADAR_LEAD_HOLD_DEFAULT_MS
     self.lead_hold.configure(hold_cm / 100.0, lead_hold_ms)
@@ -590,7 +601,8 @@ class RadarD:
       if ids not in self.tracks:
         self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
       track = self.tracks[ids]
-      track.update(pt.dRel, pt.yRel, pt.vRel, v_lead, pt.measured, pt.jLead, pt.yvRel, pt.aLead)
+      track.update(pt.dRel, pt.yRel, pt.vRel, v_lead, pt.measured, pt.jLead, pt.yvRel, pt.aLead,
+                   self.radar_reaction_factor)
 
       # Lane-relative position, and where the track is heading once the turn is accounted for.
       # Both feed match_vision_to_track, so they have to be current before the match runs.

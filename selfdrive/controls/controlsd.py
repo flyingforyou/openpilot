@@ -38,10 +38,18 @@ class Controls:
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
                                    'liveCalibration', 'livePose', 'longitudinalPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance'], poll='selfdriveState')
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance',
+                                   'radarState'], poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'])
 
     self.steer_limited_by_safety = False
+
+    # CarrotPilot's stopping accel. Only read when its planner is the one running -- under the
+    # stock planner the port's own stopAccel is the right number and this stays zero, which
+    # means "leave it alone".
+    self._carrot_long = self.params.get_bool("CarrotLongEnabled")
+    self._stopping_accel = 0.0
+    self._param_frame = 0
     self.curvature = 0.0
     self.desired_curvature = 0.0
 
@@ -112,7 +120,15 @@ class Controls:
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
-    actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
+    # Params.get hits disk, so not every frame.
+    self._param_frame += 1
+    if self._carrot_long and self._param_frame % 50 == 0:
+      raw = self.params.get("StoppingAccel", return_default=True)
+      self._stopping_accel = (int(raw) if raw is not None else 0) * 0.01
+    lead = self.sm['radarState'].leadOne
+    lead_d_rel = float(lead.dRel) if lead.status else None
+    actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop,
+                                            pid_accel_limits, self._stopping_accel, lead_d_rel))
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage

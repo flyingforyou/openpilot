@@ -160,6 +160,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CruiseMaxVals5", {PERSISTENT, INT, "95"}},
     {"CruiseMaxVals6", {PERSISTENT, INT, "80"}},
     {"StopDistanceCarrot", {PERSISTENT, INT, "550"}},
+    // Stopping accel: the car must already be braking at least this hard before the controller
+    // commits to its stopping ramp. 0 means "use the port's own stopAccel", which is what the
+    // stock planner does. Negative hundredths, matching carrot.
+    {"StoppingAccel", {PERSISTENT, INT, "-50"}},
+    // How long the lead's measured acceleration is assumed to last, as a percentage. Lower
+    // reacts sooner and holds it longer; higher assumes it fades and responds more gently.
+    {"RadarReactionFactor", {PERSISTENT, INT, "100"}},
     {"JLeadFactor3", {PERSISTENT, INT, "0"}},
     {"CruiseEcoControl", {PERSISTENT, INT, "2"}},
     {"AutoNaviSpeedDecelRate", {PERSISTENT, INT, "120"}},
