@@ -239,11 +239,6 @@ SETTINGS = {
     "help": "위 유지가 최대 얼마나 이어질지입니다. 길면 끊김에 강하고, 짧으면 오래된 트랙을 덜 붙듭니다.",
     "options": [(500, "0.5초"), (1000, "표준 1.0초"), (2000, "2.0초")],
   },
-  "LongitudinalPersonality": {
-    "label": "Driving personality", "type": "int",
-    "help": "Gap 신호가 없을 때의 기본 추종 시간입니다.",
-    "options": [(0, "aggressive"), (1, "standard"), (2, "relaxed")],
-  },
   "TeslaStockLong": {
     "label": "순정 ACC 사용", "type": "bool",
     "help": "속도 제어를 차의 순정 ACC에 맡기고 openpilot은 조향만 합니다. 순정 ACC는 이미 "
