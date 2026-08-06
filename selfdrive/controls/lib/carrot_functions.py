@@ -465,7 +465,7 @@ class CarrotPlanner:
     # reads personality (not just this planner) sees it, not just _get_base_t_follow. Only writes
     # on an actual change -- Params.put is disk I/O, and this runs every frame.
     if 1 <= self.gap_adjust <= 7 and self.gap_adjust != self._personality_synced_gap:
-      self.params.put_int_nonblocking('LongitudinalPersonality', GAP_TO_PERSONALITY_INT[self.gap_adjust - 1])
+      self.params.put_nonblocking('LongitudinalPersonality', GAP_TO_PERSONALITY_INT[self.gap_adjust - 1])
       self._personality_synced_gap = self.gap_adjust
     # No vCluRatio on this car: it scales cruise speed to the cluster's own display
     # rounding, which this port does not model. 1.0 leaves v_cruise as given.
