@@ -1,4 +1,5 @@
 import colorsys
+import time
 import numpy as np
 import pyray as rl
 from cereal import messaging, car
@@ -7,8 +8,9 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
 from openpilot.selfdrive.ui.ui_state import ui_state
-from openpilot.system.ui.lib.application import gui_app
+from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.shader_polygon import draw_polygon, Gradient
+from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 
 CLIP_MARGIN = 500
@@ -39,6 +41,7 @@ class LeadVehicle:
   glow: list[float] = field(default_factory=list)
   chevron: list[float] = field(default_factory=list)
   fill_alpha: int = 0
+  source: str = ""
 
 
 class ModelRenderer(Widget):
@@ -50,6 +53,9 @@ class ModelRenderer(Widget):
     self._prev_allow_throttle = True
     self._lane_line_probs = np.zeros(4, dtype=np.float32)
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
+    self._left_blindspot = False
+    self._right_blindspot = False
+    self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._path_offset_z = HEIGHT_INIT[0]
 
@@ -95,6 +101,9 @@ class ModelRenderer(Widget):
 
     # Update state
     self._experimental_mode = sm['selfdriveState'].experimentalMode
+    car_state = sm['carState'] if sm.valid['carState'] else None
+    self._left_blindspot = bool(car_state and car_state.leftBlindspot)
+    self._right_blindspot = bool(car_state and car_state.rightBlindspot)
 
     live_calib = sm['liveCalibration']
     self._path_offset_z = live_calib.height[0] if live_calib.height else HEIGHT_INIT[0]
@@ -157,7 +166,8 @@ class ModelRenderer(Widget):
         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
         if point:
-          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect)
+          source = "R" if lead_data.radar else "V"
+          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect, source)
 
   def _update_model(self, lead, path_x_array):
     """Update model visualization data based on model message"""
@@ -231,7 +241,7 @@ class ModelRenderer(Widget):
       stops=gradient_stops,
     )
 
-  def _update_lead_vehicle(self, d_rel, v_rel, point, rect):
+  def _update_lead_vehicle(self, d_rel, v_rel, point, rect, source):
     speed_buff, lead_buff = 10.0, 40.0
 
     # Calculate fill alpha
@@ -253,16 +263,25 @@ class ModelRenderer(Widget):
     glow = [(x + (sz * 1.35) + g_xo, y + sz + g_yo), (x, y - g_yo), (x - (sz * 1.35) - g_xo, y + sz + g_yo)]
     chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]
 
-    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha))
+    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), source=source)
 
   def _draw_lane_lines(self):
     """Draw lane lines and road edges"""
+    # laneLines[1] and laneLines[2] are the ego lane's left and right boundaries.
+    # Toggle every 250 ms, resulting in a 2 Hz warning flash.
+    blindspot_flash_on = int(time.monotonic() * 4.0) % 2 == 0
+
     for i, lane_line in enumerate(self._lane_lines):
       if lane_line.projected_points.size == 0:
         continue
 
-      alpha = np.clip(self._lane_line_probs[i], 0.0, 0.7)
-      color = rl.Color(255, 255, 255, int(alpha * 255))
+      blindspot_active = (i == 1 and self._left_blindspot) or (i == 2 and self._right_blindspot)
+      if blindspot_active:
+        color = rl.Color(255, 35, 35, 255 if blindspot_flash_on else 45)
+      else:
+        alpha = np.clip(self._lane_line_probs[i], 0.0, 0.7)
+        color = rl.Color(255, 255, 255, int(alpha * 255))
+
       draw_polygon(self._rect, lane_line.projected_points, color)
 
     for i, road_edge in enumerate(self._road_edges):
@@ -307,6 +326,20 @@ class ModelRenderer(Widget):
 
       rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
       rl.draw_triangle_fan(lead.chevron, len(lead.chevron), rl.Color(201, 34, 49, lead.fill_alpha))
+
+      if lead.source:
+        apex_x, apex_y = lead.chevron[1]
+        chevron_height = max(lead.chevron[0][1] - apex_y, 1.0)
+        # Use an explicitly loaded font: raylib's built-in default font isn't available here,
+        # so rl.draw_text() would silently draw nothing.
+        font_size = float(np.clip(chevron_height * 0.52, 24, 34))
+        text_size = measure_text_cached(self._font_bold, lead.source, font_size)
+        text_x = apex_x - text_size.x / 2
+        text_y = apex_y + chevron_height * 0.43
+        source_color = rl.Color(80, 200, 255, 255) if lead.source == "R" else rl.Color(255, 190, 50, 255)
+        rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x + 2, text_y + 2), font_size, 0,
+                        rl.Color(0, 0, 0, 220))
+        rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x, text_y), font_size, 0, source_color)
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_distance: float) -> int:

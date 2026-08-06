@@ -60,7 +60,11 @@ class TogglesLayoutMici(NavScroller):
     if ui_state.sm.updated["selfdriveState"]:
       personality = PERSONALITY_TO_INT[ui_state.sm["selfdriveState"].personality]
       if personality != ui_state.personality and ui_state.started:
-        self._personality_toggle.set_value(self._personality_toggle._options[personality])
+        # This toggle only lists 3 options; the gap stalk can drive personality to values outside
+        # that (see carrot_functions.py). Leave the displayed value alone rather than crash.
+        options = self._personality_toggle._options
+        if 0 <= personality < len(options):
+          self._personality_toggle.set_value(options[personality])
       ui_state.personality = personality
 
   def show_event(self):

@@ -197,6 +197,13 @@ struct CarState {
   invalidLkasSetting @55 :Bool;    # stock LKAS is incorrectly configured (i.e. on or off)
   stockAeb @30 :Bool;
   stockLkas @59 :Bool;
+  # The factory ACC's own commanded band, decoded straight off the AP module's own bus (bus 2 on
+  # HW1) rather than off anything forwarded to the car -- so it is populated every cycle
+  # regardless of who currently owns DAS_control, openpilotLongitudinalControl, or the
+  # forwarding gate. 5.44 m/s^2 (raw 511) is the message's own SNA value: no reading yet, not a
+  # request to accelerate that hard. Legacy Tesla only for now; not decoded for other platforms.
+  stockAccelMin @61 :Float32;
+  stockAccelMax @62 :Float32;
   stockFcw @31 :Bool;
   espDisabled @32 :Bool;
   accFaulted @42 :Bool;
@@ -245,6 +252,10 @@ struct CarState {
     available @2 :Bool;
     standstill @4 :Bool;
     nonAdaptive @5 :Bool;
+
+    # 0 means unavailable or not implemented.
+    # Tesla legacy (HW1/HW2/HW3) uses values 1 through 7.
+    gapAdjust @7 :UInt8;
 
     speedOffsetDEPRECATED @3 :Float32;
   }
@@ -324,6 +335,25 @@ struct RadarData @0x888ad6581cf0aacb {
 
     # some radars flag measurements VS estimates
     measured @6 :Bool;
+
+    # Absolute lead motion, filtered in the radar interface rather than derived per-track in
+    # radard. Ported from CarrotPilot: aRel is NaN or noisy on most radars, so vLead is filtered
+    # and differentiated there, where the raw point and its measured flag are still in hand.
+    # jLead is what the longitudinal MPC reads to tell a lead easing off from one braking hard.
+    vLead @7 :Float32; # m/s
+    aLead @8 :Float32; # m/s^2
+    jLead @9 :Float32; # m/s^3
+    radarSource @10 :RadarSource;
+
+    # Which sensor produced the point. This car has one forward Bosch radar, so everything is
+    # frontRadar; the rest are carried so the field means the same thing across ports.
+    enum RadarSource {
+      frontRadar @0;
+      scc @1;
+      corner235 @2;
+      corner180 @3;
+      corner430 @4;
+    }
   }
 
   enum ErrorDEPRECATED {
@@ -506,6 +536,10 @@ struct CarParams {
   radarUnavailable @35 :Bool; # True when radar objects aren't visible on CAN or aren't parsed out
   stopAccel @60 :Float32; # Required acceleration to keep vehicle stationary
   stoppingDecelRate @52 :Float32; # m/s^2/s while trying to stop
+  # Hardest deceleration the planner may ask this car for, m/s^2. Zero means "unset": use the
+  # ISO 15622:2018 ACC limit that interfaces.ACCEL_MIN carries. Ports whose car is known to
+  # brake harder state it here rather than being held to another car's number.
+  minAccel @78 :Float32;
   startAccel @32 :Float32; # Required acceleration to get car moving
   startingState @70 :Bool; # Does this car make use of special starting state
 

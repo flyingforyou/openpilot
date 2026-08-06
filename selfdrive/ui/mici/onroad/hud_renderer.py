@@ -1,3 +1,5 @@
+import time
+
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -7,7 +9,8 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
-from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.system.ui.widgets.label import UnifiedLabel
+from openpilot.common.filter_simple import BounceFilter, FirstOrderFilter
 from cereal import log
 
 EventName = log.OnroadEvent.EventName
@@ -18,6 +21,21 @@ KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
 
 SET_SPEED_PERSISTENCE = 2.5  # seconds
+METER_TO_FOOT = 3.28084
+
+# Gap popup, styled to match the lane change alerts in AlertRenderer.
+GAP_ALERT_MARGIN = 18                # AlertRenderer.ALERT_MARGIN
+GAP_ALERT_BG_HEIGHT_FRAC = 0.583     # AlertRenderer's "small alert" height
+GAP_ALERT_FONT_SIZE = 82             # what AlertRenderer picks for text this short
+GAP_ALERT_TEXT_Y = 11                # AlertRenderer's text1_y_offset for this font size
+GAP_ALERT_SLIDE = 50                 # AlertRenderer slides text in from rect.y - 50
+GAP_POPUP_SECONDS = 2.0
+
+# Left column strip between the driver monitor icon (16,10 sized 60x60) and the
+# steering wheel (centered at x=46, y=height-39), used for the lead distance.
+LEAD_DIST_CENTER_X = 46
+LEAD_DIST_CENTER_Y = 123
+LEAD_DIST_FONT_SIZE = 32.0
 
 
 @dataclass(frozen=True)
@@ -28,10 +46,24 @@ class FontSizes:
   set_speed: int = 112
 
 
+# CarrotPilot's traffic-light state, published on longitudinalPlan.
+TRAFFIC_OFF, TRAFFIC_RED, TRAFFIC_GREEN = 0, 1, 2
+# xState: which longitudinal state its planner is in. Only the stopping ones matter here.
+XSTATE_E2E_STOP, XSTATE_E2E_STOPPED = 3, 5
+# Below this the plan is neither accelerating nor braking enough to draw an arrow for.
+ACCEL_DEADBAND = 0.15  # m/s^2
+LIGHT_RADIUS = 40
+
+
 @dataclass(frozen=True)
 class Colors:
   WHITE = rl.WHITE
   WHITE_TRANSLUCENT = rl.Color(255, 255, 255, 200)
+  BLACK_TRANSLUCENT = rl.Color(0, 0, 0, 166)
+  LIGHT_RED = rl.Color(226, 44, 44, 255)
+  LIGHT_GREEN = rl.Color(60, 200, 110, 255)
+  ACCEL_UP = rl.Color(128, 216, 166, 255)
+  ACCEL_DOWN = rl.Color(226, 120, 90, 255)
 
 
 FONT_SIZES = FontSizes()
@@ -107,6 +139,14 @@ class HudRenderer(Widget):
     self.v_ego_cluster_seen: bool = False
     self._engaged: bool = False
 
+    self._gap_adjust: int = 0
+    self._last_gap_adjust: int = 0
+    self._gap_popup_until: float = 0.0
+    self._lead_d_rel: float | None = None
+
+    self._traffic_state: int = TRAFFIC_OFF
+    self._x_state: int = 0
+    self._plan_accel: float = 0.0
     self._can_draw_top_icons = True
     self._show_wheel_critical = False
 
@@ -114,6 +154,12 @@ class HudRenderer(Widget):
     self._font_medium: rl.Font = gui_app.font(FontWeight.MEDIUM)
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_display: rl.Font = gui_app.font(FontWeight.DISPLAY)
+
+    self._gap_label = UnifiedLabel(text="", font_size=GAP_ALERT_FONT_SIZE, font_weight=FontWeight.DISPLAY,
+                                   line_height=0.86)
+    # Same slide-in-and-fade as AlertRenderer, so it enters and leaves like a real alert
+    self._gap_alert_y_filter = BounceFilter(0, 0.1, 1 / gui_app.target_fps)
+    self._gap_alpha_filter = FirstOrderFilter(0, 0.05, 1 / gui_app.target_fps)
 
     self._turn_intent = TurnIntent()
     self._torque_bar = TorqueBar()
@@ -146,6 +192,13 @@ class HudRenderer(Widget):
       self.is_cruise_set = False
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
+      self._gap_adjust = 0
+      self._last_gap_adjust = 0
+      self._gap_popup_until = 0.0
+      self._lead_d_rel = None
+      self._traffic_state = TRAFFIC_OFF
+      self._x_state = 0
+      self._plan_accel = 0.0
       return
 
     controls_state = sm['controlsState']
@@ -169,6 +222,26 @@ class HudRenderer(Widget):
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
 
+    gap_adjust = int(car_state.cruiseState.gapAdjust)
+    if 1 <= gap_adjust <= 7:
+      # Do not show a popup for the first valid value after UI startup.
+      if self._last_gap_adjust != 0 and gap_adjust != self._last_gap_adjust:
+        self._gap_popup_until = time.monotonic() + GAP_POPUP_SECONDS
+      self._last_gap_adjust = gap_adjust
+      self._gap_adjust = gap_adjust
+    else:
+      self._gap_adjust = 0
+
+    lead_one = sm['radarState'].leadOne if sm.valid['radarState'] else None
+    self._lead_d_rel = lead_one.dRel if (lead_one and lead_one.status) else None
+
+    # Only the carrot planner fills these; the stock one leaves them zero, which reads as
+    # "no traffic light seen" and draws nothing.
+    plan = sm['longitudinalPlan']
+    self._traffic_state = int(plan.trafficState)
+    self._x_state = int(plan.xState)
+    self._plan_accel = float(plan.aTarget)
+
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
 
@@ -178,6 +251,59 @@ class HudRenderer(Widget):
       self._draw_set_speed(rect)
 
     self._draw_steering_wheel(rect)
+
+    # Only while engaged, matching the lane lines and path in the model renderer
+    if self._engaged and self._lead_d_rel is not None:
+      self._draw_lead_distance(rect)
+
+    # Filters must run every frame, not just while showing, so the exit animates too.
+    show_gap = (self._can_draw_top_icons and self._gap_adjust != 0 and
+                time.monotonic() < self._gap_popup_until)
+    self._gap_alert_y_filter.update(rect.y if show_gap else rect.y - GAP_ALERT_SLIDE)
+    self._gap_alpha_filter.update(1 if show_gap else 0)
+
+    if self._gap_alpha_filter.x > 0.01:
+      self._draw_gap_popup(rect)
+
+    self._draw_traffic_light(rect)
+
+  def _draw_traffic_light(self, rect: rl.Rectangle) -> None:
+    """A lamp for what the model sees, and an arrow for what the plan does about it.
+
+    Drawn only when there is something to say: no lamp when no light is seen, no arrow when the
+    plan is neither accelerating nor braking. A permanently-lit indicator stops being read.
+    """
+    if self._traffic_state == TRAFFIC_OFF:
+      return
+
+    cx = int(rect.x + rect.width - LIGHT_RADIUS - 60)
+    cy = int(rect.y + LIGHT_RADIUS + 60)
+
+    lit = COLORS.LIGHT_RED if self._traffic_state == TRAFFIC_RED else COLORS.LIGHT_GREEN
+    rl.draw_circle(cx, cy, LIGHT_RADIUS + 6, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_circle(cx, cy, LIGHT_RADIUS, lit)
+    rl.draw_circle_lines(cx, cy, LIGHT_RADIUS, COLORS.WHITE_TRANSLUCENT)
+
+    # The planner can still be holding a stop after the light goes green -- show that, rather
+    # than a green lamp over a car that is not moving, which reads as a fault.
+    if self._x_state in (XSTATE_E2E_STOP, XSTATE_E2E_STOPPED):
+      rl.draw_circle_lines(cx, cy, LIGHT_RADIUS + 12, lit)
+
+    if abs(self._plan_accel) < ACCEL_DEADBAND:
+      return
+
+    up = self._plan_accel > 0
+    colour = COLORS.ACCEL_UP if up else COLORS.ACCEL_DOWN
+    ay = cy + LIGHT_RADIUS + 32
+    half, height = 18, 24
+    tip = rl.Vector2(cx, ay - height / 2 if up else ay + height / 2)
+    left = rl.Vector2(cx - half, ay + height / 2 if up else ay - height / 2)
+    right = rl.Vector2(cx + half, ay + height / 2 if up else ay - height / 2)
+    # raylib fills triangles wound counter-clockwise; swapping the base covers both directions.
+    if up:
+      rl.draw_triangle(tip, left, right, colour)
+    else:
+      rl.draw_triangle(tip, right, left, colour)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
@@ -262,6 +388,51 @@ class HudRenderer(Widget):
       0,
       max_color,
     )
+
+  def _draw_lead_distance(self, rect: rl.Rectangle) -> None:
+    """Distance to the lead, in the left strip between the driver monitor and the wheel."""
+    if self._lead_d_rel is None:
+      return
+
+    d = self._lead_d_rel
+    text = f"{d:.0f}m" if ui_state.is_metric else f"{d * METER_TO_FOOT:.0f}ft"
+    text_size = measure_text_cached(self._font_bold, text, LEAD_DIST_FONT_SIZE)
+
+    x = rect.x + LEAD_DIST_CENTER_X - text_size.x / 2
+    y = rect.y + LEAD_DIST_CENTER_Y - text_size.y / 2
+
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(x + 2, y + 2), LEAD_DIST_FONT_SIZE, 0, rl.Color(0, 0, 0, 220))
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(x, y), LEAD_DIST_FONT_SIZE, 0, COLORS.WHITE)
+
+  def _draw_gap_popup(self, rect: rl.Rectangle) -> None:
+    """Briefly show the Tesla gap setting after the driver changes it.
+
+    Styled like a lane change alert: same black-to-transparent top gradient, and the same
+    lowercase display font at the same margin, so it reads as part of the alert language
+    rather than a separate widget.
+    """
+    alpha = self._gap_alpha_filter.x
+
+    # Background: solid for the top fifth, then fade out. Matches AlertRenderer's
+    # small alert (0.583 of height) used by the lane change alerts.
+    bg_height = round(rect.height * GAP_ALERT_BG_HEIGHT_FRAC)
+    solid_height = round(bg_height * 0.2)
+    color = rl.Color(0, 0, 0, int(255 * 0.90 * alpha))
+    translucent = rl.Color(0, 0, 0, 0)
+
+    rl.draw_rectangle(int(rect.x), int(rect.y), int(rect.width), solid_height, color)
+    rl.draw_rectangle_gradient_v(int(rect.x), int(rect.y + solid_height), int(rect.width),
+                                 int(bg_height - solid_height), color, translucent)
+
+    text = f"Gap {self._gap_adjust}"
+    text_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
+    self._gap_label.set_text(text)
+    self._gap_label.set_text_color(text_color)
+    self._gap_label.set_font_size(GAP_ALERT_FONT_SIZE)
+    self._gap_label.set_alignment(rl.GuiTextAlignment.TEXT_ALIGN_LEFT)
+    self._gap_label.render(rl.Rectangle(rect.x + GAP_ALERT_MARGIN,
+                                        self._gap_alert_y_filter.x + GAP_ALERT_TEXT_Y,
+                                        rect.width - GAP_ALERT_MARGIN, rect.height))
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""

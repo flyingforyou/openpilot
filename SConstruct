@@ -251,10 +251,14 @@ SConscript([
   'selfdrive/pandad/SConscript',
   'selfdrive/controls/lib/lateral_mpc_lib/SConscript',
   'selfdrive/controls/lib/longitudinal_mpc_lib/SConscript',
+  'selfdrive/controls/lib/longitudinal_mpc_carrot/SConscript',
   'selfdrive/locationd/SConscript',
   'selfdrive/modeld/SConscript',
   'selfdrive/ui/SConscript',
 ])
+
+if Dir('#tools/replay/').exists():
+  SConscript(['tools/replay/SConscript'])
 
 if Dir('#tools/cabana/').exists() and arch != "larch64":
   SConscript(['tools/cabana/SConscript'])

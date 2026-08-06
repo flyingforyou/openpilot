@@ -226,6 +226,22 @@ BO_ 532 EPB_epasControl: 3 EPB
  SG_ EPB_epasControlCounter : 11|4@0+ (1,0) [0|15] ""  NEO,EPAS
  SG_ EPB_epasEACAllow : 2|3@0+ (1,0) [4|7] ""  NEO,EPAS
 
+BO_ 782 PARK_status2: 8 PARK
+ SG_ PARK_frontSVACharID : 0|6@1+ (1,0) [0|63] "" DAS,GTW
+ SG_ PARK_pscRightCurbType : 6|2@1+ (1,0) [0|3] "" DAS,GTW
+ SG_ PARK_rearSVACharID : 8|6@1+ (1,0) [0|63] "" DAS,GTW
+ SG_ PARK_pscLeftCurbType : 14|2@1+ (1,0) [0|3] "" DAS,GTW
+ SG_ PARK_autoCalComplete : 16|1@1+ (1,0) [0|1] "" DAS,GTW
+ SG_ PARK_geometryType : 17|2@1+ (1,0) [0|3] "" GTW
+ SG_ PARK_tireFitment : 19|2@1+ (1,0) [0|3] "" DAS,GTW
+ SG_ PARK_rackDetected : 21|2@1+ (1,0) [0|3] "" DAS,GTW
+ SG_ PARK_sdiActive : 24|1@1+ (1,0) [0|1] "" DAS,GTW
+ SG_ PARK_sdiNoise : 25|2@1+ (1,0) [0|3] "" DAS,GTW
+ SG_ PARK_sdiBlindSpotRight : 27|2@1+ (1,0) [0|3] "" DAS,GTW
+ SG_ PARK_sdiBlindSpotLeft : 29|2@1+ (1,0) [0|3] "" DAS,GTW
+ SG_ PARK_status2Counter : 52|4@1+ (1,0) [0|0] "" GTW,DAS
+ SG_ PARK_status2Checksum : 56|8@1+ (1,0) [0|0] "" GTW
+
 BO_ 792 GTW_carState: 8 GTW
  SG_ YEAR : 0|7@1+ (1,2000) [2000|2127] "Year" NEO
  SG_ CERRD : 7|1@1+ (1,0) [0|1] "" NEO
@@ -851,6 +867,8 @@ VAL_ 697 DAS_accelMin 511 "SNA" ;
 VAL_ 697 DAS_accelMax 511 "SNA" ;
 VAL_ 780 occupancyStatus 1 "OCCUPIED" 0 "UNOCCUPIED" ;
 VAL_ 780 buckleStatus 1 "LATCHED" 0 "UNLATCHED" ;
+VAL_ 782 PARK_sdiBlindSpotRight 3 "SNA" 2 "UNUSED" 1 "WARNING" 0 "NO_WARNING" ;
+VAL_ 782 PARK_sdiBlindSpotLeft 3 "SNA" 2 "UNUSED" 1 "WARNING" 0 "NO_WARNING" ;
 VAL_ 792 BOOT_STATE 2 "Init" 3 "SNA" 0 "closed" 1 "open" ;
 VAL_ 792 CERRD 1 "CAN error detect" 0 "no Can error detected" ;
 VAL_ 792 DAY 1 "Init" 0 "SNA" ;

@@ -477,6 +477,26 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.NO_ENTRY: NoEntryAlert("Stock AEB: Risk of Collision"),
   },
 
+  # CarrotPilot's traffic-light alerts. Its own sounds (AudibleAlert.trafficSignGreen and
+  # friends) do not exist here, so these use the closest existing ones -- prompt for the two
+  # informational ones, none while merely slowing, which happens often enough that a chime every
+  # time would train you to ignore it.
+  EventName.trafficStopping: {},
+  EventName.trafficSignGreen: {
+    ET.WARNING: Alert(
+      "신호가 초록으로 바뀌었습니다",
+      "",
+      AlertStatus.normal, AlertSize.small,
+      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 2.),
+  },
+  EventName.trafficSignChanged: {
+    ET.WARNING: Alert(
+      "신호가 바뀌었습니다",
+      "",
+      AlertStatus.normal, AlertSize.small,
+      Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 1.),
+  },
+
   EventName.stockLkas: {
     ET.NO_ENTRY: NoEntryAlert("Stock LKAS: Lane Departure Detected"),
   },

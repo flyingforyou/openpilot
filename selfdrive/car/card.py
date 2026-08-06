@@ -17,6 +17,7 @@ from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
+from opendbc.car.tesla.values import TeslaFlags, TeslaSafetyFlags
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 
@@ -117,6 +118,37 @@ class Car:
       safety_config.safetyModel = structs.CarParams.SafetyModel.noOutput
       self.CP.safetyConfigs = [safety_config]
 
+    # Stock longitudinal: hand speed control back to the car's own ACC and do lateral only.
+    # Clearing openpilotLongitudinalControl stops controlsd/the planner actuating long and makes
+    # the car controller go silent on DAS_control; dropping the panda LONG_CONTROL flag is what
+    # then makes the factory DAS_control forward through instead of being blocked, and drops the
+    # message from the TX allowlist so openpilot cannot transmit it at all. Both halves are
+    # required -- with only the first, the stock frames stayed blocked and the car lost TACC and
+    # Autopilot together. Set at init, so a restart is required to change it.
+    if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaStockLong"):
+      self.CP.openpilotLongitudinalControl = False
+      for cfg in self.CP.safetyConfigs:
+        cfg.safetyParam &= ~TeslaSafetyFlags.LONG_CONTROL.value
+
+    # Cooperative steering: openpilot shifts its angle target toward the driver instead of
+    # letting go of the wheel, so a takeover never has to push hard enough for the EPS to
+    # inhibit. CarState reads CP.flags every frame off this same object.
+    if self.CP.brand == "tesla" and self.params.get_bool("TeslaCoopSteer"):
+      self.CP.flags |= TeslaFlags.COOP_STEER.value
+      # the two numbers are read here rather than in the car port, which has no access to params
+      if self.CI.CC is not None and hasattr(self.CI.CC, "coop_steer"):
+        self.CI.CC.coop_steering = True
+        self.CI.CC.coop_steer.set_tuning(
+          int(self.params.get("TeslaCoopMaxTorqueCNm", return_default=True) or 250) / 100.0,
+          int(self.params.get("TeslaCoopLatAccelCms", return_default=True) or 150) / 100.0)
+
+    # Let the stock HW1 autopark module drive while openpilot is disengaged. Panda ignores the
+    # flag on anything but teslaLegacy HW1, but the toggle is only meaningful there anyway.
+    if not self.CP.passive and self.params.get_bool("TeslaStockAutopark"):
+      for cfg in self.CP.safetyConfigs:
+        if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
+          cfg.safetyParam |= TeslaSafetyFlags.STOCK_AUTOPARK.value
+
     if self.CP.secOcRequired:
       # Copy user key if available
       try:
@@ -166,8 +198,10 @@ class Car:
     # Update carState from CAN
     CS = self.CI.update(can_list)
 
-    # Update radar tracks from CAN
-    RD: structs.RadarDataT | None = self.RI.update(can_list)
+    # Update radar tracks from CAN. vEgo goes in because absolute lead speed, and the
+    # acceleration and jerk derived from it, are only recoverable at this point -- the radar
+    # reports closing speed and nothing else.
+    RD: structs.RadarDataT | None = self.RI.update(can_list, CS.vEgo)
 
     self.sm.update(0)
 

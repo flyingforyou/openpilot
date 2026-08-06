@@ -200,7 +200,16 @@ class CarControllerParams:
 
   STEER_STEP = 2  # Angle command is sent at 50 Hz
   ACCEL_MAX = 2.0    # m/s^2
+  # ISO 15622:2018's ACC deceleration ceiling, rounded to a whole DAS_control step (0.04 m/s^2).
   ACCEL_MIN = -3.48  # m/s^2
+  # HW1/HW2 cars brake harder than the ISO number. Measured over six drives on a Model X HW1:
+  # with the driver's foot off the pedal the factory ACC asks down to -4.52 m/s^2 on DAS_accelMin.
+  # -4.2 is the nearest whole DAS_control step (0.04) below that, so this stays inside what the
+  # factory system requests of the car on its own.
+  # openpilot #22148 introduced the ISO limit and exempted Honda Nidec and GM in the same commit;
+  # this is the same exemption, backed by this car's own behaviour. Model 3/Y stay at the ISO
+  # value -- nothing has been measured there, and their panda mode still enforces it.
+  ACCEL_MIN_LEGACY = -4.2  # m/s^2, DAS_control raw 270
   JERK_LIMIT_MAX = 4.9  # m/s^3, ACC faults at 5.0
   JERK_LIMIT_MIN = -4.9  # m/s^3, ACC faults at 5.0
   JERK_RAMP_RATE = JERK_LIMIT_MAX * 0.002  # m/s^3 per control step, for smooth gas override
@@ -217,12 +226,16 @@ class TeslaSafetyFlags(IntFlag):
   FLAG_HW1 = 8
   FLAG_HW2 = 16
   FLAG_HW3 = 32
+  STOCK_AUTOPARK = 64
 
 
 class TeslaFlags(IntFlag):
   LONG_CONTROL = 1
   FSD_14 = 2
   MISSING_DAS_SETTINGS = 4
+  # 8 rather than the next free bit in this enum: TeslaLegacyParams shares CP.flags and already
+  # claims 1, so the two enums have to be read as one bit space.
+  COOP_STEER = 8
 
 
 DBC = CAR.create_dbc_map()

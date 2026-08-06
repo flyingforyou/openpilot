@@ -1,4 +1,6 @@
 import copy
+from typing import NamedTuple
+
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, structs
 from opendbc.car.carlog import carlog
@@ -8,6 +10,57 @@ from opendbc.car.tesla.teslacan import get_steer_ctrl_type
 from opendbc.car.tesla.values import DBC, CANBUS, GEAR_MAP, STEER_THRESHOLD, TeslaFlags, TeslaLegacyParams, CAR, LEGACY_CARS
 
 ButtonType = structs.CarState.ButtonEvent.Type
+
+TESLA_DTR_RAW_TO_GAP = {
+  0: 1,
+  33: 2,
+  66: 3,
+  100: 4,
+  133: 5,
+  166: 6,
+  200: 7,
+}
+
+
+# Panda hands the bus back 200ms after the stock module stops asking; openpilot has to stay quiet
+# at least that long, so hold a little past it. carState runs at 100Hz.
+STOCK_AUTOPARK_HOLD_FRAMES = 30
+
+
+def decode_tesla_gap(raw_gap: int) -> int:
+  """Convert Tesla legacy DTR_Dist_Rq raw value to a gap level.
+
+  Returns 1 through 7 for a valid Tesla gap, or 0 for SNA/an unknown value.
+  """
+  return TESLA_DTR_RAW_TO_GAP.get(int(raw_gap), 0)
+
+
+class LegacySteerState(NamedTuple):
+  pressed: bool
+  disengage: bool
+  fault_temporary: bool
+  fault_permanent: bool
+  high_angle_rate_safety: bool
+
+
+def legacy_steer_state(hands_on_level: float, eac_status: str | None,
+                       eac_error_code: str | None, torque_pressed: bool) -> LegacySteerState:
+  """How a driver's hands on the wheel are reported to the rest of openpilot.
+
+  Upstream behaviour, deliberately unchanged: a hard takeover is a disengage. steeringDisengage
+  becomes EventName.steerDisengage, an ET.USER_DISABLE, and openpilot drops out.
+
+  Cooperative steering does not touch this. It works by keeping the driver from ever having to
+  push hard enough to get here -- see coop_steering.py -- so this stays as the fallback for a
+  driver who overpowers it anyway, which is the path that has always worked on this car.
+  """
+  high_angle_rate_safety = (eac_status == "EAC_INHIBITED" and
+                            eac_error_code == "EAC_ERROR_HIGH_ANGLE_RATE_SAFETY")
+  driver_override = hands_on_level >= 3
+
+  return LegacySteerState(torque_pressed, driver_override or high_angle_rate_safety,
+                          eac_status == "EAC_INHIBITED", eac_status == "EAC_FAULT",
+                          high_angle_rate_safety)
 
 
 class CarState(CarStateBase):
@@ -36,22 +89,33 @@ class CarState(CarStateBase):
       self.shifter_values = self.can_define.dv["DI_systemStatus"]["DI_gear"]
 
     self.autopark = False
-    self.autopark_prev = False
-    self.cruise_enabled_prev = False
     self.fsd14_error_logged = False
     self.suspected_fsd14 = False
 
     self.hands_on_level = 0
+    self.high_angle_rate_safety = False
+    self.stock_autopark_frames = 0
+    self.stock_autopark_offered = False
     self.das_control = None
+    self.cruise_gap = 0
 
-  def update_autopark_state(self, autopark_state: str, cruise_enabled: bool):
-    autopark_now = autopark_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED")
-    if autopark_now and not self.autopark_prev and not self.cruise_enabled_prev:
-      self.autopark = True
-    if not autopark_now:
-      self.autopark = False
-    self.autopark_prev = autopark_now
-    self.cruise_enabled_prev = cruise_enabled
+  def update_autopark_state(self, autopark_now: bool):
+    # Takes the decoded "the park module has the car" boolean rather than the signal it came
+    # from, so both car generations can share this. Model 3/Y read DI_autoparkState off DI_state;
+    # the legacy DI_state has no such field, so HW1 derives it from AutopilotStatus.
+    #
+    # This used to be an edge latch: arm only on the rising edge of autopark_now, and only if
+    # cruise was not already enabled the frame before. In practice cruise is very often already
+    # on before the car ever offers a spot -- approaching with ACC engaged is the ordinary case,
+    # not the exception -- so the arm condition never fired and cruiseState.enabled leaked
+    # through for the whole encounter. Once that happens on this platform it is not a one-frame
+    # blip: panda's own fwd_hook state machine drops tesla_legacy_autopark_ts_valid the instant
+    # controls_allowed goes true, which closes the DAS_steeringControl forwarding gate outright
+    # (tesla_legacy_stock_autopark requires !controls_allowed) -- the stock module keeps steering
+    # on bus 2 but the EPS on bus 0 stops hearing it, and ~250-300ms later that surfaces as
+    # EAC_INHIBITED/TMP_FAULT and an APC_ABORT. No latch, no race: mask for as long as the car
+    # says autopark has the wheel, full stop.
+    self.autopark = autopark_now
 
   def update(self, can_parsers) -> structs.CarState:
     if self.CP.carFingerprint in LEGACY_CARS:
@@ -97,7 +161,7 @@ class CarState(CarStateBase):
 
     autopark_state = self.can_define.dv["DI_state"]["DI_autoparkState"].get(int(cp_party.vl["DI_state"]["DI_autoparkState"]), None)
     cruise_enabled = cruise_state in ("ENABLED", "STANDSTILL", "OVERRIDE", "PRE_FAULT", "PRE_CANCEL")
-    self.update_autopark_state(autopark_state, cruise_enabled)
+    self.update_autopark_state(autopark_state in ("ACTIVE", "COMPLETE", "SELFPARK_STARTED"))
 
     # Match panda safety cruise engaged logic
     ret.cruiseState.enabled = cruise_enabled and not self.autopark
@@ -192,25 +256,42 @@ class CarState(CarStateBase):
     ret.steeringTorque = -epas_status["EPAS_torsionBarTorque"]
 
     # stock handsOnLevel uses >0.5 for 0.25s, but is too slow
-    ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > STEER_THRESHOLD, 5)
+    torque_pressed = self.update_steering_pressed(abs(ret.steeringTorque) > STEER_THRESHOLD, 5)
 
     eac_status = self.can_defines["EPAS_sysStatus"]["EPAS_eacStatus"].get(int(epas_status["EPAS_eacStatus"]), None)
-    ret.steerFaultPermanent = eac_status == "EAC_FAULT"
-    ret.steerFaultTemporary = eac_status == "EAC_INHIBITED"
-
     # FSD disengages using union of handsOnLevel (slow overrides) and high angle rate faults (fast overrides, high speed)
     eac_error_code = self.can_defines["EPAS_sysStatus"]["EPAS_eacErrorCode"].get(int(epas_status["EPAS_eacErrorCode"]), None)
-    ret.steeringDisengage = self.hands_on_level >= 3 or (eac_status == "EAC_INHIBITED" and
-                                                         eac_error_code == "EAC_ERROR_HIGH_ANGLE_RATE_SAFETY")
+
+    steer = legacy_steer_state(self.hands_on_level, eac_status, eac_error_code, torque_pressed)
+    ret.steeringPressed = steer.pressed
+    ret.steeringDisengage = steer.disengage
+    ret.steerFaultTemporary = steer.fault_temporary
+    ret.steerFaultPermanent = steer.fault_permanent
+    # read by the car controller to drop the angle command while the driver is turning
+    self.high_angle_rate_safety = steer.high_angle_rate_safety
+
+    # Stock autopark, read before cruise because it gates it. Model 3/Y get DI_autoparkState
+    # straight off DI_state; the legacy DI_state carries no autopark field at all, so the
+    # closest equivalent is the park module's own offer on AutopilotStatus. Raven (Model S HW3)
+    # uses a party DBC without that message, so it never reports the maneuver.
+    autopark_offered = False
+    if self.CP.carFingerprint != CAR.TESLA_MODEL_S_HW3:
+      autopilot_status = cp_ap_party.vl["AutopilotStatus"]
+      autopark_offered = (int(autopilot_status["DAS_autoparkReady"]) == 1 or
+                          int(autopilot_status["DAS_autoparkWaitingForBrake"]) == 1)
 
     # Cruise state
     cruise_state = self.can_defines["DI_state"]["DI_cruiseState"].get(int(cp_chassis.vl["DI_state"]["DI_cruiseState"]), None)
     speed_units = self.can_defines["DI_state"]["DI_speedUnits"].get(int(cp_chassis.vl["DI_state"]["DI_speedUnits"]), None)
 
     cruise_enabled = cruise_state in ("ENABLED", "STANDSTILL", "OVERRIDE", "PRE_FAULT", "PRE_CANCEL")
+    self.update_autopark_state(autopark_offered)
 
-    # Match panda safety cruise engaged logic
-    ret.cruiseState.enabled = cruise_enabled
+    # Match panda safety cruise engaged logic. Autopark drives the car through the ACC channel,
+    # so the car reports cruise enabled the moment the maneuver starts. Taking that at face value
+    # made openpilot ask to cancel the cruise the park module was using and try to engage itself
+    # in reverse; both came off this one signal.
+    ret.cruiseState.enabled = cruise_enabled and not self.autopark
     if speed_units == "KPH":
       ret.cruiseState.speed = max(cp_chassis.vl["DI_state"]["DI_digitalSpeed"] * CV.KPH_TO_MS, 1e-3)
     elif speed_units == "MPH":
@@ -231,9 +312,21 @@ class CarState(CarStateBase):
     if self.CP.carFingerprint == CAR.TESLA_MODEL_X_HW1:
       ret.leftBlinker = cp_chassis.vl["STW_ACTN_RQ"]["TurnIndLvr_Stat"] == 1
       ret.rightBlinker = cp_chassis.vl["STW_ACTN_RQ"]["TurnIndLvr_Stat"] == 2
+
+      # Steering wheel Gap 1-7 setting. Raw 0 is a valid gap (ACC_DIST_1), so the signal must not
+      # be read before the message has actually been received: CANParser zero-inits every signal,
+      # which would otherwise latch gap 1 (the shortest follow distance) on startup. Until a gap
+      # is received we publish 0 so the planner keeps using the personality based tFollow.
+      # 255/SNA and other unknown raw values hold the last valid gap.
+      if cp_chassis.ts_nanos["STW_ACTN_RQ"]["DTR_Dist_Rq"] != 0:
+        decoded_gap = decode_tesla_gap(cp_chassis.vl["STW_ACTN_RQ"]["DTR_Dist_Rq"])
+        if decoded_gap != 0:
+          self.cruise_gap = decoded_gap
+      ret.cruiseState.gapAdjust = self.cruise_gap
     else:
       ret.leftBlinker = cp_chassis.vl["GTW_carState"]["BC_indicatorLStatus"] == 1
       ret.rightBlinker = cp_chassis.vl["GTW_carState"]["BC_indicatorRStatus"] == 1
+      ret.cruiseState.gapAdjust = 0
 
     # Seatbelt
     if self.CP.flags & TeslaLegacyParams.NO_SDM1:
@@ -241,11 +334,33 @@ class CarState(CarStateBase):
     else:
       ret.seatbeltUnlatched = cp_chassis.vl["SDM1"]["SDM_bcklDrivStatus"] != 1
 
+    # Blindspot combines two independent legacy signals:
+    #  - PARK_status2 (ultrasonic Park Assist, chassis bus): what the instrument cluster's
+    #    blind spot icon actually reflects, active mainly at low/parking speed.
+    #  - AutopilotStatus (vision/radar, autopilot party bus): the DAS auto-lane-change
+    #    blind spot assessment, active mainly at road speed. Values 1 and 2 are warning
+    #    levels; 3 is SNA and must not block a lane change.
+    # Raven (Model S HW3) uses a different party DBC that doesn't have AutopilotStatus, but
+    # its chassis bus DBC still has PARK_status2, so that half still applies unconditionally.
+    park_status = cp_chassis.vl["PARK_status2"]
+    park_left_blindspot = int(park_status["PARK_sdiBlindSpotLeft"]) == 1
+    park_right_blindspot = int(park_status["PARK_sdiBlindSpotRight"]) == 1
+
+    das_left_blindspot = False
+    das_right_blindspot = False
+    if self.CP.carFingerprint != CAR.TESLA_MODEL_S_HW3:
+      das_left_blindspot = int(autopilot_status["DAS_blindSpotRearLeft"]) in (1, 2)
+      das_right_blindspot = int(autopilot_status["DAS_blindSpotRearRight"]) in (1, 2)
+
+    ret.leftBlindspot = park_left_blindspot or das_left_blindspot
+    ret.rightBlindspot = park_right_blindspot or das_right_blindspot
+
     # AEB
     ret.stockAeb = cp_ap_pt.vl["DAS_control"]["DAS_aebEvent"] == 1
 
     # LKAS
-    ret.stockLkas = cp_ap_party.vl["DAS_steeringControl"]["DAS_steeringControlType"] == 2  # LANE_KEEP_ASSIST
+    stock_steer_type = int(cp_ap_party.vl["DAS_steeringControl"]["DAS_steeringControlType"])
+    ret.stockLkas = stock_steer_type == 2  # LANE_KEEP_ASSIST
 
     # Stock Autosteer should be off (includes FSD)
     # ret.invalidLkasSetting = cp_ap_party.vl["DAS_settings"]["DAS_autosteerEnabled"] != 0
@@ -254,6 +369,30 @@ class CarState(CarStateBase):
 
     # Messages needed by carcontroller
     self.das_control = copy.copy(cp_ap_pt.vl["DAS_control"])
+
+    # What the factory ACC itself is asking for, straight off its own bus -- logged every cycle
+    # regardless of who owns DAS_control, so a run with openpilot driving still carries a shadow
+    # of what the stock system would have done, for comparing after the fact.
+    ret.stockAccelMin = float(self.das_control["DAS_accelMin"])
+    ret.stockAccelMax = float(self.das_control["DAS_accelMax"])
+
+    # Stock autopark needs DAS_control and DAS_steeringControl to itself for the whole maneuver.
+    # Held for a while after the module goes quiet, to match the panda's forwarding latch --
+    # openpilot must stop transmitting for at least as long as panda opens the gate, or the two
+    # command streams collide on the same arbitration id and the maneuver aborts.
+    stock_acc_state = int(cp_ap_pt.vl["DAS_control"]["DAS_accState"])
+    if 5 <= stock_acc_state <= 11 or ret.stockLkas or stock_steer_type == 1:  # APC range / ANGLE_CONTROL
+      self.stock_autopark_frames = STOCK_AUTOPARK_HOLD_FRAMES
+    else:
+      self.stock_autopark_frames = max(self.stock_autopark_frames - 1, 0)
+
+    # Deliberately wider than the silence window above, and used only to hold back the cancel.
+    # Autopark drives the car through the ACC channel, so the car reports cruise enabled the
+    # moment it starts and controlsd asks to cancel it -- that cancel ended the recorded
+    # maneuver 0.45s after the stock module had finally taken the steering. Going fully silent
+    # for the whole time autopark is merely on offer would be worse: it was 22s in that
+    # recording, and DAS_control is a channel the car expects fed at 25Hz.
+    self.stock_autopark_offered = autopark_offered or self.stock_autopark_frames > 0
 
     return ret
 

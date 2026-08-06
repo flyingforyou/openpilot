@@ -1,3 +1,5 @@
+import time
+
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
@@ -33,6 +35,14 @@ class FontSizes:
   set_speed: int = 90
 
 
+# CarrotPilot's traffic-light state, published on longitudinalPlan.
+TRAFFIC_OFF, TRAFFIC_RED, TRAFFIC_GREEN = 0, 1, 2
+# xState: which of its longitudinal states the planner is in. Only the stopping ones matter here.
+XSTATE_E2E_STOP, XSTATE_E2E_STOPPED = 3, 5
+# Below this the plan is neither accelerating nor braking in any way worth drawing an arrow for.
+ACCEL_DEADBAND = 0.15  # m/s^2
+
+
 @dataclass(frozen=True)
 class Colors:
   WHITE = rl.WHITE
@@ -49,6 +59,11 @@ class Colors:
   BORDER_TRANSLUCENT = rl.Color(255, 255, 255, 75)
   HEADER_GRADIENT_START = rl.Color(0, 0, 0, 114)
   HEADER_GRADIENT_END = rl.BLANK
+  LIGHT_RED = rl.Color(226, 44, 44, 255)
+  LIGHT_GREEN = rl.Color(60, 200, 110, 255)
+  LIGHT_OFF = rl.Color(80, 80, 80, 170)
+  ACCEL_UP = rl.Color(128, 216, 166, 255)
+  ACCEL_DOWN = rl.Color(226, 120, 90, 255)
 
 
 UI_CONFIG = UIConfig()
@@ -65,6 +80,12 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
+    self._gap_adjust: int = 0
+    self._last_gap_adjust: int = 0
+    self._gap_popup_until: float = 0.0
+    self._traffic_state: int = TRAFFIC_OFF
+    self._x_state: int = 0
+    self._plan_accel: float = 0.0
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -79,6 +100,12 @@ class HudRenderer(Widget):
       self.is_cruise_set = False
       self.set_speed = SET_SPEED_NA
       self.speed = 0.0
+      self._gap_adjust = 0
+      self._last_gap_adjust = 0
+      self._gap_popup_until = 0.0
+      self._traffic_state = TRAFFIC_OFF
+      self._x_state = 0
+      self._plan_accel = 0.0
       return
 
     controls_state = sm['controlsState']
@@ -100,6 +127,23 @@ class HudRenderer(Widget):
     speed_conversion = CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH
     self.speed = max(0.0, v_ego * speed_conversion)
 
+    gap_adjust = int(car_state.cruiseState.gapAdjust)
+    if 1 <= gap_adjust <= 7:
+      # Do not show a popup for the first valid value after UI startup.
+      if self._last_gap_adjust != 0 and gap_adjust != self._last_gap_adjust:
+        self._gap_popup_until = time.monotonic() + 1.0
+      self._last_gap_adjust = gap_adjust
+      self._gap_adjust = gap_adjust
+    else:
+      self._gap_adjust = 0
+
+    # Only the carrot planner fills these; the stock one leaves them at zero, which reads as
+    # "no traffic light seen" and draws nothing.
+    plan = sm['longitudinalPlan']
+    self._traffic_state = int(plan.trafficState)
+    self._x_state = int(plan.xState)
+    self._plan_accel = float(plan.aTarget)
+
   def _render(self, rect: rl.Rectangle) -> None:
     """Render HUD elements to the screen."""
     # Draw the header background
@@ -120,6 +164,52 @@ class HudRenderer(Widget):
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
     button_y = rect.y + UI_CONFIG.border_size
     self._exp_button.render(rl.Rectangle(button_x, button_y, UI_CONFIG.button_size, UI_CONFIG.button_size))
+
+    # Left of the experimental button, which already owns the top-right corner.
+    self._draw_traffic_light(button_x - UI_CONFIG.border_size, button_y)
+
+  def _draw_traffic_light(self, right_x: float, top_y: float) -> None:
+    """A lamp for what the model sees, and an arrow for what the plan is doing about it.
+
+    Drawn only when there is something to say: no lamp when no light is seen, no arrow when the
+    plan is neither accelerating nor braking. A permanently-lit indicator stops being read.
+    """
+    if self._traffic_state == TRAFFIC_OFF:
+      return
+
+    radius = 44
+    cx = int(right_x - radius)
+    cy = int(top_y + UI_CONFIG.button_size / 2)
+
+    lit = COLORS.LIGHT_RED if self._traffic_state == TRAFFIC_RED else COLORS.LIGHT_GREEN
+    rl.draw_circle(cx, cy, radius + 6, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_circle(cx, cy, radius, lit)
+    rl.draw_circle_lines(cx, cy, radius, COLORS.WHITE_TRANSLUCENT)
+
+    # The planner can be stopping for a light it no longer calls red -- show that it is still
+    # holding, rather than a green lamp over a car that is not moving.
+    if self._x_state in (XSTATE_E2E_STOP, XSTATE_E2E_STOPPED):
+      rl.draw_circle_lines(cx, cy, radius + 12, lit)
+
+    if abs(self._plan_accel) < ACCEL_DEADBAND:
+      return
+
+    up = self._plan_accel > 0
+    colour = COLORS.ACCEL_UP if up else COLORS.ACCEL_DOWN
+    ax = cx
+    ay = cy + radius + 34
+    half, height = 20, 26
+    tip = rl.Vector2(ax, ay - height / 2 if up else ay + height / 2)
+    left = rl.Vector2(ax - half, ay + height / 2 if up else ay - height / 2)
+    right = rl.Vector2(ax + half, ay + height / 2 if up else ay - height / 2)
+    # raylib fills triangles wound counter-clockwise; swapping the base corners covers both.
+    if up:
+      rl.draw_triangle(tip, left, right, colour)
+    else:
+      rl.draw_triangle(tip, right, left, colour)
+
+    if self._gap_adjust != 0 and time.monotonic() < self._gap_popup_until:
+      self._draw_gap_popup(rect)
 
   def user_interacting(self) -> bool:
     return self._exp_button.is_pressed
@@ -178,3 +268,23 @@ class HudRenderer(Widget):
     unit_text_size = measure_text_cached(self._font_medium, unit_text, FONT_SIZES.speed_unit)
     unit_pos = rl.Vector2(rect.x + rect.width / 2 - unit_text_size.x / 2, 290 - unit_text_size.y / 2)
     rl.draw_text_ex(self._font_medium, unit_text, unit_pos, FONT_SIZES.speed_unit, 0, COLORS.WHITE_TRANSLUCENT)
+
+  def _draw_gap_popup(self, rect: rl.Rectangle) -> None:
+    """Draw a transient 'GAP N' popup after the driver changes the Tesla gap setting."""
+    text = f"GAP {self._gap_adjust}"
+    font_size = 64
+    padding_x = 42
+    height = 104
+
+    text_size = measure_text_cached(self._font_bold, text, font_size)
+    width = text_size.x + padding_x * 2
+
+    x = rect.x + (rect.width - width) / 2
+    y = rect.y + 340
+
+    popup_rect = rl.Rectangle(x, y, width, height)
+    rl.draw_rectangle_rounded(popup_rect, 0.35, 10, rl.Color(0, 0, 0, 210))
+    rl.draw_rectangle_rounded_lines_ex(popup_rect, 0.35, 10, 5, rl.Color(255, 255, 255, 100))
+
+    text_pos = rl.Vector2(x + (width - text_size.x) / 2, y + (height - text_size.y) / 2)
+    rl.draw_text_ex(self._font_bold, text, text_pos, font_size, 0, COLORS.WHITE)
