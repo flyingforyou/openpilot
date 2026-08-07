@@ -8,6 +8,7 @@ from opendbc.car.tesla.values import CarControllerParams, TeslaSafetyFlags
 from opendbc.car.structs import CarParams
 from opendbc.car.vehicle_model import VehicleModel
 from opendbc.can import CANDefine
+from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from opendbc.safety.tests.libsafety import libsafety_py
 import opendbc.safety.tests.common as common
 from opendbc.safety.tests.common import CANPackerSafety, MAX_SPEED_DELTA, MAX_WRONG_COUNTERS, away_round, round_speed
@@ -15,6 +16,18 @@ from opendbc.safety.tests.common import CANPackerSafety, MAX_SPEED_DELTA, MAX_WR
 MSG_DAS_steeringControl = 0x488
 MSG_DAS_Control_HW1 = 0x2b9
 MSG_DI_torque1 = 0x108  # HW1 uses different message ID
+
+
+# DAS_accelMin: 35|9@1+ (0.04, -15). Read back off the packed bytes rather than recomputed, so
+# it is the same number panda's tx hook extracts and cannot drift from the packer's rounding.
+ACCEL_SCALE, ACCEL_OFFSET = 0.04, -15.0
+
+
+def _sent_accel_min(msg) -> float:
+  """The accel actually on the wire, decoded the way tesla_legacy.h decodes it."""
+  d = bytes(msg.data)
+  raw = ((d[5] & 0x0F) << 5) | (d[4] >> 3)
+  return raw * ACCEL_SCALE + ACCEL_OFFSET
 
 
 def round_angle(apply_angle, can_offset=0):
@@ -132,6 +145,36 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
 
   def _accel_msg(self, accel: float):
     return self._long_control_msg(10, accel_limits=(accel, max(accel, 0)))
+
+  def test_accel_actuation_limits(self):
+    """Upstream's contract, but judged on what actually lands on the bus.
+
+    DAS_accelMin/Max carry 0.04 m/s^2 per bit, so anything inside half a quantum of zero encodes
+    to the same raw value as inactive, and panda is right to pass it -- -0.02 m/s^2 cannot be
+    expressed on this bus at all. Upstream compares the float it asked for, which only started
+    mattering when the accel limits were widened to the factory ACC's measured range and moved
+    the sample grid onto that boundary.
+    """
+    limits = ((self.MIN_ACCEL, self.MAX_ACCEL, ALTERNATIVE_EXPERIENCE.DEFAULT),
+              (self.MIN_ACCEL, self.MAX_ACCEL, ALTERNATIVE_EXPERIENCE.RAISE_LONGITUDINAL_LIMITS_TO_ISO_MAX))
+
+    for min_accel, max_accel, alternative_experience in limits:
+      inactive = _sent_accel_min(self._accel_msg(self.INACTIVE_ACCEL))
+      for accel in np.concatenate((np.arange(min_accel - 1, max_accel + 1, 0.05), [0, self.INACTIVE_ACCEL])):
+        accel = round(accel, 2)
+        msg = self._accel_msg(accel)
+        sent = _sent_accel_min(msg)
+        for controls_allowed in [True, False]:
+          self.safety.set_controls_allowed(controls_allowed)
+          self.safety.set_alternative_experience(alternative_experience)
+          if self.LONGITUDINAL:
+            should_tx = controls_allowed and min_accel <= sent <= max_accel
+            should_tx = should_tx or sent == inactive
+          else:
+            # stock ACC owns the message entirely; openpilot may not send it at any value
+            should_tx = False
+          self.assertEqual(should_tx, self._tx(msg),
+                           f"accel={accel} went on the bus as {sent:+.2f}")
 
   def test_rx_hook(self):
     # Legacy models don't have checksums for most messages
