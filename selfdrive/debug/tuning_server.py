@@ -258,6 +258,32 @@ SETTINGS = {
     "help": "최대 토크일 때 목표가 얼마나 옮겨갈지입니다. 횡가속도 기준이라 속도가 붙으면 각도는 줄어듭니다.",
     "options": [(100, "조금 1.0m/s²"), (150, "표준 1.5m/s²"), (220, "많이 2.2m/s²")],
   },
+  "TeslaMapAutoSpeed": {
+    "label": "지도 자동 크루즈", "type": "bool",
+    "help": "차의 내비 지도에서 제한속도를 읽어 크루즈 목표를 스스로 맞춥니다. 올리기도 하므로 "
+            "스토크로 미리 높게 잡아둘 필요가 없습니다. 램프에서는 제한속도 대신 그 지점을 "
+            "실제로 달리는 플릿 속도를 따라갑니다. 커브 감속이 뒤에서 한 번 더 낮춥니다.",
+    "options": [(0, "사용 안 함 (기본)"), (1, "사용")],
+  },
+  "TeslaMapAutoSpeedMax": {
+    "label": "지도 자동 크루즈 상한", "type": "int",
+    "help": "자동으로 올라갈 수 있는 최대 속도입니다. 이 차는 스토크 값이 곧 크루즈 설정속도라서 "
+            "스토크를 상한으로 쓰면 시내에서 맞춰둔 값에 묶여 고속도로에서 못 올라갑니다. "
+            "그래서 상한은 여기서 한 번만 정합니다.",
+    "options": [(105, "65mph"), (113, "70mph"), (121, "75mph"), (129, "80mph (기본)")],
+  },
+  "TeslaMapAutoSpeedRatio": {
+    "label": "지도 제한속도 비율", "type": "int",
+    "help": "게시된 제한속도의 몇 %를 목표로 삼을지입니다. 아래 차량 오프셋은 이 비율을 적용한 "
+            "뒤에 더해집니다.",
+    "options": [(90, "90% 여유"), (100, "100% 표지판대로 (기본)"), (105, "105%"), (110, "110%")],
+  },
+  "TeslaMapAutoSpeedUseCarOffset": {
+    "label": "차량 속도 오프셋 사용", "type": "bool",
+    "help": "테슬라 메뉴에서 이미 설정해 둔 '제한속도 +n' 값(UI_userSpeedOffset)을 그대로 "
+            "더합니다. 같은 설정을 두 군데 두지 않기 위한 기본값입니다.",
+    "options": [(0, "무시"), (1, "사용 (기본)")],
+  },
   "TeslaStockAutopark": {
     "label": "순정 오토파크 허용", "type": "bool",
     "help": "openpilot이 해제된 동안 순정 자동주차 모듈이 차를 몰 수 있게 버스를 넘겨줍니다. "
@@ -329,6 +355,22 @@ class State:
             'dRel': round(lead.dRel, 1),
             'vLead': round(lead.vLead, 1),
             'prob': round(lead.modelProb, 2),
+          },
+          # What the auto cruise speed is being decided from. cruiseTarget is what the planner
+          # settled on after map_cruise, the curve controller and everything else had their say,
+          # so seeing it next to the raw sources is the whole point -- the interesting moments
+          # are the ones where they disagree.
+          'map': {
+            'valid': bool(cs.navMap.valid),
+            'base': round(cs.navMap.baseSpeedLimit, 2),
+            'posted': round(cs.navMap.mapSpeedLimit, 2),
+            'fleet': round(cs.navMap.fleetSplineSpeed, 2),
+            'roadClass': int(cs.navMap.roadClass),
+            'ramp': int(cs.navMap.rampType),
+            'conf': int(cs.navMap.splineConfidence),
+            'offset': round(cs.navMap.speedOffset, 2),
+            'vSet': round(cs.cruiseState.speed, 2),
+            'target': round(sm['longitudinalPlan'].cruiseTarget, 1),
           },
         }
 
@@ -787,6 +829,19 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
   </div>
 </div>
 
+<div class="card"><div class="h">지도 자동 크루즈 <span id="mapState" class="hlp"></span></div>
+  <div class="grid">
+    <div><div class="k">크루즈 목표</div><div class="v"><span id="mtgt">–</span><small>mph</small></div></div>
+    <div><div class="k">설정속도</div><div class="v"><span id="mset">–</span><small>mph</small></div></div>
+    <div><div class="k">base 제한</div><div class="v"><span id="mbase">–</span><small>mph</small></div></div>
+    <div><div class="k">게시 제한</div><div class="v"><span id="mpost">–</span><small>mph</small></div></div>
+    <div><div class="k">fleet 속도</div><div class="v"><span id="mfleet">–</span><small>mph</small></div></div>
+    <div><div class="k">도로등급</div><div class="v" id="mrc">–</div></div>
+    <div><div class="k">램프</div><div class="v" style="font-size:13px"><span id="mramp" class="pill">–</span></div></div>
+    <div><div class="k">위치신뢰</div><div class="v"><span id="mconf">–</span><small>%</small></div></div>
+  </div>
+</div>
+
 <div class="card"><div class="h">Settings</div><div id="settings"></div></div>
 
 <div class="card"><div class="h">CarrotPilot 설정 <span id="carrotState" class="hlp"></span></div>
@@ -807,6 +862,28 @@ let engaged=false;
 
 function toast(t,err){const m=$('msg');m.textContent=t;m.className='show'+(err?' err':'');
   clearTimeout(m._t);m._t=setTimeout(()=>m.className='',2600);}
+
+const MPS_TO_MPH=2.23694;
+// Same names map_cruise.py uses, and the same convention for zero: a limit of 0 is "this source
+// has nothing here", which on a ramp is the useful answer rather than a missing one.
+const ROAD_CLASS={0:'미상',1:'고속도로',4:'간선',5:'집산',6:'국지'};
+const RAMP_TYPE={0:'—',1:'진입',2:'진출'};
+function mph(v){return (v==null||v<=0)?'–':(v*MPS_TO_MPH).toFixed(0);}
+function updateMap(m){
+  m=m||{};
+  const st=$('mapState');
+  st.textContent=m.valid?(m.offset>0?`차량 오프셋 +${(m.offset*MPS_TO_MPH).toFixed(0)}mph`:''):'지도 데이터 없음';
+  $('mtgt').textContent=m.target!=null?(m.target*0.621371).toFixed(0):'–';  // cruiseTarget is kph
+  $('mset').textContent=mph(m.vSet);
+  $('mbase').textContent=mph(m.base);
+  $('mpost').textContent=mph(m.posted);
+  $('mfleet').textContent=mph(m.fleet);
+  $('mrc').textContent=ROAD_CLASS[m.roadClass]??m.roadClass??'–';
+  $('mconf').textContent=m.conf??'–';
+  const r=$('mramp');
+  r.textContent=RAMP_TYPE[m.ramp]??'–';
+  r.className='pill '+(m.ramp?'on':'off');
+}
 
 async function poll(){
   try{
@@ -830,6 +907,7 @@ async function poll(){
     const b=$('bs'),[l,r]=s.blindspot||[false,false];
     b.textContent=l&&r?'L R':l?'L':r?'R':'없음';
     b.className='pill '+((l||r)?'on':'off');
+    updateMap(s.map);
   }catch(e){$('conn').textContent='디바이스에 연결할 수 없습니다';}
 }
 

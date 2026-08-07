@@ -237,12 +237,45 @@ struct CarState {
   fuelGauge @41 :Float32; # battery or fuel tank level from [0.0, 1.0]
   charging @43 :Bool;
 
+  # The car's own navigation/map view of the road ahead, decoded off the gateway's map messages.
+  # Legacy Tesla only; left at its zero value on every other platform, and `valid` is the flag
+  # that says whether any of it means anything.
+  navMap @63 :NavMapData;
+
   struct WheelSpeeds {
     # optional wheel speeds
     fl @0 :Float32;
     fr @1 :Float32;
     rl @2 :Float32;
     rr @3 :Float32;
+  }
+
+  # Tesla legacy: UI_driverAssistRoadSign (0x238, multiplexed on UI_roadSign),
+  # UI_driverAssistMapData (0x3C8) and UI_gpsVehicleSpeed (0x2F8), all on the party bus.
+  struct NavMapData {
+    valid @0 :Bool;  # the map messages are actually arriving
+
+    # Posted limits, m/s. 0 means "this source has no value for where we are", which is a real
+    # and common state on ramps and unmapped roads -- it is not a request to stop.
+    baseSpeedLimit @1 :Float32;   # UI_baseMapSpeedLimitMPS, the freshest of the three
+    mapSpeedLimit @2 :Float32;    # UI_mapSpeedLimit, banded (LESS_OR_EQ_n) and slow to move
+    mppSpeedLimit @3 :Float32;    # UI_mppSpeedLimit
+    fusedSpeedLimit @4 :Float32;  # DAS_fusedSpeedLimit, the AP module's vision+map fusion
+
+    # What the fleet actually drives here. The spline pair is indexed by position along the
+    # current road spline, so it keeps moving through a ramp where the posted limit cannot;
+    # the quartiles are per-segment aggregates and step rather than sweep.
+    fleetSplineSpeed @5 :Float32;       # m/s, UI_meanFleetSplineSpeedMPS
+    fleetSplineAccel @6 :Float32;       # m/s^2, UI_meanFleetSplineAccelMPS2
+    fleetMedianSpeed @7 :Float32;       # m/s, UI_medianFleetSpeedMPS
+    fleetTopQuartileSpeed @8 :Float32;  # m/s, UI_topQrtlFleetSpeedMPS
+
+    roadClass @9 :UInt8;   # 1 freeway, 4 arterial, 5 collector, 6 local. 0 = unknown.
+    rampType @10 :UInt8;   # 0 none, 1 on-ramp, 2 off-ramp
+    splineConfidence @11 :UInt8;  # 0-100, UI_splineLocConfidence
+    gpsRoadMatch @12 :Bool;
+    navRouteActive @13 :Bool;
+    speedOffset @14 :Float32;  # driver's configured limit offset, m/s (UI_userSpeedOffset)
   }
 
   struct CruiseState {

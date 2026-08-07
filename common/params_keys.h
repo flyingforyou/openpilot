@@ -182,6 +182,21 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AutoNaviSpeedDecelRate", {PERSISTENT, INT, "120"}},
     {"AChangeCostStarting", {PERSISTENT, INT, "10"}},
     {"TrafficStopDistanceAdjust", {PERSISTENT, INT, "-150"}},
+    // Auto cruise speed from the car's own navigation map (selfdrive/controls/lib/map_cruise.py).
+    // Off by default: it lowers the cruise setpoint on its own, which is not something to turn on
+    // behind a driver's back.
+    {"TeslaMapAutoSpeed", {PERSISTENT, BOOL, "0"}},
+    // Percent of the posted limit to target, before the car's own offset is added. 100 is the
+    // sign as posted.
+    {"TeslaMapAutoSpeedRatio", {PERSISTENT, INT, "100"}},
+    // Ceiling for the auto-set speed, kph. This is the number the stalk cannot be, because on
+    // this car the stalk *is* v_cruise (pcmCruise) -- using it as the ceiling would pin the map
+    // to whatever was dialled in on the last street. Set once; the map moves freely below it.
+    // 129 kph = 80 mph.
+    {"TeslaMapAutoSpeedMax", {PERSISTENT, INT, "129"}},
+    // Whether to add UI_userSpeedOffset, the "limit + n" the driver already configured in the
+    // car's own menu, on top of that ratio.
+    {"TeslaMapAutoSpeedUseCarOffset", {PERSISTENT, BOOL, "1"}},
     {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "150"}},
     {"TeslaCoopMaxTorqueCNm", {PERSISTENT, INT, "250"}},
     {"TeslaCoopSteer", {PERSISTENT, BOOL, "0"}},

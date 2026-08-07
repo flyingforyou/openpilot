@@ -26,6 +26,22 @@ TESLA_DTR_RAW_TO_GAP = {
 # at least that long, so hold a little past it. carState runs at 100Hz.
 STOCK_AUTOPARK_HOLD_FRAMES = 30
 
+# UI_mapSpeedLimit is banded, not a number: raw n means "the limit is at most MAP_SPEED_BAND[n]".
+# 0 is "no value", 30 is unrestricted and 31 is SNA, so only 1..29 carry a speed.
+MAP_SPEED_BAND = (0, 5, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90,
+                  95, 100, 105, 110, 115, 120, 130, 140, 150, 160)
+
+# UI_roadSign multiplexes UI_driverAssistRoadSign. Only these two slots carry speed context; the
+# others are stop-line and traffic-light distances. CANParser has no multiplex support at all --
+# it decodes every signal in the message on every frame -- so reading a slot's signals without
+# first checking the selector returns whatever the other slots' bits happened to be.
+ROAD_SIGN_MUX_MAP_SPEED = 3
+ROAD_SIGN_MUX_FLEET_SPEED = 4
+
+# Message rates on the party bus: 0x238 at 10Hz cycling four slots (so ~2.5Hz per slot), 0x3C8 at
+# 2Hz, 0x2F8 at 1Hz. carState runs at 100Hz, so this is three seconds without a map message.
+NAV_MAP_STALE_FRAMES = 300
+
 
 def decode_tesla_gap(raw_gap: int) -> int:
   """Convert Tesla legacy DTR_Dist_Rq raw value to a gap level.
@@ -33,6 +49,94 @@ def decode_tesla_gap(raw_gap: int) -> int:
   Returns 1 through 7 for a valid Tesla gap, or 0 for SNA/an unknown value.
   """
   return TESLA_DTR_RAW_TO_GAP.get(int(raw_gap), 0)
+
+
+def decode_banded_speed_limit(raw: float, units_kph: bool) -> float:
+  """UI_mapSpeedLimit / DAS_fusedSpeedLimit style band -> m/s, or 0.0 for no usable value."""
+  idx = int(raw)
+  if not 1 <= idx < len(MAP_SPEED_BAND):
+    return 0.0
+  return MAP_SPEED_BAND[idx] * (CV.KPH_TO_MS if units_kph else CV.MPH_TO_MS)
+
+
+class NavMapDecoder:
+  """Latches the gateway's map view out of three party-bus messages.
+
+  Everything here is last-value-wins by design. The three messages run at different rates and
+  0x238 is multiplexed, so at any instant most of these fields were last written some frames ago;
+  that is the shape of the data, not a defect. What matters is that a slot is only latched from a
+  frame whose selector actually says that slot, and that a value of zero is passed through rather
+  than being papered over -- "the map has no limit here" is the single most useful thing this
+  message says on a ramp, and it says it with a zero.
+  """
+
+  def __init__(self):
+    self.base_speed_limit = 0.0
+    self.fleet_top_quartile = 0.0
+    self.fleet_spline_speed = 0.0
+    self.fleet_spline_accel = 0.0
+    self.fleet_median = 0.0
+    self.spline_confidence = 0
+    self.ramp_type = 0
+    self.last_map_nanos = 0
+    self.stale_frames = NAV_MAP_STALE_FRAMES
+
+  def update(self, ret: structs.CarState, cp_party, cp_ap_party) -> None:
+    road_sign = cp_party.vl["UI_driverAssistRoadSign"]
+    map_data = cp_party.vl["UI_driverAssistMapData"]
+    gps = cp_party.vl["UI_gpsVehicleSpeed"]
+
+    # One selector read, then only the slot it names. UI_splineLocConfidence sits outside the
+    # multiplexed region, so it is valid on every frame regardless of the selector.
+    mux = int(road_sign["UI_roadSign"])
+    self.spline_confidence = int(road_sign["UI_splineLocConfidence"])
+    if mux == ROAD_SIGN_MUX_MAP_SPEED:
+      self.base_speed_limit = float(road_sign["UI_baseMapSpeedLimitMPS"])
+      self.fleet_top_quartile = float(road_sign["UI_topQrtlFleetSpeedMPS"])
+    elif mux == ROAD_SIGN_MUX_FLEET_SPEED:
+      self.fleet_spline_speed = float(road_sign["UI_meanFleetSplineSpeedMPS"])
+      self.fleet_spline_accel = float(road_sign["UI_meanFleetSplineAccelMPS2"])
+      self.fleet_median = float(road_sign["UI_medianFleetSpeedMPS"])
+      self.ramp_type = int(road_sign["UI_rampType"])
+
+    offset_kph = bool(gps["UI_userSpeedOffsetUnits"])
+    mpp_kph = bool(gps["UI_mapSpeedLimitUnits"])
+    mpp_raw = float(gps["UI_mppSpeedLimit"])
+
+    # Staleness is counted rather than read off a clock: ts_nanos is the only timestamp the
+    # parser exposes publicly, and what matters is whether the gateway is still talking, not how
+    # far behind any single field is.
+    map_nanos = cp_party.ts_nanos["UI_driverAssistMapData"]["UI_mapSpeedLimit"]
+    if map_nanos != self.last_map_nanos:
+      self.last_map_nanos = map_nanos
+      self.stale_frames = 0
+    else:
+      self.stale_frames = min(self.stale_frames + 1, NAV_MAP_STALE_FRAMES)
+
+    nav = ret.navMap
+    nav.valid = map_nanos != 0 and self.stale_frames < NAV_MAP_STALE_FRAMES
+    nav.baseSpeedLimit = self.base_speed_limit
+    nav.mapSpeedLimit = decode_banded_speed_limit(map_data["UI_mapSpeedLimit"],
+                                                  bool(map_data["UI_mapSpeedUnits"]))
+    # mppSpeedLimit is a plain number in the declared unit, not a band. 0 is no value and the
+    # top of its range (155) is the message's "no limit applies here".
+    nav.mppSpeedLimit = (mpp_raw * (CV.KPH_TO_MS if mpp_kph else CV.MPH_TO_MS)
+                         if 0 < mpp_raw < 155 else 0.0)
+    fused_raw = float(cp_ap_party.vl["AutopilotStatus"]["DAS_fusedSpeedLimit"])
+    nav.fusedSpeedLimit = (fused_raw * (CV.KPH_TO_MS if mpp_kph else CV.MPH_TO_MS)
+                           if 0 < fused_raw < 155 else 0.0)
+
+    nav.fleetSplineSpeed = self.fleet_spline_speed
+    nav.fleetSplineAccel = self.fleet_spline_accel
+    nav.fleetMedianSpeed = self.fleet_median
+    nav.fleetTopQuartileSpeed = self.fleet_top_quartile
+
+    nav.roadClass = int(map_data["UI_roadClass"])
+    nav.rampType = self.ramp_type
+    nav.splineConfidence = self.spline_confidence
+    nav.gpsRoadMatch = bool(map_data["UI_gpsRoadMatch"])
+    nav.navRouteActive = bool(map_data["UI_navRouteActive"])
+    nav.speedOffset = float(gps["UI_userSpeedOffset"]) * (CV.KPH_TO_MS if offset_kph else CV.MPH_TO_MS)
 
 
 class LegacySteerState(NamedTuple):
@@ -98,6 +202,9 @@ class CarState(CarStateBase):
     self.stock_autopark_offered = False
     self.das_control = None
     self.cruise_gap = 0
+    # Raven's party DBC carries none of the map messages, so it gets no decoder at all rather
+    # than one that would fault the first time it looked a message up.
+    self.nav_map = None if CP.carFingerprint == CAR.TESLA_MODEL_S_HW3 else NavMapDecoder()
 
   def update_autopark_state(self, autopark_now: bool):
     # Takes the decoded "the park module has the car" boolean rather than the signal it came
@@ -354,6 +461,12 @@ class CarState(CarStateBase):
 
     ret.leftBlindspot = park_left_blindspot or das_left_blindspot
     ret.rightBlindspot = park_right_blindspot or das_right_blindspot
+
+    # Navigation / map view of the road ahead. Decoded for every legacy car that has the
+    # messages: it is pure decode off what the gateway broadcasts anyway, and whether anything
+    # acts on it is a planner decision, not a car one.
+    if self.nav_map is not None:
+      self.nav_map.update(ret, cp_party, cp_ap_party)
 
     # AEB
     ret.stockAeb = cp_ap_pt.vl["DAS_control"]["DAS_aebEvent"] == 1

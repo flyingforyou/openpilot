@@ -9,6 +9,7 @@ from openpilot.common.filter_simple import MyMovingAverage
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_t_follow import ramp_t_follow
+from openpilot.selfdrive.controls.lib.map_cruise import MapCruiseController
 from openpilot.selfdrive.selfdrived.events import Events
 
 EventName = log.OnroadEvent.EventName
@@ -173,6 +174,15 @@ class CarrotPlanner:
     self._stop_x_rl = None
     self.last_event_time = 0.0
 
+    # Auto cruise speed off the car's own map. Constructed unconditionally; it returns 0.0 --
+    # "nothing to say" -- until the param turns it on and the map messages start arriving, so
+    # cars without them simply never see it do anything.
+    self.map_cruise = MapCruiseController()
+    self.mapAutoSpeed = False
+    self.mapAutoSpeedRatio = 1.0
+    self.mapAutoSpeedUseCarOffset = True
+    self.mapAutoSpeedMax = 129.0
+
   def _params_update(self):
     self.frame += 1
     self.params_count += 1
@@ -216,6 +226,14 @@ class CarrotPlanner:
       self.autoNaviSpeedDecelRate = float(self.params.get_int("AutoNaviSpeedDecelRate")) * 0.01
       self.aChangeCostStarting = self.params.get_float("AChangeCostStarting")
       self.trafficStopDistanceAdjust = self.params.get_float("TrafficStopDistanceAdjust") / 100.
+    elif self.params_count == 50:
+      self.mapAutoSpeed = self.params.get_bool("TeslaMapAutoSpeed")
+      self.mapAutoSpeedRatio = self.params.get_float("TeslaMapAutoSpeedRatio") / 100.
+      self.mapAutoSpeedUseCarOffset = self.params.get_bool("TeslaMapAutoSpeedUseCarOffset")
+      self.mapAutoSpeedMax = self.params.get_float("TeslaMapAutoSpeedMax")
+      self.map_cruise.set_config(self.mapAutoSpeed, self.mapAutoSpeedRatio,
+                                 self.mapAutoSpeedUseCarOffset,
+                                 self.mapAutoSpeedMax * CV.KPH_TO_MS)
     elif self.params_count >= 100:
 
       self.params_count = 0
@@ -413,14 +431,24 @@ class CarrotPlanner:
       self.trafficState = TrafficState.off
 
   def _update_carrot_man(self, sm, v_ego_kph, v_cruise_kph):
-    """No-op without the navigation service.
+    """The navigation speed cap, sourced from the car instead of from a phone.
 
     Upstream this reads carrotMan for traffic-light state, ATC turn distance and a navigation
     speed cap. That service is not in this tree, and its whole body already sat behind
-    `if sm.alive['carrotMan']`, so dropping it changes nothing that ran here anyway -- the
-    longitudinal behaviour this port is after is in the model and radar paths below.
+    `if sm.alive['carrotMan']`, so nothing of carrot's own is lost here. What takes its place is
+    the same idea fed from the car's own map broadcast -- see map_cruise.py for why the posted
+    limit alone is not enough to do it with.
+
+    Replaces the target rather than capping it. Capping with the stalk cannot work on this car:
+    pcmCruise is true, so v_cruise_kph *is* the stalk, and min() would hold the map to whatever
+    was set on the road before -- a freeway entered with 30 mph dialled in would stay at 30. The
+    bound is TeslaMapAutoSpeedMax instead, applied inside the controller, and the stalk keeps
+    working as an override there.
     """
-    return v_cruise_kph, False
+    v_map = self.map_cruise.update(sm['carState'], sm['carState'].vEgo, v_cruise_kph * CV.KPH_TO_MS)
+    if v_map <= 0.0:
+      return v_cruise_kph, False
+    return v_map * CV.MS_TO_KPH, False
 
   def cruise_eco_control(self, v_ego_kph, v_cruise_kph):
     v_cruise_kph_apply = v_cruise_kph
