@@ -65,6 +65,18 @@ PERSONALITY_TO_GAP_POS = {p: i + 1 for i, p in enumerate(GAP_TO_PERSONALITY)}
 # plain gap-position offset.
 GAP_TO_PERSONALITY_INT = [4, 0, 5, 1, 6, 2, 3]
 
+
+def _personality_int(personality) -> int:
+  """The enum's number, whichever way the value arrived.
+
+  Read off a message, personality is a pycapnp _DynamicEnum; read off the param it is a plain
+  int, and log.LongitudinalPersonality.X evaluates to an int too. _DynamicEnum compares equal to
+  its int but does not hash equal to it, so it works in upstream's if/elif chains and silently
+  misses in a dict lookup -- which is what PERSONALITY_TO_GAP_POS is. int() refuses it outright;
+  .raw is the number.
+  """
+  return getattr(personality, 'raw', personality)
+
 # carrot's own personality multiplier (aggressive/standard/relaxed/moreRelaxed = 1.0/1.3/1.6/2.0),
 # now spread across all 7 gap positions at the same anchors (1/3/5/7) the base t_follow table
 # itself uses -- steps 2/4/6 are the straight-line interpolation between them, not separately tuned.
@@ -249,7 +261,7 @@ class CarrotPlanner:
     # straight to LongitudinalPersonality. So there is one lookup, not a separate gap_adjust
     # branch: gap_pos is where personality (fresh from the stalk, or the last value on disk
     # before the stalk has reported this drive) says to look in the table.
-    gap_pos = PERSONALITY_TO_GAP_POS.get(personality)
+    gap_pos = PERSONALITY_TO_GAP_POS.get(_personality_int(personality))
     if gap_pos is None:
       raise NotImplementedError("Longitudinal personality not supported")
 
