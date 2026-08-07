@@ -50,9 +50,26 @@ class FontSizes:
 TRAFFIC_OFF, TRAFFIC_RED, TRAFFIC_GREEN = 0, 1, 2
 # xState: which longitudinal state its planner is in. Only the stopping ones matter here.
 XSTATE_E2E_STOP, XSTATE_E2E_STOPPED = 3, 5
+
+# carState.navMap.roadClass / rampType, decoded off the Tesla gateway's own map view -- see
+# NavMapData in car.capnp. Ramp takes priority over road class when both are present: roadClass
+# reads as the road just left for the whole length of a ramp, so showing it there is showing
+# stale information (see map_cruise.py).
+ROAD_CLASS_LABEL = {1: 'FREEWAY', 4: 'ARTERIAL', 5: 'COLLECTOR', 6: 'LOCAL'}
+RAMP_ON, RAMP_OFF = 1, 2
+RAMP_LABEL = {RAMP_ON: 'ON-RAMP', RAMP_OFF: 'OFF-RAMP'}
+NAV_STATE_FONT_SIZE = 22.0
+# Icon spans (16,10)-(76,70); this starts 10px clear of it and roughly centers the text on the
+# icon's vertical middle.
+NAV_STATE_X = 86
+NAV_STATE_Y = 28
 # Below this the plan is neither accelerating nor braking enough to draw an arrow for.
 ACCEL_DEADBAND = 0.15  # m/s^2
-LIGHT_RADIUS = 40
+# Small corner badge rather than a headline element -- it confirms what the model saw, it
+# doesn't need to be read from across the cabin. Sized against the 60x60 driver-monitor icon.
+LIGHT_RADIUS = 20
+LIGHT_MARGIN_X = 24
+LIGHT_MARGIN_Y = 20
 
 
 @dataclass(frozen=True)
@@ -144,6 +161,11 @@ class HudRenderer(Widget):
     self._gap_popup_until: float = 0.0
     self._lead_d_rel: float | None = None
 
+    self._nav_valid: bool = False
+    self._road_class: int = 0
+    self._ramp_type: int = 0
+    self._nav_limit: float = 0.0  # m/s, 0 = none posted
+
     self._traffic_state: int = TRAFFIC_OFF
     self._x_state: int = 0
     self._plan_accel: float = 0.0
@@ -196,6 +218,7 @@ class HudRenderer(Widget):
       self._last_gap_adjust = 0
       self._gap_popup_until = 0.0
       self._lead_d_rel = None
+      self._nav_valid = False
       self._traffic_state = TRAFFIC_OFF
       self._x_state = 0
       self._plan_accel = 0.0
@@ -203,11 +226,25 @@ class HudRenderer(Widget):
 
     controls_state = sm['controlsState']
     car_state = sm['carState']
+    plan = sm['longitudinalPlan']
 
-    v_cruise_cluster = car_state.vCruiseCluster
-    set_speed = (
-      controls_state.vCruiseDEPRECATED if v_cruise_cluster == 0.0 else v_cruise_cluster
-    )
+    nav = car_state.navMap
+    self._nav_valid = bool(nav.valid)
+    self._road_class = int(nav.roadClass)
+    self._ramp_type = int(nav.rampType)
+    self._nav_limit = float(nav.baseSpeedLimit) if nav.baseSpeedLimit > 0 else float(nav.mapSpeedLimit)
+
+    # carrot's own target (eco control, the Tesla map auto-speed override, ...) takes priority
+    # over the car's reported cluster value, the same way controlsd now feeds it to the car's
+    # own dash -- so an auto speed change pops this box exactly like a lever change does,
+    # instead of only being visible on the physical cluster.
+    if sm.valid['longitudinalPlan'] and plan.cruiseTarget > 0:
+      set_speed = plan.cruiseTarget
+    else:
+      v_cruise_cluster = car_state.vCruiseCluster
+      set_speed = (
+        controls_state.vCruiseDEPRECATED if v_cruise_cluster == 0.0 else v_cruise_cluster
+      )
     engaged = sm['selfdriveState'].enabled
     if (set_speed != self.set_speed and engaged) or (engaged and not self._engaged):
       self._set_speed_changed_time = rl.get_time()
@@ -237,7 +274,6 @@ class HudRenderer(Widget):
 
     # Only the carrot planner fills these; the stock one leaves them zero, which reads as
     # "no traffic light seen" and draws nothing.
-    plan = sm['longitudinalPlan']
     self._traffic_state = int(plan.trafficState)
     self._x_state = int(plan.xState)
     self._plan_accel = float(plan.aTarget)
@@ -249,6 +285,8 @@ class HudRenderer(Widget):
 
     if self.is_cruise_set:
       self._draw_set_speed(rect)
+
+    self._draw_nav_state(rect)
 
     self._draw_steering_wheel(rect)
 
@@ -276,26 +314,26 @@ class HudRenderer(Widget):
     if self._traffic_state == TRAFFIC_OFF:
       return
 
-    cx = int(rect.x + rect.width - LIGHT_RADIUS - 60)
-    cy = int(rect.y + LIGHT_RADIUS + 60)
+    cx = int(rect.x + rect.width - LIGHT_RADIUS - LIGHT_MARGIN_X)
+    cy = int(rect.y + LIGHT_RADIUS + LIGHT_MARGIN_Y)
 
     lit = COLORS.LIGHT_RED if self._traffic_state == TRAFFIC_RED else COLORS.LIGHT_GREEN
-    rl.draw_circle(cx, cy, LIGHT_RADIUS + 6, COLORS.BLACK_TRANSLUCENT)
+    rl.draw_circle(cx, cy, LIGHT_RADIUS + 3, COLORS.BLACK_TRANSLUCENT)
     rl.draw_circle(cx, cy, LIGHT_RADIUS, lit)
     rl.draw_circle_lines(cx, cy, LIGHT_RADIUS, COLORS.WHITE_TRANSLUCENT)
 
     # The planner can still be holding a stop after the light goes green -- show that, rather
     # than a green lamp over a car that is not moving, which reads as a fault.
     if self._x_state in (XSTATE_E2E_STOP, XSTATE_E2E_STOPPED):
-      rl.draw_circle_lines(cx, cy, LIGHT_RADIUS + 12, lit)
+      rl.draw_circle_lines(cx, cy, LIGHT_RADIUS + 6, lit)
 
     if abs(self._plan_accel) < ACCEL_DEADBAND:
       return
 
     up = self._plan_accel > 0
     colour = COLORS.ACCEL_UP if up else COLORS.ACCEL_DOWN
-    ay = cy + LIGHT_RADIUS + 32
-    half, height = 18, 24
+    ay = cy + LIGHT_RADIUS + 16
+    half, height = 9, 12
     tip = rl.Vector2(cx, ay - height / 2 if up else ay + height / 2)
     left = rl.Vector2(cx - half, ay + height / 2 if up else ay - height / 2)
     right = rl.Vector2(cx + half, ay + height / 2 if up else ay - height / 2)
@@ -304,6 +342,35 @@ class HudRenderer(Widget):
       rl.draw_triangle(tip, left, right, colour)
     else:
       rl.draw_triangle(tip, right, left, colour)
+
+  def _draw_nav_state(self, rect: rl.Rectangle) -> None:
+    """What the car's own map is saying right now, as text next to the driver-monitor icon.
+
+    The traffic-light lamp and the MAX popup only mark the instant something changes; this is
+    the opposite -- a live readout of the current state, so a freeway -> ramp -> surface-street
+    transition is visible continuously rather than as a blink easy to miss on a 536x240 screen.
+    Shares the driver-monitor icon's hide condition so the two never draw over each other.
+    """
+    if not self._nav_valid or self.drawing_top_icons() or not self._can_draw_top_icons:
+      return
+
+    if self._ramp_type in RAMP_LABEL:
+      text = RAMP_LABEL[self._ramp_type]
+      color = COLORS.ACCEL_DOWN if self._ramp_type == RAMP_OFF else COLORS.ACCEL_UP
+    else:
+      text = ROAD_CLASS_LABEL.get(self._road_class)
+      if text is None:
+        return
+      color = COLORS.WHITE_TRANSLUCENT
+
+    if self._nav_limit > 0:
+      speed = self._nav_limit * (CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH)
+      text = f"{text} {round(speed)}"
+
+    x = rect.x + NAV_STATE_X
+    y = rect.y + NAV_STATE_Y
+    rl.draw_text_ex(self._font_semi_bold, text, rl.Vector2(x + 1, y + 1), NAV_STATE_FONT_SIZE, 0, rl.Color(0, 0, 0, 200))
+    rl.draw_text_ex(self._font_semi_bold, text, rl.Vector2(x, y), NAV_STATE_FONT_SIZE, 0, color)
 
   def _draw_steering_wheel(self, rect: rl.Rectangle) -> None:
     wheel_txt = self._txt_wheel_critical if self._show_wheel_critical else self._txt_wheel
