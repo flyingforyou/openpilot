@@ -189,9 +189,15 @@ class CarControllerParams:
     ([], []),
     ([], []),
 
-    # Vehicle model angle limits
-    # Add extra tolerance for average banked road since safety doesn't have the roll
-    MAX_LATERAL_ACCEL=ISO_LATERAL_ACCEL + (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_ROAD_ROLL),  # ~3.6 m/s^2
+    # Vehicle model angle limits.
+    # Deliberately past ISO 11270 (3.0 m/s^2) + the road-roll tolerance (~3.6): today's drive
+    # data showed openpilot topping out around 100 deg of a car that hits 480 by hand, all of it
+    # governed by this number (curvature = accel / speed^2) rather than the 360 deg EPAS-fault
+    # angle limit above. Raising it tightens intersection turns, but it is a speed-independent
+    # multiplier -- it also raises the highway-speed steering-authority ceiling on a tall SUV.
+    # Must match opendbc/safety/lateral.h's steer_angle_cmd_checks_vm, which is the real backstop
+    # -- panda clips anything past its own compiled value regardless of what this asks for.
+    MAX_LATERAL_ACCEL=5.0,  # m/s^2
     MAX_LATERAL_JERK=3.0 + (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_ROAD_ROLL),  # ~3.6 m/s^3
 
     # limit angle rate to both prevent a fault and for low speed comfort (~12 mph rate down to 0 mph)
