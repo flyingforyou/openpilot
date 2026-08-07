@@ -196,6 +196,10 @@ class _FakeActuators:
     return self
 
 
+class _FakeHud:
+  setSpeed = 0.0
+
+
 class _FakeCC:
   def __init__(self, enabled=False, cancel=False):
     self.enabled = enabled
@@ -205,6 +209,7 @@ class _FakeCC:
     self.actuators = _FakeActuators()
     self.cruiseControl = _FakeCruise()
     self.cruiseControl.cancel = cancel
+    self.hudControl = _FakeHud()
 
 
 def _carcontroller():
