@@ -177,7 +177,14 @@ class Controls:
     CC.cruiseControl.resume = CC.enabled and CS.cruiseState.standstill and not self.sm['longitudinalPlan'].shouldStop
 
     hudControl = CC.hudControl
-    hudControl.setSpeed = float(CS.vCruiseCluster * CV.KPH_TO_MS)
+    long_plan = self.sm['longitudinalPlan']
+    # carrot's own target (eco control, the Tesla map auto-speed override, ...) rather than a
+    # blind mirror of what the car already reports -- otherwise every carrot-driven speed change
+    # reaches the actuators but never the cluster, and looks like it silently did nothing.
+    if self.sm.valid['longitudinalPlan'] and long_plan.cruiseTarget > 0:
+      hudControl.setSpeed = float(long_plan.cruiseTarget * CV.KPH_TO_MS)
+    else:
+      hudControl.setSpeed = float(CS.vCruiseCluster * CV.KPH_TO_MS)
     hudControl.speedVisible = CC.enabled
     hudControl.lanesVisible = CC.enabled
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead

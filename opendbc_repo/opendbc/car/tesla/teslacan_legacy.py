@@ -28,10 +28,14 @@ class TeslaCANRaven:
     values["DAS_steeringControlChecksum"] = self.checksum(0x488, data[:3])
     return self.packers[CANBUS.party].make_can_msg("DAS_steeringControl", CANBUS.party, values)
 
-  def create_longitudinal_command(self, acc_state, accel, counter, v_ego, active, gas_pressed):
+  def create_longitudinal_command(self, acc_state, accel, counter, v_ego, active, gas_pressed, hud_set_speed=0.0):
     set_speed = max(v_ego * CV.MS_TO_KPH, 0)
     if active:
-      set_speed = 0 if accel < 0 else V_CRUISE_MAX
+      # hud_set_speed is the real cruise target (post map/eco adjustment), sourced from
+      # CC.hudControl.setSpeed so the car's own cluster shows what the car is actually driving
+      # to rather than a placeholder. Falls back to the old 0/V_CRUISE_MAX extremes only if the
+      # caller has nothing to say yet (startup, or before carState is valid).
+      set_speed = max(30.0, hud_set_speed * CV.MS_TO_KPH) if hud_set_speed > 0 else (0 if accel < 0 else V_CRUISE_MAX)
 
     if gas_pressed:
       self.jerk_upper = self.jerk_lower = 0.0

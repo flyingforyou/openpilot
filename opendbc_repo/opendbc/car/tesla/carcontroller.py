@@ -97,7 +97,8 @@ class CarController(CarControllerBase):
         state = 13 if cancel else 4  # 4=ACC_ON, 13=ACC_CANCEL_GENERIC_SILENT
         accel = float(np.clip(actuators.accel, self.CP.minAccel, CarControllerParams.ACCEL_MAX))
         cntr = (self.frame // 4) % 8
-        can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive, CS.out.gasPressed))
+        can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive, CS.out.gasPressed,
+                                                                     CC.hudControl.setSpeed))
 
     elif self.CP.carFingerprint not in LEGACY_CARS:
       # Increment counter so cancel is prioritized even without openpilot longitudinal
@@ -109,7 +110,6 @@ class CarController(CarControllerBase):
     # Interleaving two counters on it is what the car reads as a fault, taking TACC and Autopilot
     # down with it. Cancelling is the driver's job here, via the stalk.
 
-    # TODO: HUD control
     new_actuators = actuators.as_builder()
     new_actuators.steeringAngleDeg = self.apply_angle_last
 
