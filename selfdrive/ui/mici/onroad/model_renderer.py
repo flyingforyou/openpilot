@@ -26,6 +26,20 @@ MAX_DRAW_DISTANCE = 100.0
 # controller itself sees -- this only changes what gets drawn, not radarState or any MPC input.
 LEAD_HOLD_SECONDS = 0.5
 
+# radarState.leadOne/leadTwo.vehicleClass, carried through from the Bosch radar's own per-point
+# classifier (see car.capnp's RadarPoint.VehicleClass and radar_interface.py). "unknown" and
+# anything vision-only (no radar match at all) show nothing -- a guess isn't better than the
+# plain chevron. classProb mirrors the 50% floor radar_interface.py already uses to accept a
+# point as real in the first place, so the bar for showing a label matches the bar for showing
+# the point at all.
+VEHICLE_CLASS_LABEL = {
+  'fourWheel': 'CAR',
+  'twoWheel': 'BIKE',
+  'pedestrian': 'PED',
+  'constructionElement': 'CONST',
+}
+VEHICLE_CLASS_MIN_PROB = 0.5
+
 THROTTLE_COLORS = [
   rl.Color(13, 248, 122, 102),   # HSLF(148/360, 0.94, 0.51, 0.4)
   rl.Color(114, 255, 92, 89),    # HSLF(112/360, 1.0, 0.68, 0.35)
@@ -57,6 +71,7 @@ class LeadVehicle:
   chevron: list[float] = field(default_factory=list)
   fill_alpha: int = 0
   source: str = ""
+  vehicle_class: str = ""  # "" = not reported or not confident enough to show
 
 
 class ModelRenderer(Widget):
@@ -192,7 +207,10 @@ class ModelRenderer(Widget):
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
         if point:
           source = "R" if lead_data.radar else "V"
-          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect, source)
+          vehicle_class = ""
+          if lead_data.classProb >= VEHICLE_CLASS_MIN_PROB:
+            vehicle_class = VEHICLE_CLASS_LABEL.get(str(lead_data.vehicleClass), "")
+          self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect, source, vehicle_class)
           self._lead_last_seen[i] = now
       elif now - self._lead_last_seen[i] > LEAD_HOLD_SECONDS:
         # Only actually clear it once the grace period is up -- a status flicker on the same
@@ -281,7 +299,7 @@ class ModelRenderer(Widget):
     self._exp_gradient.colors = segment_colors
     self._exp_gradient.stops = gradient_stops
 
-  def _update_lead_vehicle(self, d_rel, v_rel, point, rect, source):
+  def _update_lead_vehicle(self, d_rel, v_rel, point, rect, source, vehicle_class=""):
     speed_buff, lead_buff = 10.0, 40.0
 
     # Calculate fill alpha
@@ -303,7 +321,7 @@ class ModelRenderer(Widget):
     glow = [(x + (sz * 1.35) + g_xo, y + sz + g_yo), (x, y - g_yo), (x - (sz * 1.35) - g_xo, y + sz + g_yo)]
     chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]
 
-    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), source=source)
+    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), source=source, vehicle_class=vehicle_class)
 
   def _get_ll_color(self, prob: float, adjacent: bool, left: bool):
     alpha = np.clip(prob, 0.0, 0.7)
@@ -399,15 +417,19 @@ class ModelRenderer(Widget):
         continue
 
       # Perception source of this lead: R = matched to a radar track, V = vision only.
+      # vehicle_class, when the radar reported one with enough confidence, rides along in the
+      # same label rather than a second text draw -- one readable line beats two small ones at
+      # this size.
       # The label sits below the chevron rather than inside it: chevrons here are only
       # 15-30px tall, so at this size the text is wider than the chevron itself. Use a
       # loaded font: rl.draw_text() would draw nothing, since raylib's built-in default
       # font isn't populated in this app.
+      label = f"{lead.source} {lead.vehicle_class}" if lead.vehicle_class else lead.source
       apex_x, apex_y = lead.chevron[1]
       chevron_height = max(lead.chevron[0][1] - apex_y, 1.0)
       chevron_half_width = abs(lead.chevron[0][0] - apex_x)
       font_size = float(np.clip(chevron_height * 2.48, 52, 72))
-      text_size = measure_text_cached(self._font_bold, lead.source, font_size)
+      text_size = measure_text_cached(self._font_bold, label, font_size)
 
       # To the right of the chevron, vertically centered on it.
       text_x = np.clip(apex_x + chevron_half_width + 6.0, 2.0, max(self._rect.width - text_size.x - 2.0, 2.0))
@@ -415,9 +437,9 @@ class ModelRenderer(Widget):
                        max(self._rect.height - text_size.y - 2.0, 2.0))
 
       color = rl.Color(80, 200, 255, 255) if lead.source == "R" else rl.Color(255, 190, 50, 255)
-      rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x + 3, text_y + 3), font_size, 0,
+      rl.draw_text_ex(self._font_bold, label, rl.Vector2(text_x + 3, text_y + 3), font_size, 0,
                       rl.Color(0, 0, 0, 220))
-      rl.draw_text_ex(self._font_bold, lead.source, rl.Vector2(text_x, text_y), font_size, 0, color)
+      rl.draw_text_ex(self._font_bold, label, rl.Vector2(text_x, text_y), font_size, 0, color)
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_height: float) -> int:

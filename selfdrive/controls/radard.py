@@ -118,6 +118,12 @@ class Track:
     self._vLead_filt = 0.0
     self._vLead_filt_init = False
 
+    # What the radar itself reports this point as, where it reports one at all -- see
+    # car.capnp's RadarPoint.VehicleClass. Passed straight through, not re-derived here.
+    self.vehicleClass = car.RadarData.RadarPoint.VehicleClass.unknown
+    self.classProb = 0.0
+    self.length = 0.0
+
   def vlead_for_matching(self, dv_max: float = 4.0, alpha: float = 0.35) -> float:
     """Speed used only for scoring a match, never published.
 
@@ -172,7 +178,8 @@ class Track:
 
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float,
              j_lead: float = 0.0, yv_rel: float = 0.0, a_lead: float = 0.0,
-             reaction_factor: float = 1.0):
+             reaction_factor: float = 1.0, vehicle_class=None, class_prob: float = 0.0,
+             length: float = 0.0):
     prev = None if self.cnt == 0 else (self.dRel, self.yRel, self.vLead, self.measured)
 
     # relative values, copy
@@ -183,6 +190,10 @@ class Track:
     self.measured = measured   # measured or estimate
     self.jLead = j_lead        # filtered in the radar interface, see opendbc MyTrack
     self.aLead = a_lead
+    if vehicle_class is not None:
+      self.vehicleClass = vehicle_class
+    self.classProb = class_prob
+    self.length = length
     self.yvRel = yv_rel
 
     # Only accumulate evidence across frames where this is plausibly the same object still
@@ -237,6 +248,9 @@ class Track:
       "jLead": float(self.jLead),
       "dPath": float(self.dPath),
       "score": float(self.score),
+      "vehicleClass": self.vehicleClass,
+      "classProb": float(self.classProb),
+      "length": float(self.length),
     }
 
   def potential_low_speed_lead(self, v_ego: float):
@@ -596,7 +610,7 @@ class RadarD:
         self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
       track = self.tracks[ids]
       track.update(pt.dRel, pt.yRel, pt.vRel, v_lead, pt.measured, pt.jLead, pt.yvRel, pt.aLead,
-                   self.radar_reaction_factor)
+                   self.radar_reaction_factor, pt.vehicleClass, pt.classProb, pt.length)
 
       # Lane-relative position, and where the track is heading once the turn is accounted for.
       # Both feed match_vision_to_track, so they have to be current before the match runs.

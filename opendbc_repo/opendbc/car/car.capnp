@@ -378,6 +378,13 @@ struct RadarData @0x888ad6581cf0aacb {
     jLead @9 :Float32; # m/s^3
     radarSource @10 :RadarSource;
 
+    # What the radar itself classifies this return as, where it reports one -- decoded from the
+    # Tesla Bosch radar's own per-point Class signal. unknown is both "the radar doesn't know"
+    # and "this radar doesn't report a class at all", which is every radar except that one.
+    vehicleClass @11 :VehicleClass;
+    classProb @12 :Float32;  # 0.0-1.0, 0 if not reported
+    length @13 :Float32;  # m, rough object length where the radar reports one, 0 otherwise
+
     # Which sensor produced the point. This car has one forward Bosch radar, so everything is
     # frontRadar; the rest are carried so the field means the same thing across ports.
     enum RadarSource {
@@ -386,6 +393,14 @@ struct RadarData @0x888ad6581cf0aacb {
       corner235 @2;
       corner180 @3;
       corner430 @4;
+    }
+
+    enum VehicleClass {
+      unknown @0;
+      fourWheel @1;
+      twoWheel @2;
+      pedestrian @3;
+      constructionElement @4;
     }
   }
 

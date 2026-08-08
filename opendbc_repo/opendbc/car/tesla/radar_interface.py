@@ -12,6 +12,18 @@ BOSCH_NUM_POINTS = 32
 BOSCH_RADAR_POINT_FRQ = 8
 BOSCH_TRIGGER_MSG = 878
 
+VehicleClass = structs.RadarData.RadarPoint.VehicleClass
+# The Bosch radar's own per-point classifier. Raw values above 4 are reserved/unused in the
+# generator's VAL_ table (opendbc/dbc/generator/tesla/_radar_common.py) and fold to unknown here
+# rather than raising, since a reserved value showing up is a decode question, not a crash.
+BOSCH_CLASS_MAP = {
+  0: VehicleClass.unknown,
+  1: VehicleClass.fourWheel,
+  2: VehicleClass.twoWheel,
+  3: VehicleClass.pedestrian,
+  4: VehicleClass.constructionElement,
+}
+
 
 def _is_bosch_radar(CP):
   return CP.carFingerprint in BOSCH_RADAR_CARS
@@ -130,6 +142,13 @@ class RadarInterface(RadarInterfaceBase):
       self.pts[i].measured = bool(msg_a['Meas'])
       # One forward radar on this car; vLead/aLead/jLead are filled by apply_lead_filtering.
       self.pts[i].radarSource = structs.RadarData.RadarPoint.RadarSource.frontRadar
+
+      # Continental's _B message has no Class/ProbClass/Length signals at all -- reading them
+      # there would KeyError, not just return zero.
+      if self.bosch_radar:
+        self.pts[i].vehicleClass = BOSCH_CLASS_MAP.get(int(msg_b['Class']), VehicleClass.unknown)
+        self.pts[i].classProb = float(msg_b['ProbClass']) / 100.0
+        self.pts[i].length = float(msg_b['Length'])
 
     # Before the points are handed out, and once per fresh radar frame rather than once per
     # call: between Bosch triggers update() replays last_radar_data, and filtering the same

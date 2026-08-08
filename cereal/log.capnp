@@ -788,6 +788,12 @@ struct RadarState @0x9a185389d6fdd05f {
     # leadOne.aLead to classify how the lead is driving. Nothing in this tree referenced the
     # deprecated name, so reviving it costs nothing and keeps logs readable by either tree.
     aLead @5 :Float32;
+
+    # Carried straight through from the matched RadarPoint -- see car.capnp for what these mean.
+    # unknown/0/0 for a vision-only lead, or any radar that does not report a class at all.
+    vehicleClass @18 :Car.RadarData.RadarPoint.VehicleClass;
+    classProb @19 :Float32;
+    length @20 :Float32;
   }
 
   # deprecated
