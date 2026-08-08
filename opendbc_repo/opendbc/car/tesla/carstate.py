@@ -201,6 +201,8 @@ class CarState(CarStateBase):
     self.stock_autopark_frames = 0
     self.stock_autopark_offered = False
     self.das_control = None
+    # The factory's latest DAS_object frame per group, kept only when the cluster workaround is on.
+    self.das_objects: dict[int, dict[str, float]] = {}
     self.cruise_gap = 0
     # Raven's party DBC carries none of the map messages, so it gets no decoder at all rather
     # than one that would fault the first time it looked a message up.
@@ -507,7 +509,33 @@ class CarState(CarStateBase):
     # recording, and DAS_control is a channel the car expects fed at 25Hz.
     self.stock_autopark_offered = autopark_offered or self.stock_autopark_frames > 0
 
+    self.update_das_objects(cp_ap_party)
+
     return ret
+
+  def update_das_objects(self, cp_ap_party) -> None:
+    """Keep the factory's latest object list, one entry per group.
+
+    DAS_object rotates through its groups -- lead, left, right, cutin, headings -- one per frame at
+    about 6.7 Hz each, so a single read only ever sees whichever came last. vl_all carries every
+    frame received since the previous update, which is what makes it possible to hold all of them
+    at once. The signals arrive as parallel lists, one entry per frame, so they zip back into
+    frames in order.
+
+    Only kept for the sake of re-sending them with the vehicle type substituted; nothing here
+    feeds control.
+    """
+    if not (self.CP.flags & TeslaFlags.CARS_AS_TRUCKS):
+      return
+
+    frames = cp_ap_party.vl_all.get("DAS_object")
+    if not frames:
+      return
+
+    names = list(frames)
+    for row in zip(*(frames[n] for n in names), strict=True):
+      values = dict(zip(names, row, strict=True))
+      self.das_objects[int(values["DAS_objectId"])] = values
 
   @staticmethod
   def get_can_parsers(CP):

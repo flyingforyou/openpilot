@@ -340,15 +340,22 @@ static safety_config tesla_legacy_init(uint16_t param) {
     {0x2bf, 0, 8, .check_relay = true, .disable_static_blocking = true},  // DAS_control
   };
 
+  // DAS_object is display only -- the cluster draws from it and nothing acts on it -- and unlike
+  // the messages around it, openpilot adds to the factory's stream rather than replacing it. That
+  // is why check_relay is off here: relay detection exists to catch an ECU still talking on a
+  // channel openpilot has taken over, and this channel is deliberately shared. Leaving it on would
+  // read the factory's own frames as a stuck relay and cut steering.
   static const CanMsg TESLA_TX_LEGACY_HW1_MSGS[] = {
     {0x488, 0, 4, .check_relay = true, .disable_static_blocking = true},  // DAS_steeringControl
     {0x2b9, 0, 8, .check_relay = true, .disable_static_blocking = true},  // DAS_control
+    {0x309, 0, 8, .check_relay = false, .disable_static_blocking = true},  // DAS_object
   };
 
   // Stock-ACC mode: lateral only. DAS_control is absent, so openpilot cannot transmit it at all
   // and the factory module's frames pass through untouched.
   static const CanMsg TESLA_TX_LEGACY_HW1_STOCK_LONG_MSGS[] = {
     {0x488, 0, 4, .check_relay = true, .disable_static_blocking = true},  // DAS_steeringControl
+    {0x309, 0, 8, .check_relay = false, .disable_static_blocking = true},  // DAS_object
   };
 
   // Define RX check arrays (keeping them as is)

@@ -6,6 +6,7 @@ from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.tesla.teslacan import TeslaCAN
 from opendbc.car.tesla.teslacan_legacy import TeslaCANRaven
 from opendbc.car.tesla.coop_steering import CoopSteeringCarController
+from opendbc.car.tesla.das_object import substitute_type
 from opendbc.car.tesla.values import CarControllerParams, CANBUS, LEGACY_CARS, CAR, TeslaFlags
 from opendbc.car.vehicle_model import VehicleModel
 
@@ -23,6 +24,8 @@ class CarController(CarControllerBase):
     self.apply_angle_last = 0
     # Follow the driver's hands rather than letting go of the wheel. Off unless opted in.
     self.coop_steering = bool(CP.flags & TeslaFlags.COOP_STEER) and CP.carFingerprint in LEGACY_CARS
+    # Only the legacy cars have the cluster this works around, and only they have the message.
+    self.cars_as_trucks = bool(CP.flags & TeslaFlags.CARS_AS_TRUCKS) and CP.carFingerprint in LEGACY_CARS
     self.coop_steer = CoopSteeringCarController()
     self.packer = CANPacker(dbc_names[Bus.party])
     self.tesla_can = TeslaCAN(CP, self.packer)
@@ -109,6 +112,20 @@ class CarController(CarControllerBase):
     # frames straight through, so openpilot must stay off the id entirely -- not even a cancel.
     # Interleaving two counters on it is what the car reads as a fault, taking TACC and Autopilot
     # down with it. Cancelling is the driver's job here, via the stalk.
+
+    # Put the cars back on the cluster. Tesla's 2026.26.1 update left AP1 clusters drawing TRUCK
+    # and MOTORCYCLE but not CAR, and CAR is most of the traffic, so the display went nearly
+    # empty. Nothing upstream is wrong -- the factory classifies and transmits correctly -- so the
+    # repair is to hand the cluster its own objects back under a type it still renders.
+    #
+    # Additive rather than a replacement: the factory keeps sending its copy, and only the groups
+    # holding a car are re-sent. That keeps the road signs and heading groups, which cannot be
+    # rebuilt from this layout, entirely untouched.
+    if self.cars_as_trucks:
+      for values in CS.das_objects.values():
+        relabelled = substitute_type(values)
+        if relabelled is not None:
+          can_sends.append(self.tesla_can.create_das_object(relabelled))
 
     new_actuators = actuators.as_builder()
     new_actuators.steeringAngleDeg = self.apply_angle_last

@@ -242,6 +242,7 @@ class TeslaFlags(IntFlag):
   # 8 rather than the next free bit in this enum: TeslaLegacyParams shares CP.flags and already
   # claims 1, so the two enums have to be read as one bit space.
   COOP_STEER = 8
+  CARS_AS_TRUCKS = 16
 
 
 DBC = CAR.create_dbc_map()

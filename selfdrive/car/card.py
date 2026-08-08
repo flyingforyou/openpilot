@@ -142,6 +142,13 @@ class Car:
           int(self.params.get("TeslaCoopMaxTorqueCNm", return_default=True) or 250) / 100.0,
           int(self.params.get("TeslaCoopLatAccelCms", return_default=True) or 150) / 100.0)
 
+    # Tesla's 2026.26.1 update left AP1 clusters drawing TRUCK and MOTORCYCLE but not CAR, which
+    # is most of the traffic, so almost nothing appears. Everything upstream of the cluster is
+    # correct, so openpilot re-sends the factory's own object list with the type swapped to one
+    # the cluster still renders. Cars then show up wearing a truck icon.
+    if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaCarsAsTrucks"):
+      self.CP.flags |= TeslaFlags.CARS_AS_TRUCKS.value
+
     # Let the stock HW1 autopark module drive while openpilot is disengaged. Panda ignores the
     # flag on anything but teslaLegacy HW1, but the toggle is only meaningful there anyway.
     if not self.CP.passive and self.params.get_bool("TeslaStockAutopark"):
