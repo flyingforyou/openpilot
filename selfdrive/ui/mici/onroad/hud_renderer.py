@@ -68,7 +68,10 @@ ACCEL_DEADBAND = 0.15  # m/s^2
 # Small corner badge rather than a headline element -- it confirms what the model saw, it
 # doesn't need to be read from across the cabin. Sized against the 60x60 driver-monitor icon.
 LIGHT_RADIUS = 20
-LIGHT_MARGIN_X = 24
+# AlertRenderer draws the lane-change turn-signal icon flush against the top-right corner
+# (104px wide, 2px margin from the edge -- see alert_renderer.py's _draw_icons), so the light
+# has to clear rect.width - 106 with room for its own halo, not just sit near the corner.
+LIGHT_MARGIN_X = 130
 LIGHT_MARGIN_Y = 20
 
 
@@ -165,6 +168,7 @@ class HudRenderer(Widget):
     self._road_class: int = 0
     self._ramp_type: int = 0
     self._nav_limit: float = 0.0  # m/s, 0 = none posted
+    self._nav_fleet_median: float = 0.0  # m/s, 0 = none reported
 
     self._traffic_state: int = TRAFFIC_OFF
     self._x_state: int = 0
@@ -233,6 +237,7 @@ class HudRenderer(Widget):
     self._road_class = int(nav.roadClass)
     self._ramp_type = int(nav.rampType)
     self._nav_limit = float(nav.baseSpeedLimit) if nav.baseSpeedLimit > 0 else float(nav.mapSpeedLimit)
+    self._nav_fleet_median = float(nav.fleetMedianSpeed)
 
     # carrot's own target (eco control, the Tesla map auto-speed override, ...) takes priority
     # over the car's reported cluster value, the same way controlsd now feeds it to the car's
@@ -366,6 +371,12 @@ class HudRenderer(Widget):
     if self._nav_limit > 0:
       speed = self._nav_limit * (CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH)
       text = f"{text} {round(speed)}"
+
+    # What the fleet actually drives here, alongside the posted limit -- the two can disagree
+    # by a lot (a ramp has no posted limit at all), and seeing both is the point.
+    if self._nav_fleet_median > 0:
+      fleet_speed = self._nav_fleet_median * (CV.MS_TO_KPH if ui_state.is_metric else CV.MS_TO_MPH)
+      text = f"{text}/{round(fleet_speed)}"
 
     x = rect.x + NAV_STATE_X
     y = rect.y + NAV_STATE_Y
