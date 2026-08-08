@@ -770,6 +770,34 @@ BO_ 777 DAS_object: 8 XXX
  SG_ DAS_objVeh2Dy : 51|7@1+ (0.35,-22.05) [-22.05|22.4] "m" XXX
  SG_ DAS_objVeh2Id : 58|6@1+ (1,0) [0|63] "" XXX
 
+BO_ 937 DAS_telemetry: 8 XXX
+ SG_ DAS_telemetryMultiplexer : 0|8@1+ (1,0) [0|255] "" XXX
+ SG_ DAS_telLeftLaneType : 8|3@1+ (1,0) [0|7] "" XXX
+ SG_ DAS_telRightLaneType : 11|3@1+ (1,0) [0|7] "" XXX
+ SG_ DAS_telLeftMarkerQuality : 14|2@1+ (1,0) [0|3] "" XXX
+ SG_ DAS_telRightMarkerQuality : 16|2@1+ (1,0) [0|3] "" XXX
+ SG_ DAS_telLeftMarkerColor : 18|2@1+ (1,0) [0|3] "" XXX
+ SG_ DAS_telRightMarkerColor : 20|2@1+ (1,0) [0|3] "" XXX
+ SG_ DAS_telLeftLaneCrossing : 22|1@1+ (1,0) [0|1] "" XXX
+ SG_ DAS_telRightLaneCrossing : 23|1@1+ (1,0) [0|1] "" XXX
+
+BO_ 537 DAS_pscControl: 3 DAS
+ SG_ DAS_pscControlCounter : 0|4@1+ (1,0) [0|15] "" PARK,APS
+ SG_ DAS_pscParkState : 4|4@1+ (1,0) [0|15] "" PARK,EPB,APS
+ SG_ DAS_eacState : 8|3@1+ (1,0) [0|7] "" PARK,APS
+ SG_ DAS_pscControlChecksum : 16|8@1+ (1,0) [0|255] "" PARK,APS
+
+BO_ 520 GTW_ESP1: 4 GTW
+ SG_ GTW_ESP1Counter : 0|3@1+ (1,0) [0|7] "" ESP
+ SG_ GTW_hillStartAssistEnabled : 3|1@1+ (1,0) [0|1] "" ESP
+ SG_ GTW_brakeDiscWipeRequest : 4|2@1+ (1,0) [0|3] "" ESP
+ SG_ GTW_brakeFluidLow : 6|1@1+ (1,0) [0|1] "" ESP
+ SG_ GTW_pedalCalRxEnable : 7|1@1+ (1,0) [0|1] "" ESP
+ SG_ GTW_ambientTemperature : 8|8@1+ (0.5,-40) [-40|87.5] "degC" ESP
+ SG_ GTW_pedalCalTargetCurve : 16|4@1+ (1,0) [0|15] "" ESP
+ SG_ GTW_espModeSwitch : 20|4@1+ (1,0) [0|15] "" ESP
+ SG_ GTW_ESP1Checksum : 24|8@1+ (1,0) [0|255] "" ESP
+
 BO_ 1001 DAS_bodyControls: 8 XXX
  SG_ DAS_headlightRequest : 0|2@1+ (1,0) [0|3] "" XXX
  SG_ DAS_hazardLightRequest : 2|2@1+ (1,0) [0|3] "" XXX
