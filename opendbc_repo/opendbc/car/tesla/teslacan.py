@@ -36,11 +36,18 @@ class TeslaCAN:
 
     set_speed = max(v_ego * CV.MS_TO_KPH, 0)
     if active:
-      # hud_set_speed is the real cruise target (post map/eco adjustment), sourced from
-      # CC.hudControl.setSpeed so the car's own cluster shows what the car is actually driving
-      # to rather than a placeholder. Falls back to the old 0/V_CRUISE_MAX extremes only if the
-      # caller has nothing to say yet (startup, or before carState is valid).
-      set_speed = max(30.0, hud_set_speed * CV.MS_TO_KPH) if hud_set_speed > 0 else (0 if accel < 0 else V_CRUISE_MAX)
+      # Zero is how this car is told to slow down, not a placeholder for a display value: the DI
+      # works to the target it is given, and the accel command only bounds how hard. Sending the
+      # real cruise target while decelerating leaves the car with no reason to brake, which is
+      # what stopped deceleration working entirely. So the decel case is decided first and is
+      # not negotiable; hud_set_speed only ever fills in the cruising case, where the target is
+      # genuinely what the car should be driving to.
+      if accel < 0:
+        set_speed = 0
+      elif hud_set_speed > 0:
+        set_speed = hud_set_speed * CV.MS_TO_KPH
+      else:
+        set_speed = V_CRUISE_MAX
 
     if gas_pressed:
       self.jerk_upper = self.jerk_lower = 0.0
