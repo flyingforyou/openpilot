@@ -514,7 +514,13 @@ class CarState(CarStateBase):
     return ret
 
   def update_das_objects(self, cp_ap_party) -> None:
-    """Keep the factory's latest object list, one entry per group.
+    """Collect the factory object frames that arrived since the last update, one per group.
+
+    Deliberately not a running snapshot. Holding the last frame of each group and re-sending it
+    every cycle would put our copy on the bus at the control rate -- eight times what the factory
+    sends -- carrying values that have not changed since the group last came round. Emptying it
+    each update means exactly one relabelled frame goes out per factory frame, at the factory's
+    own cadence, which is also what keeps the extra bus load proportionate.
 
     DAS_object rotates through its groups -- lead, left, right, cutin, headings -- one per frame at
     about 6.7 Hz each, so a single read only ever sees whichever came last. vl_all carries every
@@ -525,6 +531,8 @@ class CarState(CarStateBase):
     Only kept for the sake of re-sending them with the vehicle type substituted; nothing here
     feeds control.
     """
+    self.das_objects.clear()
+
     if not (self.CP.flags & TeslaFlags.CARS_AS_TRUCKS):
       return
 
