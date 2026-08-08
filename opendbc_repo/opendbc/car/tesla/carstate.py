@@ -528,13 +528,25 @@ class CarState(CarStateBase):
     if not (self.CP.flags & TeslaFlags.CARS_AS_TRUCKS):
       return
 
+    # These parsers are built with no message list and pick messages up on demand, but only
+    # through vl -- that is the one wired for lazy registration. vl_all is a plain dict that
+    # _add_message fills in, so reading it for a message nobody has touched returns nothing,
+    # forever and silently. Touching vl once registers it; from the next frame on, vl_all has it.
+    cp_ap_party.vl["DAS_object"]
+
     frames = cp_ap_party.vl_all.get("DAS_object")
     if not frames:
       return
 
     names = list(frames)
-    for row in zip(*(frames[n] for n in names), strict=True):
-      values = dict(zip(names, row, strict=True))
+    columns = [frames[n] for n in names]
+    # One entry per frame in every column. Guard rather than zip strictly: a mismatch here would
+    # be a parser bug, and raising in CarState would take the car down over a display feature.
+    if len({len(c) for c in columns}) != 1:
+      return
+
+    for row in zip(*columns):
+      values = dict(zip(names, row))
       self.das_objects[int(values["DAS_objectId"])] = values
 
   @staticmethod
