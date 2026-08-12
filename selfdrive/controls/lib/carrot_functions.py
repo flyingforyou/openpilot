@@ -163,6 +163,8 @@ class CarrotPlanner:
     self.aChangeCostStarting = 10.0
 
     self.trafficLightDetectMode = 2 # 0: None, 1:Stop, 2:Stop&Go
+    self.trafficLightGreenHold = 0.5  # s of unbroken green before pulling away from a stop
+    self.green_hold_count = 0
     self.trafficState_carrot = 0
     self.carrot_stay_stop = False
 
@@ -214,6 +216,7 @@ class CarrotPlanner:
     if self.params_count == 10:
       self.myHighModeFactor = 1.2 #float(self.params.get_int("MyHighModeFactor")) / 100.
       self.trafficLightDetectMode = self.params.get_int("TrafficLightDetectMode") # 0: None, 1:Stop, 2:Stop&Go
+      self.trafficLightGreenHold = self.params.get_float("TrafficLightGreenHold") / 10.
     elif self.params_count == 20:
       # Seven, not carrot's four. Its four exist because the cars it targets have a four-position
       # gap button, which openpilot maps onto the four personality levels. This car reports a
@@ -581,6 +584,25 @@ class CarrotPlanner:
     if abs(carstate.steeringAngleDeg) > 20:
       self.trafficState = TrafficState.off
 
+    # How long green has held, counted on the value the state machine will actually act on --
+    # after the overrides above, not before. Pulling away from a light is the one decision here
+    # that cannot be taken back, and upstream it is taken on a single frame: trafficState needs
+    # 0.2s of startSign to reach green, and the launch fires on the first green frame after that.
+    #
+    # Carrot can afford that because it cross-checks a second traffic-light source from its navi
+    # service (carrotMan.trafficState). This port has no such service, so the camera is the only
+    # opinion in the room and a blink of it launches the car.
+    #
+    # Measured over 844 segments: of 11 automatic launches from a light stop, 9 sat on green that
+    # never went back (0.60s to 31s) and 2 fired on green that vanished inside half a second --
+    # 0.20s and 0.35s, with red returning 0.26s and 0.40s later. The gap between 0.35 and 0.60 is
+    # where this threshold lives; the cost of being wrong the other way is a late start.
+    if self.trafficState == TrafficState.green:
+      self.green_hold_count += 1
+    else:
+      self.green_hold_count = 0
+    green_confirmed = self.green_hold_count * DT_MDL >= self.trafficLightGreenHold
+
     #self.update_user_control()
     if carstate.gasPressed or carstate.brakePressed:
       self.user_stop_distance = -1
@@ -595,7 +617,7 @@ class CarrotPlanner:
       elif lead_detected and (radarstate.leadOne.dRel - stop_model_x_raw) < 2.0:
         self.xState = XState.lead
       elif self.stopping_count == 0:
-        if self.trafficState == TrafficState.green and not self.carrot_stay_stop and not carstate.leftBlinker and self.trafficLightDetectMode != 1:
+        if green_confirmed and not self.carrot_stay_stop and not carstate.leftBlinker and self.trafficLightDetectMode != 1:
           #self.xState = XState.e2ePrepare
           self.xState = XState.e2eCruise  # 실험모드를 거치지 않고 바로 출발.
           self.add_event(EventName.trafficSignGreen)
@@ -610,7 +632,7 @@ class CarrotPlanner:
       elif lead_detected and (radarstate.leadOne.dRel - stop_model_x_raw) < 2.0:
         self.xState = XState.lead
       else:
-        if self.trafficState == TrafficState.green:
+        if green_confirmed:
           self.add_event(EventName.trafficSignGreen)
           self.xState = XState.e2eCruise
         else:

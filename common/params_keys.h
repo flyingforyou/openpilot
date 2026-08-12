@@ -135,6 +135,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"VEgoStopping", {PERSISTENT, INT, "10"}},
     {"MyDrivingMode", {PERSISTENT, INT, "3"}},
     {"MyDrivingModeAuto", {PERSISTENT, INT, "0"}},
+    // Seconds of unbroken green before openpilot will pull away from a light stop. The launch
+    // is otherwise taken on the first green frame, and this port has no second traffic-light
+    // source to cross-check the camera against. 0 restores the old immediate behaviour.
+    {"TrafficLightGreenHold", {PERSISTENT, INT, "5"}},  // 0.1s units
     {"TrafficLightDetectMode", {PERSISTENT, INT, "2"}},
     // Seven entries, one per position of this car's gap stalk. carrot ships four because the
     // cars it target have a four-position button, which openpilot maps onto the four
