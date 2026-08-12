@@ -46,6 +46,83 @@ from openpilot.selfdrive.debug.intervention_log import (InterventionLog, list_ev
 # CarrotPilot's own longitudinal knobs. Grouped separately because none of them do anything
 # unless CarrotLongEnabled is on -- they are read by its planner, not this tree's. Defaults are
 # carrot's; the labels explain what each does rather than restating the parameter name.
+# The map auto-cruise family, kept in its own table so the page can give it its own
+# section next to the live map readout instead of burying five related toggles in the
+# middle of the general list.
+MAP_SETTINGS = {
+  "TeslaMapAutoSpeed": {
+    "label": "지도 자동 크루즈", "type": "bool",
+    "help": "매 프레임 스토크 값(차가 보고하는 vCruise)에서 시작해, 아래 상황 중 해당하는 것이 "
+            "그 값을 대체합니다. 대체된 값이 longitudinalPlan.cruiseTarget으로 나가고, 계기판 "
+            "표시(DAS_setSpeed)와 MPC 목표 둘 다 이 값을 씁니다."
+            "<br><br><b>① 표지판을 믿을 때</b> — baseSpeedLimit(가장 먼저 갱신)을 우선하고, "
+            "없으면 mapSpeedLimit·mppSpeedLimit·fusedSpeedLimit 순으로 봅니다. 위치 신뢰도가 "
+            "낮거나(splineConfidence&lt;60) GPS가 도로에 안 붙었으면 아예 안 믿습니다. 표지판이 "
+            "도로등급과 안 맞으면(예: 진출로인데 65mph 그대로) 방금 나온 도로의 값으로 보고 버립니다."
+            "<br><br><b>② 램프(진입·진출)</b> — 램프엔 표지판이 없고 도로등급도 두 도로 사이라 "
+            "애매하므로, 그 지점을 실제로 달리는 플릿 속도(fleetSplineSpeed, 위치 기준이라 "
+            "구간이 아니라 연속으로 움직임)를 그대로 목표로 씁니다. 진입로는 지금 속도보다 "
+            "낮게는 절대 안 잡습니다(합류 중 감속 요청 방지)."
+            "<br><br><b>②-1 커브 감속</b> — 아래 '커브 감속' 옵션을 켜면 같은 플릿 속도를 "
+            "램프뿐 아니라 <b>모든 도로</b>에서 <b>상한으로만</b> 적용합니다. 표지판이 평평한 "
+            "커브에서 플릿 속도만 쓸고 내려가므로(실측: 표지판 44.7mph 고정인데 플릿은 "
+            "44.2→39.7mph) 그만큼 목표가 내려갑니다."
+            "<br><br><b>③ 표지판도 램프도 아닐 때</b> — 지도가 아직 안 잡혔거나 미매핑 도로. "
+            "마지막 목표를 유지하되 도로등급별 상한(고속 75mph·간선 50·집산 35·국지 30)으로만 "
+            "묶어서, 고속도로 속도가 국지도로까지 안 넘어오게 합니다."
+            "<br><br><b>④ 운전자가 레버를 움직일 때</b> — \"여긴 아니고 이 속도\"로 그대로 "
+            "받아들여 목표를 대체합니다(내리는 것뿐 아니라 올리는 것도). 지도 목표가 그 뒤로 "
+            "약 5mph 이상 다른 구간으로 실제로 옮겨가기 전까진 이 값을 유지합니다 — 다음 신호에 "
+            "풀리는 게 아니라 다음 존에서 풀립니다."
+            "<br><br><b>상한</b> — 이 차는 스토크 값이 곧 크루즈 설정속도라서(pcmCruise) 스토크를 "
+            "상한으로 못 씁니다. 지난 도로에서 30에 맞춰뒀으면 고속도로에 들어서도 30에 묶이기 "
+            "때문입니다. 그래서 상한은 TeslaMapAutoSpeedMax 하나뿐입니다."
+            "<br><br><b>변화 속도</b> — 내려갈 때 1.0m/s², 올라갈 때 0.5(진입 합류는 1.5, 대기 "
+            "없이 바로). 올라가는 쪽은 3초 대기 후 시작하되(지도가 먼저 다음 구간을 알려도 차는 "
+            "아직 진입로 위) 진출로에선 대기 없이 바로 내려갑니다. 커브 감속기가 이 결과를 뒤에서 "
+            "한 번 더 낮출 수 있습니다(올리진 않음)."
+            "<br><br>가·감속 관성을 잠깐 주는 <b>CruiseEcoControl</b>(설정속도 초과 허용)은 별개 "
+            "기능으로, 이 목표와 독립적으로 위에 얹힙니다.",
+    "options": [(0, "사용 안 함 (기본)"), (1, "사용")],
+  },
+  "TeslaMapAutoSpeedMax": {
+    "label": "지도 자동 크루즈 상한", "type": "int",
+    "help": "자동으로 올라갈 수 있는 최대 속도입니다. 이 차는 스토크 값이 곧 크루즈 설정속도라서 "
+            "스토크를 상한으로 쓰면 시내에서 맞춰둔 값에 묶여 고속도로에서 못 올라갑니다. "
+            "그래서 상한은 여기서 한 번만 정합니다.",
+    "options": [(105, "65mph"), (113, "70mph"), (121, "75mph"), (129, "80mph (기본)")],
+  },
+  "TeslaMapAutoSpeedRatio": {
+    "label": "지도 제한속도 비율", "type": "int",
+    "help": "게시된 제한속도의 몇 %를 목표로 삼을지입니다. 아래 차량 오프셋은 이 비율을 적용한 "
+            "뒤에 더해집니다.",
+    "options": [(90, "90% 여유"), (100, "100% 표지판대로 (기본)"), (105, "105%"), (110, "110%")],
+  },
+  "TeslaMapAutoSpeedUseCarOffset": {
+    "label": "차량 속도 오프셋 사용", "type": "bool",
+    "help": "테슬라 메뉴에서 이미 설정해 둔 '제한속도 +n' 값(UI_userSpeedOffset)을 그대로 "
+            "더합니다. 같은 설정을 두 군데 두지 않기 위한 기본값입니다.",
+    "options": [(0, "무시"), (1, "사용 (기본)")],
+  },
+  "TeslaMapAutoSpeedCurve": {
+    "label": "커브 감속 (플릿 속도)", "type": "bool",
+    "help": "그 지점을 실제로 달리는 플릿 속도(UI_meanFleetSplineSpeedMPS)를 램프뿐 아니라 "
+            "모든 도로에서 <b>상한으로만</b> 적용합니다. 커브에서는 표지판이 평평해도 플릿 "
+            "속도가 먼저 내려가므로, 곡률을 따로 계산하지 않고도 커브 감속이 됩니다."
+            "<br><br><b>커브 전에 들어옵니다</b> — 173개 구간에서 모델의 곡률 요구와 상호상관을 "
+            "낸 결과 최적 시차가 <b>중앙값 4.0초 선행</b>(158/173이 선행, 상관 0.66)이었습니다. "
+            "선행 시간이 거리가 아니라 시간 기준이라(40mph 3.5초·63m / 56mph 4.0초·100m) "
+            "고속에서도 안 줄어들고, 관측된 최대 감속 필요량(11.1mph)도 1.25m/s²면 4초 안에 "
+            "들어옵니다."
+            "<br><br><b>올리지는 않습니다</b> — 플릿 속도는 곡률만이 아니라 교통량·교차로도 "
+            "반영해서 직선에서는 제한속도보다 <i>높게</i> 나오는 경우도 많습니다. 그래서 목표를 "
+            "대체하지 않고 낮추기만 합니다. 감속 자체는 기존 슬루(내려갈 때 1.0m/s²)를 그대로 "
+            "따라갑니다.",
+    "options": [(0, "사용 안 함"), (1, "사용 (기본)")],
+  },
+}
+
+
 CARROT_SETTINGS = {
   "MyDrivingMode": {
     "label": "주행 모드", "type": "int",
@@ -257,76 +334,6 @@ SETTINGS = {
     "label": "협조 조향 이동량", "type": "int",
     "help": "최대 토크일 때 목표가 얼마나 옮겨갈지입니다. 횡가속도 기준이라 속도가 붙으면 각도는 줄어듭니다.",
     "options": [(100, "조금 1.0m/s²"), (150, "표준 1.5m/s²"), (220, "많이 2.2m/s²")],
-  },
-  "TeslaMapAutoSpeed": {
-    "label": "지도 자동 크루즈", "type": "bool",
-    "help": "매 프레임 스토크 값(차가 보고하는 vCruise)에서 시작해, 아래 상황 중 해당하는 것이 "
-            "그 값을 대체합니다. 대체된 값이 longitudinalPlan.cruiseTarget으로 나가고, 계기판 "
-            "표시(DAS_setSpeed)와 MPC 목표 둘 다 이 값을 씁니다."
-            "<br><br><b>① 표지판을 믿을 때</b> — baseSpeedLimit(가장 먼저 갱신)을 우선하고, "
-            "없으면 mapSpeedLimit·mppSpeedLimit·fusedSpeedLimit 순으로 봅니다. 위치 신뢰도가 "
-            "낮거나(splineConfidence&lt;60) GPS가 도로에 안 붙었으면 아예 안 믿습니다. 표지판이 "
-            "도로등급과 안 맞으면(예: 진출로인데 65mph 그대로) 방금 나온 도로의 값으로 보고 버립니다."
-            "<br><br><b>② 램프(진입·진출)</b> — 램프엔 표지판이 없고 도로등급도 두 도로 사이라 "
-            "애매하므로, 그 지점을 실제로 달리는 플릿 속도(fleetSplineSpeed, 위치 기준이라 "
-            "구간이 아니라 연속으로 움직임)를 그대로 목표로 씁니다. 진입로는 지금 속도보다 "
-            "낮게는 절대 안 잡습니다(합류 중 감속 요청 방지)."
-            "<br><br><b>②-1 커브 감속</b> — 아래 '커브 감속' 옵션을 켜면 같은 플릿 속도를 "
-            "램프뿐 아니라 <b>모든 도로</b>에서 <b>상한으로만</b> 적용합니다. 표지판이 평평한 "
-            "커브에서 플릿 속도만 쓸고 내려가므로(실측: 표지판 44.7mph 고정인데 플릿은 "
-            "44.2→39.7mph) 그만큼 목표가 내려갑니다."
-            "<br><br><b>③ 표지판도 램프도 아닐 때</b> — 지도가 아직 안 잡혔거나 미매핑 도로. "
-            "마지막 목표를 유지하되 도로등급별 상한(고속 75mph·간선 50·집산 35·국지 30)으로만 "
-            "묶어서, 고속도로 속도가 국지도로까지 안 넘어오게 합니다."
-            "<br><br><b>④ 운전자가 레버를 움직일 때</b> — \"여긴 아니고 이 속도\"로 그대로 "
-            "받아들여 목표를 대체합니다(내리는 것뿐 아니라 올리는 것도). 지도 목표가 그 뒤로 "
-            "약 5mph 이상 다른 구간으로 실제로 옮겨가기 전까진 이 값을 유지합니다 — 다음 신호에 "
-            "풀리는 게 아니라 다음 존에서 풀립니다."
-            "<br><br><b>상한</b> — 이 차는 스토크 값이 곧 크루즈 설정속도라서(pcmCruise) 스토크를 "
-            "상한으로 못 씁니다. 지난 도로에서 30에 맞춰뒀으면 고속도로에 들어서도 30에 묶이기 "
-            "때문입니다. 그래서 상한은 TeslaMapAutoSpeedMax 하나뿐입니다."
-            "<br><br><b>변화 속도</b> — 내려갈 때 1.0m/s², 올라갈 때 0.5(진입 합류는 1.5, 대기 "
-            "없이 바로). 올라가는 쪽은 3초 대기 후 시작하되(지도가 먼저 다음 구간을 알려도 차는 "
-            "아직 진입로 위) 진출로에선 대기 없이 바로 내려갑니다. 커브 감속기가 이 결과를 뒤에서 "
-            "한 번 더 낮출 수 있습니다(올리진 않음)."
-            "<br><br>가·감속 관성을 잠깐 주는 <b>CruiseEcoControl</b>(설정속도 초과 허용)은 별개 "
-            "기능으로, 이 목표와 독립적으로 위에 얹힙니다.",
-    "options": [(0, "사용 안 함 (기본)"), (1, "사용")],
-  },
-  "TeslaMapAutoSpeedMax": {
-    "label": "지도 자동 크루즈 상한", "type": "int",
-    "help": "자동으로 올라갈 수 있는 최대 속도입니다. 이 차는 스토크 값이 곧 크루즈 설정속도라서 "
-            "스토크를 상한으로 쓰면 시내에서 맞춰둔 값에 묶여 고속도로에서 못 올라갑니다. "
-            "그래서 상한은 여기서 한 번만 정합니다.",
-    "options": [(105, "65mph"), (113, "70mph"), (121, "75mph"), (129, "80mph (기본)")],
-  },
-  "TeslaMapAutoSpeedRatio": {
-    "label": "지도 제한속도 비율", "type": "int",
-    "help": "게시된 제한속도의 몇 %를 목표로 삼을지입니다. 아래 차량 오프셋은 이 비율을 적용한 "
-            "뒤에 더해집니다.",
-    "options": [(90, "90% 여유"), (100, "100% 표지판대로 (기본)"), (105, "105%"), (110, "110%")],
-  },
-  "TeslaMapAutoSpeedUseCarOffset": {
-    "label": "차량 속도 오프셋 사용", "type": "bool",
-    "help": "테슬라 메뉴에서 이미 설정해 둔 '제한속도 +n' 값(UI_userSpeedOffset)을 그대로 "
-            "더합니다. 같은 설정을 두 군데 두지 않기 위한 기본값입니다.",
-    "options": [(0, "무시"), (1, "사용 (기본)")],
-  },
-  "TeslaMapAutoSpeedCurve": {
-    "label": "커브 감속 (플릿 속도)", "type": "bool",
-    "help": "그 지점을 실제로 달리는 플릿 속도(UI_meanFleetSplineSpeedMPS)를 램프뿐 아니라 "
-            "모든 도로에서 <b>상한으로만</b> 적용합니다. 커브에서는 표지판이 평평해도 플릿 "
-            "속도가 먼저 내려가므로, 곡률을 따로 계산하지 않고도 커브 감속이 됩니다."
-            "<br><br><b>커브 전에 들어옵니다</b> — 173개 구간에서 모델의 곡률 요구와 상호상관을 "
-            "낸 결과 최적 시차가 <b>중앙값 4.0초 선행</b>(158/173이 선행, 상관 0.66)이었습니다. "
-            "선행 시간이 거리가 아니라 시간 기준이라(40mph 3.5초·63m / 56mph 4.0초·100m) "
-            "고속에서도 안 줄어들고, 관측된 최대 감속 필요량(11.1mph)도 1.25m/s²면 4초 안에 "
-            "들어옵니다."
-            "<br><br><b>올리지는 않습니다</b> — 플릿 속도는 곡률만이 아니라 교통량·교차로도 "
-            "반영해서 직선에서는 제한속도보다 <i>높게</i> 나오는 경우도 많습니다. 그래서 목표를 "
-            "대체하지 않고 낮추기만 합니다. 감속 자체는 기존 슬루(내려갈 때 1.0m/s²)를 그대로 "
-            "따라갑니다.",
-    "options": [(0, "사용 안 함"), (1, "사용 (기본)")],
   },
   "TeslaCarsAsTrucks": {
     "label": "승용차를 트럭으로 표시", "type": "bool",
@@ -541,6 +548,7 @@ class Handler(BaseHTTPRequestHandler):
         return out
       return self._send(200, json.dumps({
         'settings': pack(SETTINGS),
+        'map': pack(MAP_SETTINGS),
         'carrot': pack(CARROT_SETTINGS),
         # The carrot block only does anything when its planner is the one running, and that is
         # read at startup -- so the page can say plainly whether these are live right now.
@@ -671,7 +679,7 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
 
     changes = req.get('changes') or {}
-    known = {**SETTINGS, **CARROT_SETTINGS}
+    known = {**SETTINGS, **MAP_SETTINGS, **CARROT_SETTINGS}
     unknown = [k for k in changes if k not in known]
     if unknown:
       return self._send(400, json.dumps({'error': f'알 수 없는 설정: {", ".join(unknown)}'}))
@@ -894,6 +902,8 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
   </div>
 </div>
 
+<div class="card"><div class="h">지도 자동 크루즈 설정</div><div id="mapSettings"></div></div>
+
 <div class="card"><div class="h">Settings</div><div id="settings"></div></div>
 
 <div class="card"><div class="h">CarrotPilot 설정 <span id="carrotState" class="hlp"></span></div>
@@ -963,10 +973,11 @@ async function poll(){
   }catch(e){$('conn').textContent='디바이스에 연결할 수 없습니다';}
 }
 
-let cfg={}, carrotCfg={}, staged={}, carrotActive=false, livePlanner=null;
+let cfg={}, mapCfg={}, carrotCfg={}, staged={}, carrotActive=false, livePlanner=null;
 
 function renderSettings(){
   renderInto($('settings'), cfg);
+  renderInto($('mapSettings'), mapCfg);
   renderInto($('carrotSettings'), carrotCfg);
   // These only take effect when carrot's planner is the one running, and that is decided at
   // startup -- so say so rather than letting them look live when they are not.
@@ -1017,7 +1028,7 @@ function updateApply(){
 
 async function loadSettings(){
   const d=await(await fetch('/api/settings')).json();
-  cfg=d.settings; carrotCfg=d.carrot||{}; carrotActive=!!d.carrotActive; engaged=d.engaged;
+  cfg=d.settings; mapCfg=d.map||{}; carrotCfg=d.carrot||{}; carrotActive=!!d.carrotActive; engaged=d.engaged;
   renderSettings();updateApply();
 }
 
