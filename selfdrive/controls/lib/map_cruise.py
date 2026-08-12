@@ -58,6 +58,7 @@ class MapCruiseState(IntEnum):
   mapped = 1     # a posted limit we believe, cross-checked against road class
   ramp = 2       # on a ramp: no posted limit applies, following what the fleet does here
   unmapped = 3   # no limit and no ramp: coasting on the last value under a road-class ceiling
+  curve = 4      # the fleet drives this stretch slower than the limit allows -- capped to it
 
 
 # Fastest limit each road class can plausibly post, m/s. Sized from the observed pairings
@@ -130,6 +131,7 @@ class MapCruiseController:
     self.enabled = False
     self.offset_ratio = 1.0
     self.use_car_offset = True
+    self.use_curve = True
     self.v_max = 129 * CV.KPH_TO_MS
 
     self.state = MapCruiseState.off
@@ -145,12 +147,13 @@ class MapCruiseController:
     self.stalk_last = 0.0
 
   def set_config(self, enabled: bool, offset_ratio: float, use_car_offset: bool,
-                 v_max: float) -> None:
+                 v_max: float, use_curve: bool = True) -> None:
     if not enabled and self.enabled:
       self.reset()
     self.enabled = enabled
     self.offset_ratio = offset_ratio
     self.use_car_offset = use_car_offset
+    self.use_curve = use_curve
     self.v_max = v_max
 
   def reset(self) -> None:
@@ -289,6 +292,25 @@ class MapCruiseController:
       target = self.v_output if self.v_output > 0.0 else v_cruise_driver
       if ceiling > 0.0:
         target = min(target, self._with_offset(ceiling, nav))
+
+    # Curve deceleration, from what the fleet actually drives here.
+    #
+    # A ramp already takes its target from the fleet outright, above; this is the same signal
+    # applied to every other road, and only ever downward. It has to be a cap rather than a
+    # setpoint because fleetSplineSpeed answers "how fast do people go here", which is bent by
+    # traffic and intersections as well as by geometry -- measured against the model's own
+    # curvature demand across 173 segments it correlates 0.66, good enough to slow for but not
+    # to steer by, and on straights it frequently reads *above* the posted limit.
+    #
+    # It leads the curve rather than reporting it: cross-correlating the two over those segments
+    # puts the best fit at a median 4.0s ahead (p25 3.0, p75 4.5), leading in 158 of 173. The
+    # lead is in time rather than distance -- 3.5s/63m at 40mph against 4.0s/100m at 56mph --
+    # so it does not shrink at speed, and 4s covers even the largest observed deficit (11.1mph)
+    # at a comfortable 1.25 m/s^2. Slewing it is still SLEW_DOWN's job, not this line's.
+    if self.use_curve and ramp not in (RAMP_ON, RAMP_OFF) and fleet > 0.0 and fleet < target:
+      target = fleet
+      self.state = MapCruiseState.curve
+      self.source = 'curve'
 
     # The configured ceiling is the only thing standing between the map and the throttle, so it
     # is applied to the target itself rather than anywhere further down, where a later rule could

@@ -197,6 +197,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Whether to add UI_userSpeedOffset, the "limit + n" the driver already configured in the
     // car's own menu, on top of that ratio.
     {"TeslaMapAutoSpeedUseCarOffset", {PERSISTENT, BOOL, "1"}},
+    // Let the fleet speed for this stretch of road cap the target on ordinary roads, not just
+    // on ramps. This is the curve slowdown: the gateway's fleetSplineSpeed leads a curve by a
+    // median 4s, so it arrives in time to be braked for. Only ever lowers the target.
+    {"TeslaMapAutoSpeedCurve", {PERSISTENT, BOOL, "1"}},
     {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "150"}},
     {"TeslaCoopMaxTorqueCNm", {PERSISTENT, INT, "250"}},
     {"TeslaCarsAsTrucks", {PERSISTENT, BOOL, "0"}},
