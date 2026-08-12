@@ -233,6 +233,7 @@ class TeslaSafetyFlags(IntFlag):
   FLAG_HW2 = 16
   FLAG_HW3 = 32
   STOCK_AUTOPARK = 64
+  CARS_AS_TRUCKS = 128
 
 
 class TeslaFlags(IntFlag):

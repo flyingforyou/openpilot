@@ -11,10 +11,14 @@ from opendbc.can import CANDefine
 from opendbc.safety import ALTERNATIVE_EXPERIENCE
 from opendbc.safety.tests.libsafety import libsafety_py
 import opendbc.safety.tests.common as common
-from opendbc.safety.tests.common import CANPackerSafety, MAX_SPEED_DELTA, MAX_WRONG_COUNTERS, away_round, round_speed
+from opendbc.safety.tests.common import CANPackerSafety, MAX_SPEED_DELTA, MAX_WRONG_COUNTERS, away_round, make_msg, round_speed
 
 MSG_DAS_steeringControl = 0x488
 MSG_DAS_Control_HW1 = 0x2b9
+# Display only: the factory's object list, re-sent with the vehicle type relabelled so the
+# cluster draws cars again. Always transmittable; whether the factory's own copy is forwarded
+# alongside it is what TESLA_FLAG_CARS_AS_TRUCKS decides.
+MSG_DAS_object = 0x309
 MSG_DI_torque1 = 0x108  # HW1 uses different message ID
 
 
@@ -41,7 +45,7 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
   # HW1 configuration - based on tesla_legacy.h
   RELAY_MALFUNCTION_ADDRS = {0: (MSG_DAS_steeringControl, MSG_DAS_Control_HW1)}
   FWD_BLACKLISTED_ADDRS = {2: [MSG_DAS_steeringControl, MSG_DAS_Control_HW1]}
-  TX_MSGS = [[MSG_DAS_steeringControl, 0], [MSG_DAS_Control_HW1, 0]]
+  TX_MSGS = [[MSG_DAS_steeringControl, 0], [MSG_DAS_Control_HW1, 0], [MSG_DAS_object, 0]]
 
   STANDSTILL_THRESHOLD = 0.1
   GAS_PRESSED_THRESHOLD = 3
@@ -274,6 +278,24 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
 
     self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
     self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_Control_HW1))
+
+  def test_das_object_forwarded_unless_relabelling(self):
+    """Without the flag the factory's object list reaches the cluster untouched."""
+    self.assertNotEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_object))
+
+  def test_das_object_blocked_when_relabelling(self):
+    """With it, only openpilot's relabelled copy gets through.
+
+    Both frames on the bus a few ms apart, one saying CAR and one saying TRUCK, leaves which one
+    the cluster draws up to the cluster. Blocking the original is what makes the substitution
+    deterministic -- and it stays transmittable either way, so openpilot always has the channel.
+    """
+    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy,
+                                 int(TeslaSafetyFlags.FLAG_HW1 | TeslaSafetyFlags.LONG_CONTROL |
+                                     TeslaSafetyFlags.CARS_AS_TRUCKS))
+    self.safety.init_tests()
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_object))
+    self.assertTrue(self._tx(make_msg(0, MSG_DAS_object, 8)), "openpilot must still own the id")
 
   def test_prevent_reverse(self):
     # Test reverse prevention logic - use the same test as modern Tesla
@@ -523,7 +545,7 @@ class TestTeslaHW1StockLongSafety(TestTeslaHW1Safety):
   # openpilot no longer owns DAS_control, so it is neither a TX message nor forward-blocked
   RELAY_MALFUNCTION_ADDRS = {0: (MSG_DAS_steeringControl,)}
   FWD_BLACKLISTED_ADDRS = {2: [MSG_DAS_steeringControl]}
-  TX_MSGS = [[MSG_DAS_steeringControl, 0]]
+  TX_MSGS = [[MSG_DAS_steeringControl, 0], [MSG_DAS_object, 0]]
   LONGITUDINAL = False
 
   def setUp(self):

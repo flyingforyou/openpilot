@@ -148,6 +148,10 @@ class Car:
     # the cluster still renders. Cars then show up wearing a truck icon.
     if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaCarsAsTrucks"):
       self.CP.flags |= TeslaFlags.CARS_AS_TRUCKS.value
+      # Panda has to stop forwarding the factory's copy, or the cluster gets both labels.
+      for cfg in self.CP.safetyConfigs:
+        if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
+          cfg.safetyParam |= TeslaSafetyFlags.CARS_AS_TRUCKS.value
 
     # Let the stock HW1 autopark module drive while openpilot is disengaged. Panda ignores the
     # flag on anything but teslaLegacy HW1, but the toggle is only meaningful there anyway.
