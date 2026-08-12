@@ -11,7 +11,16 @@ MAX_VEL_ERR = 5.0  # m/s
 
 # EU guidelines
 MAX_LATERAL_JERK = 5.0  # m/s^3
-MAX_LATERAL_ACCEL_NO_ROLL = 3.0  # m/s^2
+# Raised from the 3.0 EU comfort figure to match the two limits downstream of it -- the Tesla
+# carcontroller's own MAX_LATERAL_ACCEL (values.py) and panda's steer_angle_cmd_checks_vm
+# (safety/lateral.h) are both already 5.0. At 3.0 this clamp was the only one that ever bound:
+# across 844 segments of real driving, all 76 "Turn Exceeds Steering Limit" alerts came from
+# curvature_limited here, and none from the carcontroller (max |requested-emitted| was 0.18 deg).
+# The car undershot the curve, the driver added steering to make up the difference, and the
+# resulting torque tripped handsOnLevel 3 -- which on this platform disengages cruise as well.
+# Peak demand in those 76 episodes: median 4.29, p90 4.84, max 5.32 m/s^2; 5.0 covers 73 of them.
+# Above 5.0 panda starts clipping instead, which is a worse failure than this one.
+MAX_LATERAL_ACCEL_NO_ROLL = 5.0  # m/s^2
 
 
 def clamp(val, min_val, max_val):
