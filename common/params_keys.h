@@ -163,6 +163,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CruiseMaxVals4", {PERSISTENT, INT, "110"}},
     {"CruiseMaxVals5", {PERSISTENT, INT, "95"}},
     {"CruiseMaxVals6", {PERSISTENT, INT, "80"}},
+    // The deceleration the planner assumes it can comfortably use, in 0.01 m/s^2. It sets how
+    // much room the follow distance reserves: desired = (v_ego^2 - v_lead^2)/(2*this) + ...
+    // A lower value assumes the car can only brake gently, so it demands more room and brakes
+    // earlier and harder for the same closing speed. Measured over a drive, this term was 60%
+    // of the whole follow distance.
+    {"ComfortBrake", {PERSISTENT, INT, "240"}},
     {"StopDistanceCarrot", {PERSISTENT, INT, "550"}},
     // Stopping accel: the car must already be braking at least this hard before the controller
     // commits to its stopping ramp. 0 means "use the port's own stopAccel", which is what the
