@@ -190,6 +190,7 @@ class CarrotPlanner:
     # "nothing to say" -- until the param turns it on and the map messages start arriving, so
     # cars without them simply never see it do anything.
     self.map_cruise = MapCruiseController()
+    self.cruiseCeiling = 0.0
     self.mapAutoSpeed = False
     self.mapAutoSpeedRatio = 1.0
     self.mapAutoSpeedUseCarOffset = True
@@ -463,6 +464,9 @@ class CarrotPlanner:
     working as an override there.
     """
     v_map = self.map_cruise.update(sm['carState'], sm['carState'].vEgo, v_cruise_kph * CV.KPH_TO_MS)
+    # The ceiling rides alongside the target. 0 means the map has no opinion, and a cluster
+    # showing MAX should keep showing whatever the stalk already says rather than be driven.
+    self.cruiseCeiling = self.map_cruise.v_ceiling * CV.MS_TO_KPH
     if v_map <= 0.0:
       return v_cruise_kph, False
     return v_map * CV.MS_TO_KPH, False

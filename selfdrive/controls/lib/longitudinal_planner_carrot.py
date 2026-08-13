@@ -349,6 +349,7 @@ class _CarrotLongitudinalPlannerImpl:
     longitudinalPlan.xState = carrot.xState.value
     longitudinalPlan.trafficState = carrot.trafficState.value
     longitudinalPlan.cruiseTarget = self.v_cruise_kph
+    longitudinalPlan.cruiseCeiling = float(carrot.cruiseCeiling)
     longitudinalPlan.tFollow = float(self.mpc.t_follow)
     longitudinalPlan.desiredDistance = float(self.mpc.desired_distance)
     longitudinalPlan.events = carrot.events.to_msg()

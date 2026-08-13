@@ -1297,6 +1297,10 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   trafficState @41: Int32;        # carrot's own traffic-light state, off without the navi service
   vTargetNow @42: Float32;
   cruiseTarget @43: Float32;
+  # The ceiling this road allows, before any slew -- what the cluster's MAX is meant to mean.
+  # cruiseTarget lives underneath it and converges to it; this is the number that answers "how
+  # fast may this car go here", and it only moves when the road does. 0 when nothing decides one.
+  cruiseCeiling @50: Float32;
   jTargetNow @44: Float32;
   tFollow @45: Float32;           # the follow time actually solved with, after all adjustments
   desiredDistance @46: Float32;

@@ -150,6 +150,7 @@ class MapCruiseController:
     self.state = MapCruiseState.off
     self.source = 'off'
     self.v_target = 0.0     # what the map says, before slew
+    self.v_ceiling = 0.0    # v_target after every cap: the number a cluster should show as MAX
     self.v_output = 0.0     # what is handed to the planner, after slew
     self.raise_timer = 0.0
     self.loss_timer = 0.0
@@ -171,6 +172,7 @@ class MapCruiseController:
     self.v_max = v_max
 
   def reset(self) -> None:
+    self.v_ceiling = 0.0
     self.state = MapCruiseState.off
     self.source = 'off'
     self.v_target = 0.0
@@ -273,6 +275,7 @@ class MapCruiseController:
     nav = CS.navMap
     if not self.enabled or not nav.valid:
       self.reset()
+      self.v_ceiling = 0.0
       return 0.0
 
     posted, source = self._posted_limit(nav)
@@ -364,6 +367,12 @@ class MapCruiseController:
     if posted > 0.0 and self.v_target > posted + OVER_LIMIT_CAP:
       self.v_target = float(max(MIN_TARGET, posted + OVER_LIMIT_CAP))
       self.source = 'capped'
+
+    # Everything above has had its say; what is left is the ceiling for this stretch of road.
+    # Deliberately taken before the slew: the slew is how the car gets there, not how fast the
+    # road allows. A cluster showing this is answering "how fast may I go here", which only
+    # changes when the road does -- not every frame as the car catches up.
+    self.v_ceiling = self.v_target
 
     # First frame with anything to say: start from the driver's set speed rather than from zero,
     # so engaging on a road we already know does not slew up from a standstill target.

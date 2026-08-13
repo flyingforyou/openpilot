@@ -68,7 +68,15 @@ class CarController(CarControllerBase):
     for the DI to act and report back -- it took about 0.2s in the logs. Steps are +/-1 and +/-5,
     so anything within a mile an hour is left alone rather than hunted.
     """
-    target = CC.hudControl.setSpeed * CV.MS_TO_MPH
+    # The ceiling for this road, not the moment's target. MAX answers "how fast may this car go
+    # here" -- a ramp, a school zone, a hairpin -- and the driver reads it as the bound cruise
+    # will not cross. Chasing the slewed target instead would have the number follow the car's
+    # own speed up and down every second, which says nothing about the road and was the surface
+    # the eco offset walked the setpoint up.
+    #
+    # Zero means the map has no opinion here: leave the stalk alone rather than drive it to a
+    # number nothing decided.
+    target = CC.hudControl.cruiseCeiling * CV.MS_TO_MPH
     current = CS.out.cruiseState.speed * CV.MS_TO_MPH
     if target <= 0 or current <= 0:
       return []

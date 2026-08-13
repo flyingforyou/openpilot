@@ -183,6 +183,10 @@ class Controls:
     # reaches the actuators but never the cluster, and looks like it silently did nothing.
     if self.sm.valid['longitudinalPlan'] and long_plan.cruiseTarget > 0:
       hudControl.setSpeed = float(long_plan.cruiseTarget * CV.KPH_TO_MS)
+    if self.sm.valid['longitudinalPlan']:
+      # The road's ceiling, not the moment's target. Kept separate from setSpeed because that one
+      # doubles as a control signal on Tesla and has to stay the value the car is driven to.
+      hudControl.cruiseCeiling = float(long_plan.cruiseCeiling * CV.KPH_TO_MS)
     else:
       hudControl.setSpeed = float(CS.vCruiseCluster * CV.KPH_TO_MS)
     hudControl.speedVisible = CC.enabled
