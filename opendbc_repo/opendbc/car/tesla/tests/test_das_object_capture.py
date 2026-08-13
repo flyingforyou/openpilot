@@ -74,6 +74,42 @@ class TestDasObjectCapture:
     _, data, _ = packer.make_can_msg('DAS_object', 0, values)
     assert data.hex() == '9046083480ff0700'
 
+  def test_every_group_round_trips_byte_exactly(self):
+    """Panda blocks the factory's copy while this is on, so every frame has to be reproduced --
+    including the road sign and heading groups, which carry entirely different fields in these
+    bits and have no vehicle type to substitute. Reproducing them means the repack has to be
+    exact, not merely close: bit 37 is set in roughly a fifth of heading frames, and before it had
+    a signal of its own a rebuilt frame silently dropped it."""
+    parser = CANParser(DBC, [], BUS)
+    parser.vl['DAS_object']
+    packer = CANPacker(DBC)
+
+    for frame in ROTATION + ['057e7effffffffff', '0a52c56c80ff0700']:
+      feed(parser, [frame])
+      frames = parser.vl_all['DAS_object']
+      names = list(frames)
+      values = dict(zip(names, next(zip(*[frames[n] for n in names]))))
+      _, data, _ = packer.make_can_msg('DAS_object', 0, values)
+      assert data.hex() == frame, f"{frame} did not survive a round trip"
+
+  def test_an_emptied_slot_still_produces_a_frame(self):
+    """The ghost. When the car ahead goes away the factory says so by sending the slot saturated;
+    with its copy blocked, that emptying only reaches the cluster if we forward it ourselves.
+    substitute_type declines to relabel it -- correctly, there is no vehicle -- so the caller has
+    to send the original rather than treat 'nothing to change' as 'nothing to send'."""
+    parser = CANParser(DBC, [], BUS)
+    parser.vl['DAS_object']
+    feed(parser, ['00ff0ff883ff0700'])
+
+    frames = parser.vl_all['DAS_object']
+    names = list(frames)
+    values = dict(zip(names, next(zip(*[frames[n] for n in names]))))
+
+    assert substitute_type(values, CAR, TRUCK) is None
+    packer = CANPacker(DBC)
+    _, data, _ = packer.make_can_msg('DAS_object', 0, values)
+    assert data.hex() == '00ff0ff883ff0700'
+
   def test_substitution_on_captured_values(self):
     """End to end: capture the lead frame, relabel it, and confirm only the type moved."""
     parser = CANParser(DBC, [], BUS)

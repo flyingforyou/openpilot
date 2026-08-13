@@ -188,9 +188,15 @@ class CarController(CarControllerBase):
     cars_as_trucks = bool(self.CP.flags & TeslaFlags.CARS_AS_TRUCKS) and self.CP.carFingerprint in LEGACY_CARS
     if cars_as_trucks:
       for values in CS.das_objects.values():
+        # Every frame goes back out, not just the ones that changed. Panda blocks the factory's
+        # DAS_object outright while this is on, so a group we decline to re-send reaches the
+        # cluster not as "nothing there" but as nothing at all -- and the cluster goes on drawing
+        # whatever it last saw. That is what left cars on the display after they were gone: the
+        # slot had emptied, there was no longer a CAR to relabel, and the empty frame that would
+        # have cleared it was the one being dropped. The same applies to the road sign and
+        # heading groups, which have no vehicle type to substitute and were disappearing entirely.
         relabelled = substitute_type(values)
-        if relabelled is not None:
-          can_sends.append(self.tesla_can.create_das_object(relabelled))
+        can_sends.append(self.tesla_can.create_das_object(values if relabelled is None else relabelled))
 
     # Cluster MAX speed. DAS_setSpeed does not reach that display -- the DI owns it, publishes it
     # as DI_state.DI_digitalSpeed, and only the cruise stalk moves it. So openpilot presses the
