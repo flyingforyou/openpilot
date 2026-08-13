@@ -304,3 +304,33 @@ def test_channel_is_still_fed_while_autopark_is_merely_offered():
   cc, _ = _carcontroller()
   states = _long_states(cc, _FakeCC(enabled=False), _FakeCS(autopark_offered=True))
   assert len(states) > 0 and set(states) == {4}
+
+
+# ---- cars-as-trucks: the flag arrives after the controller is built ----
+
+def test_cars_as_trucks_reads_the_flag_after_construction():
+  """card.py builds the interface first and folds the params into CP.flags afterwards.
+
+  This shipped latched at construction, so the flag was always read as False and not one frame
+  was ever transmitted -- while CarState, which reads CP.flags per cycle, went on collecting the
+  objects for nobody. Panda had meanwhile been told to stop forwarding the factory's copy, so the
+  cluster ended up with nothing at all rather than with the wrong label. Coop steering survives
+  the same ordering only because card.py reaches in and sets its attribute by hand.
+  """
+  from opendbc.car.tesla.values import TeslaFlags
+  cc, CP = _carcontroller()
+  assert not (CP.flags & TeslaFlags.CARS_AS_TRUCKS), "fixture must start with the flag clear"
+
+  CS = _FakeCS()
+  CS.das_objects = {0: {
+    'DAS_objectId': 0, 'DAS_objVehType': 2, 'DAS_objVehRelevantForControl': 1,
+    'DAS_objVehDx': 35.0, 'DAS_objVehVxRel': 0.0, 'DAS_objVehDy': 0.0, 'DAS_objVehId': 7,
+    'DAS_objVeh2Type': 0, 'DAS_objVeh2RelevantForControl': 0, 'DAS_objVeh2Dx': 127.5,
+    'DAS_objVeh2VxRel': 0.0, 'DAS_objVeh2Dy': 0.0, 'DAS_objVeh2Id': 0,
+  }}
+
+  assert 0x309 not in _addrs_over(4, cc, _FakeCC(enabled=True), CS), "off until the flag is set"
+
+  CP.flags |= TeslaFlags.CARS_AS_TRUCKS.value          # exactly what card.py does, after the fact
+  assert 0x309 in _addrs_over(4, cc, _FakeCC(enabled=True), CS), \
+      "the relabelled frame has to go out once the flag lands"

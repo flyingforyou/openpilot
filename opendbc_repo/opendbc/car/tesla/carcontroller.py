@@ -24,8 +24,6 @@ class CarController(CarControllerBase):
     self.apply_angle_last = 0
     # Follow the driver's hands rather than letting go of the wheel. Off unless opted in.
     self.coop_steering = bool(CP.flags & TeslaFlags.COOP_STEER) and CP.carFingerprint in LEGACY_CARS
-    # Only the legacy cars have the cluster this works around, and only they have the message.
-    self.cars_as_trucks = bool(CP.flags & TeslaFlags.CARS_AS_TRUCKS) and CP.carFingerprint in LEGACY_CARS
     self.coop_steer = CoopSteeringCarController()
     self.packer = CANPacker(dbc_names[Bus.party])
     self.tesla_can = TeslaCAN(CP, self.packer)
@@ -121,7 +119,14 @@ class CarController(CarControllerBase):
     # Additive rather than a replacement: the factory keeps sending its copy, and only the groups
     # holding a car are re-sent. That keeps the road signs and heading groups, which cannot be
     # rebuilt from this layout, entirely untouched.
-    if self.cars_as_trucks:
+    # Read the flag now rather than caching it in __init__. card.py builds the interface first and
+    # only then folds the params into CP.flags, so anything latched at construction is latched at
+    # False -- coop steering papers over that by reaching in and setting the attribute afterwards,
+    # and this had no such poke, so it never transmitted a single frame. CarState reads CP.flags
+    # per cycle for the same reason, which is why the objects were being collected for nobody.
+    # Only the legacy cars have the cluster this works around, and only they have the message.
+    cars_as_trucks = bool(self.CP.flags & TeslaFlags.CARS_AS_TRUCKS) and self.CP.carFingerprint in LEGACY_CARS
+    if cars_as_trucks:
       for values in CS.das_objects.values():
         relabelled = substitute_type(values)
         if relabelled is not None:
