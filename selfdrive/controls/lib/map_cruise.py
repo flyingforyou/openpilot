@@ -110,6 +110,18 @@ MIN_TARGET = 20 * CV.KPH_TO_MS
 # jittering within a zone does not.
 OVERRIDE_RELEASE = 5 * CV.MPH_TO_MS
 
+# Hard ceiling over the posted limit, applied last and to everything -- the map's own target, a
+# ramp's fleet speed, and the driver's stalk alike. It exists because the pieces above it can be
+# argued into a number the road cannot justify: with cluster sync on, openpilot's own stalk
+# presses were read as the driver disagreeing, that pinned the target to the stalk, and the two
+# walked each other from 25mph up to the configured ceiling of 80. Nothing in the chain was
+# anchored to the road. This is that anchor, and it is deliberately dumb.
+#
+# Only applied where there is a posted limit to measure against. On a ramp or an unmapped road
+# there is nothing to add 10mph to, and clamping to a stale number there is worse than not
+# clamping at all.
+OVER_LIMIT_CAP = 10 * CV.MPH_TO_MS
+
 # How far above the car's own speed the setpoint may always sit, m/s, regardless of slew in
 # either direction. Both limits need it and they need to agree on it. Raising: a setpoint the
 # slew has left below the car's actual speed is a brake request, which is what a rate limit on
@@ -345,6 +357,13 @@ class MapCruiseController:
     if self.override > 0.0:
       self.source = 'driver'
       self.v_target = float(np.clip(self.override, MIN_TARGET, self.v_max))
+
+    # Last word, over the driver's too. See OVER_LIMIT_CAP: everything above this line can be
+    # walked somewhere the road does not support, and the posted limit is the only number here
+    # that comes from the road rather than from the loop.
+    if posted > 0.0 and self.v_target > posted + OVER_LIMIT_CAP:
+      self.v_target = float(max(MIN_TARGET, posted + OVER_LIMIT_CAP))
+      self.source = 'capped'
 
     # First frame with anything to say: start from the driver's set speed rather than from zero,
     # so engaging on a road we already know does not slew up from a standstill target.

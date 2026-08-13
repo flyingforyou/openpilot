@@ -168,8 +168,6 @@ class CarrotPlanner:
     self.trafficState_carrot = 0
     self.carrot_stay_stop = False
 
-    self.eco_over_speed = 2
-    self.eco_target_speed = 0
     
     self.autoNaviSpeedDecelRate = 1.5
 
@@ -239,7 +237,6 @@ class CarrotPlanner:
     elif self.params_count == 40:
       self.stop_distance = self.params.get_float("StopDistanceCarrot") / 100.
       self.j_lead_factor = self.params.get_float("JLeadFactor3") / 100.
-      self.eco_over_speed = self.params.get_int("CruiseEcoControl")
       self.autoNaviSpeedDecelRate = float(self.params.get_int("AutoNaviSpeedDecelRate")) * 0.01
       self.aChangeCostStarting = self.params.get_float("AChangeCostStarting")
       self.trafficStopDistanceAdjust = self.params.get_float("TrafficStopDistanceAdjust") / 100.
@@ -470,27 +467,6 @@ class CarrotPlanner:
       return v_cruise_kph, False
     return v_map * CV.MS_TO_KPH, False
 
-  def cruise_eco_control(self, v_ego_kph, v_cruise_kph):
-    v_cruise_kph_apply = v_cruise_kph
-    if self.eco_over_speed > 0:
-      if self.eco_target_speed > 0:
-        if self.eco_target_speed < v_cruise_kph:
-          self.eco_target_speed = v_cruise_kph
-        elif self.eco_target_speed > v_cruise_kph:
-          self.eco_target_speed = 0
-      elif self.eco_target_speed == 0 and v_ego_kph + 3 < v_cruise_kph and v_cruise_kph > 20.0:  # 주행중 속도가 떨어지면 다시 크루즈연비제어 시작.
-        self.eco_target_speed = v_cruise_kph
-
-      if self.eco_target_speed != 0:  ## 크루즈 연비 제어모드 작동중일때: 연비제어 종료지점
-        if v_ego_kph > self.eco_target_speed: # 설정속도를 초과하면..
-          self.eco_target_speed = 0
-        else:
-          v_cruise_kph_apply = self.eco_target_speed + self.eco_over_speed  # + 설정 속도로 설정함.
-    else:
-      self.eco_target_speed = 0
-
-    return v_cruise_kph_apply
-
   def add_event(self, event_name):
     now = time.time()
     if now - self.last_event_time > 5.0:
@@ -544,7 +520,6 @@ class CarrotPlanner:
 
     self.drivingModeDetector.update_data(carstate, leadOne)
 
-    v_cruise_kph = self.cruise_eco_control(v_ego_cluster_kph, v_cruise_kph)
     v_cruise_kph, atc_active = self._update_carrot_man(sm, v_ego_kph, v_cruise_kph)
     
     #if atc_active and not self.atc_active and self.xState not in [XState.e2eStop, XState.e2eStopped, XState.lead]:

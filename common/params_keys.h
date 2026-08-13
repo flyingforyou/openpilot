@@ -182,7 +182,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // keeps what this tree has been doing since the radard port.
     {"RadarLatFactor", {PERSISTENT, INT, "60"}},
     {"JLeadFactor3", {PERSISTENT, INT, "0"}},
-    {"CruiseEcoControl", {PERSISTENT, INT, "2"}},
     {"AutoNaviSpeedDecelRate", {PERSISTENT, INT, "120"}},
     {"AChangeCostStarting", {PERSISTENT, INT, "10"}},
     {"TrafficStopDistanceAdjust", {PERSISTENT, INT, "-150"}},
