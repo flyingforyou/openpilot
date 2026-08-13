@@ -13,10 +13,16 @@ from opendbc.car.vehicle_model import VehicleModel
 
 
 # The carcontroller runs at 100Hz. Hold a press long enough for the SCCM's own frames not to be
-# the only thing the DI sees in that window, then wait out its ~0.2s response before judging the
-# error again -- measured from the logs, where the setpoint moved 0.19-0.23s after each release.
+# the only thing the DI sees in that window, then wait out its response before judging the error
+# again -- measured from the logs, where the setpoint moved 0.19-0.23s after each release.
+#
+# The press stays short on purpose: a cruise stalk held down normally auto-repeats, and a held
+# DOWN would walk the setpoint away on its own. The wait is the only part worth tuning, and 400ms
+# was too close to the edge -- one step per 0.46s tracks 10.9 mph/s against a target that was
+# measured moving at up to 10.85 mph/s over a real drive, which is no margin at all. 250ms tracks
+# 16.1 mph/s and still leaves the DI's slowest observed response (0.23s) inside the window.
 STALK_PRESS_FRAMES = 5   # 50ms
-STALK_WAIT_FRAMES = 40   # 400ms
+STALK_WAIT_FRAMES = 25   # 250ms
 
 
 def get_safety_CP():
