@@ -110,11 +110,6 @@ MIN_TARGET = 20 * CV.KPH_TO_MS
 # jittering within a zone does not.
 OVERRIDE_RELEASE = 5 * CV.MPH_TO_MS
 
-# How close a stalk value has to sit to what cluster sync last asked for to be read as our own
-# echo rather than the driver. One stalk step is 1mph; a little over that covers the rounding on
-# the way out and the DI's own units on the way back.
-SYNC_ECHO_TOLERANCE = 1.6 * CV.MPH_TO_MS
-
 # How far above the car's own speed the setpoint may always sit, m/s, regardless of slew in
 # either direction. Both limits need it and they need to agree on it. Raising: a setpoint the
 # slew has left below the car's actual speed is a brake request, which is what a rate limit on
@@ -231,13 +226,23 @@ class MapCruiseController:
       return
 
     # With cluster sync on, openpilot drives the stalk itself to make the car's own MAX number
-    # match this target. Those writes come back here as stalk movement and would read as the
-    # driver disagreeing -- with the car's own echo -- which would pin the target to whatever it
-    # had just reached and stop the map moving it again. A change that lands on what we last
-    # asked for is ours; the stalk quantises to 1mph, so the tolerance is a little over a step.
-    if self.sync_cluster and self.v_output > 0.0 and abs(stalk - self.v_output) < SYNC_ECHO_TOLERANCE:
-      self.stalk_last = stalk
-      return
+    # match this target, and those writes come back here as stalk movement.
+    #
+    # This used to ask whether the stalk had arrived at the target, within a detent. It walks
+    # there one detent at a time, so every step along the way sat far from the target and read as
+    # the driver disagreeing -- with the car's own echo. The first press of any correction pinned
+    # the target to wherever the walk had got to, and since the target was then equal to the
+    # stalk there was nothing left to correct: the map stopped moving the setpoint for the rest
+    # of the zone. Measured over a drive it left the map deciding the target for 2% of the time,
+    # with the stalk being pressed almost continuously to no effect.
+    #
+    # Direction is what actually distinguishes the two, and it does not require knowing who
+    # turned the stalk: an override means the driver disagrees with the map, and a stalk moving
+    # toward the map's target is not a disagreement with it. Moving away from it, or past it, is.
+    if self.sync_cluster and self.v_output > 0.0 and self.stalk_last > 0.0:
+      if abs(stalk - self.v_output) <= abs(self.stalk_last - self.v_output):
+        self.stalk_last = stalk
+        return
 
     if self.stalk_last > 0.0 and abs(stalk - self.stalk_last) > 0.1:
       self.override = stalk
