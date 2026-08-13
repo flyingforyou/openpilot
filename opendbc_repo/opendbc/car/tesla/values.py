@@ -177,6 +177,21 @@ GEAR_MAP = {
 }
 
 
+# STW_ACTN_RQ.SpdCtrlLvr_Stat, the cruise stalk. The DI applies a step on the release edge --
+# press then IDLE -- and moves its own setpoint, which is what the cluster draws as MAX and what
+# DI_state.DI_digitalSpeed reports back. Verified against the logs: DN_2ND took 70->65->60 and
+# UP_2ND took 60->65 while the car itself was doing 60-64mph throughout.
+#
+# 1 and 2 are FWD and RWD on the same field. On Model S/X this stalk is also the gear selector,
+# so those two values are never sent and panda refuses them outright.
+class StalkLever:
+  IDLE = 0
+  UP_1 = 16    # UP_1ST,  +1 mph
+  DOWN_1 = 32  # DN_1ST,  -1 mph
+  UP_5 = 4     # UP_2ND,  +5 mph
+  DOWN_5 = 8   # DN_2ND,  -5 mph
+
+
 # Add extra tolerance for average banked road since safety doesn't have the roll
 AVERAGE_ROAD_ROLL = 0.06  # ~3.4 degrees, 6% superelevation. higher actual roll lowers lateral acceleration
 
@@ -234,6 +249,7 @@ class TeslaSafetyFlags(IntFlag):
   FLAG_HW3 = 32
   STOCK_AUTOPARK = 64
   CARS_AS_TRUCKS = 128
+  SYNC_CLUSTER_SPEED = 256
 
 
 class TeslaFlags(IntFlag):
@@ -244,6 +260,7 @@ class TeslaFlags(IntFlag):
   # claims 1, so the two enums have to be read as one bit space.
   COOP_STEER = 8
   CARS_AS_TRUCKS = 16
+  SYNC_CLUSTER_SPEED = 32
 
 
 DBC = CAR.create_dbc_map()

@@ -153,6 +153,14 @@ class Car:
         if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
           cfg.safetyParam |= TeslaSafetyFlags.CARS_AS_TRUCKS.value
 
+    # Cluster MAX speed sync. Writes the cruise stalk, so it stays opt-in and panda restricts the
+    # lever field to the four speed steps -- the same field selects gear on this car.
+    if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaSyncClusterSpeed"):
+      self.CP.flags |= TeslaFlags.SYNC_CLUSTER_SPEED.value
+      for cfg in self.CP.safetyConfigs:
+        if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
+          cfg.safetyParam |= TeslaSafetyFlags.SYNC_CLUSTER_SPEED.value
+
     # Let the stock HW1 autopark module drive while openpilot is disengaged. Panda ignores the
     # flag on anything but teslaLegacy HW1, but the toggle is only meaningful there anyway.
     if not self.CP.passive and self.params.get_bool("TeslaStockAutopark"):

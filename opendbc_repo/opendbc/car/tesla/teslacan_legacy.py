@@ -3,6 +3,16 @@ from opendbc.car.interfaces import V_CRUISE_MAX
 from opendbc.car.tesla.values import CANBUS, CarControllerParams
 
 
+def j1850_crc(data: bytes) -> int:
+  """SAE J1850: poly 0x1D, init 0xFF, final xor 0xFF. What STW_ACTN_RQ carries in its last byte."""
+  crc = 0xFF
+  for b in data:
+    crc ^= b
+    for _ in range(8):
+      crc = ((crc << 1) ^ 0x1D) & 0xFF if crc & 0x80 else (crc << 1) & 0xFF
+  return crc ^ 0xFF
+
+
 class TeslaCANRaven:
   def __init__(self, packers):
     self.packers = packers
@@ -36,6 +46,24 @@ class TeslaCANRaven:
     Sent on the party bus, which is where the cluster listens.
     """
     return self.packers[CANBUS.party].make_can_msg("DAS_object", CANBUS.party, values)
+
+  def create_stalk_command(self, values, lever):
+    """The SCCM's own frame with the cruise lever overridden, counter bumped and CRC redone.
+
+    Copied rather than built: STW_ACTN_RQ carries turn signals, wipers, follow distance and the
+    gear stalk alongside the cruise lever, and the SCCM keeps sending its own copy regardless.
+    Sending anything but its current state with one field moved would be inventing input.
+
+    CRC_STW_ACTN_RQ is SAE J1850 over the first seven bytes -- reproduced exactly on 40/40 logged
+    frames -- and MC_STW_ACTN_RQ is a 4-bit rolling counter the SCCM advances per frame.
+    """
+    values = dict(values)
+    values["SpdCtrlLvr_Stat"] = lever
+    values["MC_STW_ACTN_RQ"] = (int(values.get("MC_STW_ACTN_RQ", 0)) + 1) % 16
+    values["CRC_STW_ACTN_RQ"] = 0
+    data = self.packers[CANBUS.party].make_can_msg("STW_ACTN_RQ", CANBUS.party, values)[1]
+    values["CRC_STW_ACTN_RQ"] = j1850_crc(data[:7])
+    return self.packers[CANBUS.party].make_can_msg("STW_ACTN_RQ", CANBUS.party, values)
 
   def create_longitudinal_command(self, acc_state, accel, counter, v_ego, active, gas_pressed, hud_set_speed=0.0):
     set_speed = max(v_ego * CV.MS_TO_KPH, 0)

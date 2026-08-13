@@ -203,6 +203,10 @@ class CarState(CarStateBase):
     self.das_control = None
     # The factory's latest DAS_object frame per group, kept only when the cluster workaround is on.
     self.das_objects: dict[int, dict[str, float]] = {}
+    # The stalk's own last frame. Emulating a press means re-sending the SCCM's frame with one
+    # field changed, so everything else on it -- turn signals, wipers, follow distance, the gear
+    # stalk's own state -- goes back out as the SCCM had it rather than as something we invented.
+    self.stw_actn: dict[str, float] | None = None
     self.cruise_gap = 0
     # Raven's party DBC carries none of the map messages, so it gets no decoder at all rather
     # than one that would fault the first time it looked a message up.
@@ -510,6 +514,11 @@ class CarState(CarStateBase):
     self.stock_autopark_offered = autopark_offered or self.stock_autopark_frames > 0
 
     self.update_das_objects(cp_ap_party)
+
+    # Same lazy-registration rule as DAS_object: touch vl once so the parser picks the message up.
+    if self.CP.flags & TeslaFlags.SYNC_CLUSTER_SPEED:
+      stw = cp_party.vl["STW_ACTN_RQ"]
+      self.stw_actn = dict(stw) if len(stw) else None
 
     return ret
 

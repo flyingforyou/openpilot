@@ -207,6 +207,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TeslaMapAutoSpeedCurve", {PERSISTENT, BOOL, "1"}},
     {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "150"}},
     {"TeslaCoopMaxTorqueCNm", {PERSISTENT, INT, "250"}},
+    // Drive the cluster's MAX number to match what openpilot is actually targeting, by
+    // emulating the cruise stalk. DAS_setSpeed does not reach that display at all -- the DI
+    // owns it and only STW_ACTN_RQ moves it. Off by default: it writes the stalk.
+    {"TeslaSyncClusterSpeed", {PERSISTENT, BOOL, "0"}},
     {"TeslaCarsAsTrucks", {PERSISTENT, BOOL, "0"}},
     {"TeslaCoopSteer", {PERSISTENT, BOOL, "0"}},
     {"TeslaLastGapAdjust", {PERSISTENT, INT, "0"}},

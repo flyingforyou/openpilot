@@ -1,14 +1,22 @@
 import numpy as np
 from opendbc.can import CANPacker
 from opendbc.car import Bus, structs
+from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.lateral import apply_steer_angle_limits_vm
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.tesla.teslacan import TeslaCAN
 from opendbc.car.tesla.teslacan_legacy import TeslaCANRaven
 from opendbc.car.tesla.coop_steering import CoopSteeringCarController
 from opendbc.car.tesla.das_object import substitute_type
-from opendbc.car.tesla.values import CarControllerParams, CANBUS, LEGACY_CARS, CAR, TeslaFlags
+from opendbc.car.tesla.values import CarControllerParams, CANBUS, LEGACY_CARS, CAR, StalkLever, TeslaFlags
 from opendbc.car.vehicle_model import VehicleModel
+
+
+# The carcontroller runs at 100Hz. Hold a press long enough for the SCCM's own frames not to be
+# the only thing the DI sees in that window, then wait out its ~0.2s response before judging the
+# error again -- measured from the logs, where the setpoint moved 0.19-0.23s after each release.
+STALK_PRESS_FRAMES = 5   # 50ms
+STALK_WAIT_FRAMES = 40   # 400ms
 
 
 def get_safety_CP():
@@ -25,6 +33,12 @@ class CarController(CarControllerBase):
     # Follow the driver's hands rather than letting go of the wheel. Off unless opted in.
     self.coop_steering = bool(CP.flags & TeslaFlags.COOP_STEER) and CP.carFingerprint in LEGACY_CARS
     self.coop_steer = CoopSteeringCarController()
+    # Cluster-speed sync. The DI applies a step on the release edge, so a press is held for a few
+    # frames and then let go, and nothing else is sent until the DI's reported setpoint has had
+    # time to move. Without that wait one target error would fire a burst of presses and overshoot.
+    self.stalk_lever = StalkLever.IDLE
+    self.stalk_press_frames = 0
+    self.stalk_wait_frames = 0
     self.packer = CANPacker(dbc_names[Bus.party])
     self.tesla_can = TeslaCAN(CP, self.packer)
 
@@ -40,6 +54,46 @@ class CarController(CarControllerBase):
       self.tesla_can = TeslaCANRaven(self.packers)
       from opendbc.car.tesla.interface import CarInterface
       self.VM = VehicleModel(CarInterface.get_non_essential_params("TESLA_MODEL_S_HW3"))
+
+  def update_cluster_speed(self, CC, CS):
+    """Nudge the DI's own setpoint toward the speed openpilot is targeting, via the stalk.
+
+    One step per press, largest step that does not overshoot, and a wait afterwards long enough
+    for the DI to act and report back -- it took about 0.2s in the logs. Steps are +/-1 and +/-5,
+    so anything within a mile an hour is left alone rather than hunted.
+    """
+    target = CC.hudControl.setSpeed * CV.MS_TO_MPH
+    current = CS.out.cruiseState.speed * CV.MS_TO_MPH
+    if target <= 0 or current <= 0:
+      return []
+
+    if self.stalk_press_frames > 0:
+      self.stalk_press_frames -= 1
+      return [self.tesla_can.create_stalk_command(CS.stw_actn, self.stalk_lever)]
+
+    if self.stalk_wait_frames > 0:
+      self.stalk_wait_frames -= 1
+      # Release. The DI reads the press on this edge, so it has to be sent, not just skipped.
+      if self.stalk_wait_frames == STALK_WAIT_FRAMES - 1:
+        return [self.tesla_can.create_stalk_command(CS.stw_actn, StalkLever.IDLE)]
+      return []
+
+    error = target - current
+    if abs(error) < 1.0:
+      return []
+
+    if error >= 5.0:
+      self.stalk_lever = StalkLever.UP_5
+    elif error > 0:
+      self.stalk_lever = StalkLever.UP_1
+    elif error <= -5.0:
+      self.stalk_lever = StalkLever.DOWN_5
+    else:
+      self.stalk_lever = StalkLever.DOWN_1
+
+    self.stalk_press_frames = STALK_PRESS_FRAMES
+    self.stalk_wait_frames = STALK_WAIT_FRAMES
+    return [self.tesla_can.create_stalk_command(CS.stw_actn, self.stalk_lever)]
 
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
@@ -131,6 +185,15 @@ class CarController(CarControllerBase):
         relabelled = substitute_type(values)
         if relabelled is not None:
           can_sends.append(self.tesla_can.create_das_object(relabelled))
+
+    # Cluster MAX speed. DAS_setSpeed does not reach that display -- the DI owns it, publishes it
+    # as DI_state.DI_digitalSpeed, and only the cruise stalk moves it. So openpilot presses the
+    # stalk the way a driver would, one step at a time, until the number matches what it is
+    # actually driving to. Read the flag here rather than caching it, for the same reason as
+    # cars_as_trucks above.
+    if (bool(self.CP.flags & TeslaFlags.SYNC_CLUSTER_SPEED) and self.CP.carFingerprint in LEGACY_CARS
+        and CC.enabled and CC.longActive and CS.stw_actn is not None):
+      can_sends += self.update_cluster_speed(CC, CS)
 
     new_actuators = actuators.as_builder()
     new_actuators.steeringAngleDeg = self.apply_angle_last

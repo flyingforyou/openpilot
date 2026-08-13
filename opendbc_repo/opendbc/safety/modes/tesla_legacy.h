@@ -28,6 +28,7 @@ static bool tesla_legacy_stock_lkas_prev = false;
 // means opening the forwarding gate on DAS_steeringControl for a system we can't bound.
 static bool tesla_legacy_allow_stock_autopark = false;
 static bool tesla_legacy_cars_as_trucks = false;
+static bool tesla_legacy_sync_cluster_speed = false;
 static bool tesla_legacy_stock_autopark = false;
 // The maneuver is announced late: on a recorded attempt DAS_steeringControl went to
 // ANGLE_CONTROL a full 2.0s before DAS_accState ever reached an APC state, so waiting for the
@@ -222,6 +223,28 @@ static bool tesla_legacy_tx_hook(const CANPacket_t *msg) {
     }
   }
 
+  // STW_ACTN_RQ: the cruise stalk, driven to move the cluster's MAX speed.
+  //
+  // The whole point of the check is the value. On Model S/X this stalk is also the gear selector,
+  // and SpdCtrlLvr_Stat carries FWD (1) and RWD (2) in the same field as the cruise steps. Only
+  // the four speed steps and IDLE may ever leave, so no combination of a bug upstream can turn
+  // into a gear request. Blocked outright unless the feature is on.
+  if (msg->addr == 0x45U) {
+    if (!tesla_legacy_sync_cluster_speed) {
+      violation = true;
+    } else {
+      int lever = msg->data[0] & 0x3FU;
+      bool allowed_lever = (lever == 0) ||    // IDLE
+                           (lever == 4U) ||   // UP_2ND   +5
+                           (lever == 8U) ||   // DN_2ND   -5
+                           (lever == 16U) ||  // UP_1ST   +1
+                           (lever == 32U);    // DN_1ST   -1
+      if (!allowed_lever) {
+        violation = true;
+      }
+    }
+  }
+
   // DAS_control: longitudinal control message
   if ((tesla_external_panda || tesla_hw1) && (msg->addr == das_control_msg)) {
     // The factory ACC owns this message when openpilot longitudinal is off. Two masters on one
@@ -317,6 +340,7 @@ static safety_config tesla_legacy_init(uint16_t param) {
   const int TESLA_FLAG_HW3 = 32;
   const int TESLA_FLAG_STOCK_AUTOPARK = 64;
   const int TESLA_FLAG_CARS_AS_TRUCKS = 128;
+  const int TESLA_FLAG_SYNC_CLUSTER_SPEED = 256;
 
   // Extract flags
   tesla_legacy_longitudinal = GET_FLAG(param, TESLA_FLAG_LONG_CONTROL);
@@ -326,6 +350,7 @@ static safety_config tesla_legacy_init(uint16_t param) {
   tesla_hw3 = GET_FLAG(param, TESLA_FLAG_HW3);
   tesla_legacy_allow_stock_autopark = GET_FLAG(param, TESLA_FLAG_STOCK_AUTOPARK) && tesla_hw1;
   tesla_legacy_cars_as_trucks = GET_FLAG(param, TESLA_FLAG_CARS_AS_TRUCKS) && tesla_hw1;
+  tesla_legacy_sync_cluster_speed = GET_FLAG(param, TESLA_FLAG_SYNC_CLUSTER_SPEED) && tesla_hw1;
 
   // Initialize state variables
   tesla_legacy_stock_aeb = false;
@@ -361,6 +386,7 @@ static safety_config tesla_legacy_init(uint16_t param) {
     {0x488, 0, 4, .check_relay = true, .disable_static_blocking = true},  // DAS_steeringControl
     {0x2b9, 0, 8, .check_relay = true, .disable_static_blocking = true},  // DAS_control
     {0x309, 0, 8, .check_relay = false, .disable_static_blocking = true},  // DAS_object
+    {0x45, 0, 8, .check_relay = false, .disable_static_blocking = true},   // STW_ACTN_RQ
   };
 
   // Stock-ACC mode: lateral only. DAS_control is absent, so openpilot cannot transmit it at all
@@ -368,6 +394,7 @@ static safety_config tesla_legacy_init(uint16_t param) {
   static const CanMsg TESLA_TX_LEGACY_HW1_STOCK_LONG_MSGS[] = {
     {0x488, 0, 4, .check_relay = true, .disable_static_blocking = true},  // DAS_steeringControl
     {0x309, 0, 8, .check_relay = false, .disable_static_blocking = true},  // DAS_object
+    {0x45, 0, 8, .check_relay = false, .disable_static_blocking = true},   // STW_ACTN_RQ
   };
 
   // Define RX check arrays (keeping them as is)

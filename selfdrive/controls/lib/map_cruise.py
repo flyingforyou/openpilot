@@ -110,6 +110,11 @@ MIN_TARGET = 20 * CV.KPH_TO_MS
 # jittering within a zone does not.
 OVERRIDE_RELEASE = 5 * CV.MPH_TO_MS
 
+# How close a stalk value has to sit to what cluster sync last asked for to be read as our own
+# echo rather than the driver. One stalk step is 1mph; a little over that covers the rounding on
+# the way out and the DI's own units on the way back.
+SYNC_ECHO_TOLERANCE = 1.6 * CV.MPH_TO_MS
+
 # How far above the car's own speed the setpoint may always sit, m/s, regardless of slew in
 # either direction. Both limits need it and they need to agree on it. Raising: a setpoint the
 # slew has left below the car's actual speed is a brake request, which is what a rate limit on
@@ -132,6 +137,7 @@ class MapCruiseController:
     self.offset_ratio = 1.0
     self.use_car_offset = True
     self.use_curve = True
+    self.sync_cluster = False
     self.v_max = 129 * CV.KPH_TO_MS
 
     self.state = MapCruiseState.off
@@ -147,13 +153,14 @@ class MapCruiseController:
     self.stalk_last = 0.0
 
   def set_config(self, enabled: bool, offset_ratio: float, use_car_offset: bool,
-                 v_max: float, use_curve: bool = True) -> None:
+                 v_max: float, use_curve: bool = True, sync_cluster: bool = False) -> None:
     if not enabled and self.enabled:
       self.reset()
     self.enabled = enabled
     self.offset_ratio = offset_ratio
     self.use_car_offset = use_car_offset
     self.use_curve = use_curve
+    self.sync_cluster = sync_cluster
     self.v_max = v_max
 
   def reset(self) -> None:
@@ -220,6 +227,15 @@ class MapCruiseController:
     would make the press look ignored.
     """
     if stalk <= 0.0:
+      self.stalk_last = stalk
+      return
+
+    # With cluster sync on, openpilot drives the stalk itself to make the car's own MAX number
+    # match this target. Those writes come back here as stalk movement and would read as the
+    # driver disagreeing -- with the car's own echo -- which would pin the target to whatever it
+    # had just reached and stop the map moving it again. A change that lands on what we last
+    # asked for is ours; the stalk quantises to 1mph, so the tolerance is a little over a step.
+    if self.sync_cluster and self.v_output > 0.0 and abs(stalk - self.v_output) < SYNC_ECHO_TOLERANCE:
       self.stalk_last = stalk
       return
 

@@ -19,6 +19,9 @@ MSG_DAS_Control_HW1 = 0x2b9
 # cluster draws cars again. Always transmittable; whether the factory's own copy is forwarded
 # alongside it is what TESLA_FLAG_CARS_AS_TRUCKS decides.
 MSG_DAS_object = 0x309
+# The cruise stalk. Also the gear selector on this car, which is the whole reason panda checks
+# the value rather than just the address.
+MSG_STW_ACTN_RQ = 0x45
 MSG_DI_torque1 = 0x108  # HW1 uses different message ID
 
 
@@ -45,7 +48,7 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
   # HW1 configuration - based on tesla_legacy.h
   RELAY_MALFUNCTION_ADDRS = {0: (MSG_DAS_steeringControl, MSG_DAS_Control_HW1)}
   FWD_BLACKLISTED_ADDRS = {2: [MSG_DAS_steeringControl, MSG_DAS_Control_HW1]}
-  TX_MSGS = [[MSG_DAS_steeringControl, 0], [MSG_DAS_Control_HW1, 0], [MSG_DAS_object, 0]]
+  TX_MSGS = [[MSG_DAS_steeringControl, 0], [MSG_DAS_Control_HW1, 0], [MSG_DAS_object, 0], [MSG_STW_ACTN_RQ, 0]]
 
   STANDSTILL_THRESHOLD = 0.1
   GAS_PRESSED_THRESHOLD = 3
@@ -297,6 +300,36 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
     self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_object))
     self.assertTrue(self._tx(make_msg(0, MSG_DAS_object, 8)), "openpilot must still own the id")
 
+  def _stalk_msg(self, lever):
+    return make_msg(0, MSG_STW_ACTN_RQ, 8, dat=bytes([lever & 0x3F, 0, 0, 0, 0, 0, 0, 0]))
+
+  def _enable_cluster_sync(self):
+    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy,
+                                 int(TeslaSafetyFlags.FLAG_HW1 | TeslaSafetyFlags.LONG_CONTROL |
+                                     TeslaSafetyFlags.SYNC_CLUSTER_SPEED))
+    self.safety.init_tests()
+
+  def test_stalk_blocked_unless_cluster_sync(self):
+    for lever in (0, 4, 8, 16, 32):
+      self.assertFalse(self._tx(self._stalk_msg(lever)), f"stalk must be blocked by default {lever=}")
+
+  def test_stalk_speed_steps_allowed_with_cluster_sync(self):
+    self._enable_cluster_sync()
+    for lever in (0, 4, 8, 16, 32):  # IDLE, +5, -5, +1, -1
+      self.assertTrue(self._tx(self._stalk_msg(lever)), f"speed step must be allowed {lever=}")
+
+  def test_stalk_never_carries_a_gear_request(self):
+    """SpdCtrlLvr_Stat holds FWD and RWD in the same field as the cruise steps.
+
+    Nothing upstream should ever put them there, which is exactly why panda is the one refusing:
+    a bug in the sender must not be able to become a gear change.
+    """
+    self._enable_cluster_sync()
+    for lever in (1, 2):  # FWD, RWD
+      self.assertFalse(self._tx(self._stalk_msg(lever)), f"gear request must be refused {lever=}")
+    for lever in (3, 5, 6, 7, 63):  # anything else undefined
+      self.assertFalse(self._tx(self._stalk_msg(lever)), f"undefined lever must be refused {lever=}")
+
   def test_prevent_reverse(self):
     # Test reverse prevention logic - use the same test as modern Tesla
     self.safety.set_controls_allowed(True)
@@ -545,7 +578,7 @@ class TestTeslaHW1StockLongSafety(TestTeslaHW1Safety):
   # openpilot no longer owns DAS_control, so it is neither a TX message nor forward-blocked
   RELAY_MALFUNCTION_ADDRS = {0: (MSG_DAS_steeringControl,)}
   FWD_BLACKLISTED_ADDRS = {2: [MSG_DAS_steeringControl]}
-  TX_MSGS = [[MSG_DAS_steeringControl, 0], [MSG_DAS_object, 0]]
+  TX_MSGS = [[MSG_DAS_steeringControl, 0], [MSG_DAS_object, 0], [MSG_STW_ACTN_RQ, 0]]
   LONGITUDINAL = False
 
   def setUp(self):
