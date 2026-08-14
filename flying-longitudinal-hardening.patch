@@ -1,0 +1,713 @@
+From 0b32546e073b150859230156ea81b8a9e763651b Mon Sep 17 00:00:00 2001
+From: OpenAI <noreply@openai.com>
+Date: Fri, 31 Jul 2026 17:16:37 +0000
+Subject: [PATCH] tesla: harden precise stop and dynamic lead handling
+
+Keep the existing gap table, persistence, asymmetric gap slew, and FCW constants intact, but close the real longitudinal gaps found after the recent Tesla tuning work:
+
+* align the velocity-PID target with the same actuator horizon as aTarget; use a short kinematic target when experimental/e2e acceleration wins, and fall back to current speed rather than zero on an incomplete plan
+* require persistent, continuous, low-speed lead motion plus closing-distance/braking-room guards before creep-follow can clear an ordinary lead0 stop; preserve e2e, leadTwo, cruise, external zero-speed, and force-decel stop requests, and let v_soft converge to a confirmed creeping lead's speed
+* seed/reset the aLeadK derivative on first acquisition, radar/vision lead discontinuities, non-finite data, and solver reset; clip raw jerk and reset before set_weights so a cut-in cannot inherit the previous lead's relaxed jerk cost
+* update the stale following-distance tests to the current 1.10-1.60s table and personality fallbacks, so CI verifies the code that is actually running
+
+Add focused regression tests and update the tuning help text.
+---
+ selfdrive/controls/controlsd.py               |  13 +-
+ selfdrive/controls/lib/longcontrol.py         |  27 +++-
+ .../lib/longitudinal_mpc_lib/long_mpc.py      |  55 ++++++-
+ .../controls/lib/longitudinal_planner.py      | 105 ++++++++++--
+ .../controls/tests/test_following_distance.py |  51 +++---
+ selfdrive/controls/tests/test_longcontrol.py  |  18 ++-
+ .../test_tesla_longitudinal_hardening.py      | 149 ++++++++++++++++++
+ selfdrive/debug/tuning_server.py              |  16 +-
+ 8 files changed, 368 insertions(+), 66 deletions(-)
+ create mode 100644 selfdrive/controls/tests/test_tesla_longitudinal_hardening.py
+
+diff --git a/selfdrive/controls/controlsd.py b/selfdrive/controls/controlsd.py
+index 7e346a2..e71f6d6 100644
+--- a/selfdrive/controls/controlsd.py
++++ b/selfdrive/controls/controlsd.py
+@@ -6,7 +6,7 @@ from cereal import car, log
+ import cereal.messaging as messaging
+ from openpilot.common.constants import CV
+ from openpilot.common.params import Params
+-from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority, Ratekeeper
++from openpilot.common.realtime import config_realtime_process, DT_CTRL, DT_MDL, Priority, Ratekeeper
+ from openpilot.common.swaglog import cloudlog
+ from opendbc.car.car_helpers import interfaces
+ from opendbc.car.vehicle_model import VehicleModel
+@@ -15,7 +15,7 @@ from openpilot.selfdrive.controls.lib.latcontrol import LatControl
+ from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
+ from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
+ from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
+-from openpilot.selfdrive.controls.lib.longcontrol import LongControl
++from openpilot.selfdrive.controls.lib.longcontrol import LongControl, get_velocity_pid_target
+ from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
+ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
+ 
+@@ -33,7 +33,12 @@ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
+       self.LoC.reset()
+     # accel PID loop
+     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
++    # aTarget is evaluated at actuator delay, so the velocity feedback target must use the same
++    # horizon. speeds[0] is the plan's current-time speed and makes the PID fight a delayed accel.
++    action_t = self.CP.longitudinalActuatorDelay + DT_MDL
++    e2e_source = long_plan.longitudinalPlanSource == log.LongitudinalPlan.LongitudinalPlanSource.e2e
++    v_target = get_velocity_pid_target(long_plan.speeds, action_t, CS.vEgo,
++                                       a_target=long_plan.aTarget, e2e_source=e2e_source)
+     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits,
+-                                            v_target=long_plan.speeds[0] if len(long_plan.speeds) else 0.0,
+-                                            radar_state=self.sm['radarState']))
++                                            v_target=v_target, radar_state=self.sm['radarState']))
+     # Steering PID loop and lateral MPC
+diff --git a/selfdrive/controls/lib/longcontrol.py b/selfdrive/controls/lib/longcontrol.py
+index 67d5cc8..aa4beab 100644
+--- a/selfdrive/controls/lib/longcontrol.py
++++ b/selfdrive/controls/lib/longcontrol.py
+@@ -7,6 +7,28 @@ from openpilot.common.pid import PIDController
+ from openpilot.selfdrive.modeld.constants import ModelConstants
+ 
+ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
++
++
++def get_velocity_pid_target(speeds, action_t: float, fallback: float,
++                            a_target: float = 0.0, e2e_source: bool = False) -> float:
++  """Return a velocity target consistent with the acceleration command's time/source.
++
++  MPC speeds are sampled at the actuator horizon. In experimental mode the selected aTarget may
++  come from e2e while the published speed trajectory still comes from MPC, so integrate that
++  selected acceleration over the short actuator horizon instead of mixing two plan sources.
++  """
++  if not np.isfinite(fallback):
++    return 0.0
++  if not np.isfinite(action_t):
++    return float(fallback)
++  if e2e_source:
++    return max(float(fallback + a_target * max(action_t, 0.0)), 0.0) if np.isfinite(a_target) else float(fallback)
++  if len(speeds) != len(CONTROL_N_T_IDX):
++    return float(fallback)
++  v_target = float(np.interp(action_t, CONTROL_N_T_IDX, speeds))
++  return v_target if np.isfinite(v_target) else float(fallback)
++
++
+ # Velocity-tracking PID (ported from CarrotPilot). Tesla's accel PID gains are 0, i.e. the accel
+ # command is pure feedforward with no closed-loop correction, so it overshoots stops. Tracking the
+ # planned velocity with a closed loop (kp on velocity error, plus the plan's accel as feedforward)
+@@ -74,7 +96,7 @@ class LongControl:
+   def reset(self):
+     self.pid.reset()
+ 
+-  def update(self, active, CS, a_target, should_stop, accel_limits, v_target=0.0, radar_state=None):
++  def update(self, active, CS, a_target, should_stop, accel_limits, v_target=None, radar_state=None):
+     """Update longitudinal control. This updates the state machine and runs a PID loop"""
+     self.pid.neg_limit = accel_limits[0]
+     self.pid.pos_limit = accel_limits[1]
+@@ -99,7 +121,8 @@ class LongControl:
+     else:  # LongCtrlState.pid
+       # Velocity PID closes the loop on the planned speed so the car lands the stop instead of
+       # coasting past it on feedforward alone; feedforward is still the plan's accel.
+-      error = (v_target - CS.vEgo) if self.velocity_pid else (a_target - CS.aEgo)
++      target_v = CS.vEgo if v_target is None or not np.isfinite(v_target) else v_target
++      error = (target_v - CS.vEgo) if self.velocity_pid else (a_target - CS.aEgo)
+       output_accel = self.pid.update(error, speed=CS.vEgo,
+                                      feedforward=a_target)
+     self.last_output_accel = np.clip(output_accel, accel_limits[0], accel_limits[1])
+diff --git a/selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py b/selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py
+index 8d20b4e..972e48d 100644
+--- a/selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py
++++ b/selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py
+@@ -14,6 +14,9 @@ DYNAMIC_TF_JERK_V = [1.0, 0.0, 0.0, -1.0]    # scaled by the gain: + opens the g
+ DYNAMIC_TF_MIN = 0.50                        # floor for the dynamically-reduced tFollow (temporary, below MIN_T_FOLLOW)
+ DYNAMIC_TF_MAX = 2.00                        # ceiling
+ DYNAMIC_TF_JERK_TAU = 0.5                    # s, EMA time constant on the lead-jerk estimate
++DYNAMIC_TF_RAW_JERK_LIMIT = 5.0               # m/s^3; reject lead acquisition/track-switch spikes
++DYNAMIC_TF_TRACK_JUMP_D = 5.0                  # m; vision-only leads use track id -1
++DYNAMIC_TF_TRACK_JUMP_V = 5.0                  # m/s; reset rather than differentiating another lead
+ # CarrotPilot parity: when the lead is pulling away, also cut the jerk cost so the car ramps its
+ # acceleration up promptly instead of dragging behind (the "can't follow the lead right away" feel).
+ DYNAMIC_JERK_LEAD_ACCEL_TH = 0.2             # lead jerk (m/s^3) above which the lead counts as pulling away
+@@ -66,6 +69,10 @@ class LongitudinalMpc:
+     self.dynamic_tf_gain = 0.0  # DynamicTFollowGain / 100; 0 -> dynamic follow off
+     self.lead_jerk = 0.0
+     self.prev_a_lead_k = 0.0
++    self.dynamic_lead_initialized = False
++    self.dynamic_lead_track_id = -1
++    self.dynamic_lead_d_rel = 0.0
++    self.dynamic_lead_v_lead_k = 0.0
+     self.reset()
+     self.source = LongitudinalPlanSource.cruise
+   def reset(self):
+@@ -96,6 +103,7 @@ class LongitudinalMpc:
+     self.time_linearization = 0.0
+     self.time_integrator = 0.0
+     self.x0 = np.zeros(X_DIM)
++    self.reset_dynamic_lead()
+     self.set_weights()
+ 
+ 
+@@ -126,11 +134,14 @@ class LongitudinalMpc:
+     Zl = np.array(constraint_cost_weights)
+     for i in range(N):
+       self.solver.cost_set(i, 'Zl', Zl)
+-  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
++  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard, lead=None):
++    # set_weights runs before update(), so its jerk estimate is normally one model frame old. Reset
++    # it first on a lead discontinuity so a cut-in cannot inherit the previous lead's relaxed cost.
++    if lead is not None:
++      self.prepare_dynamic_lead(lead)
+     jerk_factor = get_jerk_factor(personality)
+     # Dynamic follow: while the lead is pulling away, drop the jerk cost so acceleration builds
+-    # quickly and the car catches up right away. Gated on the same knob as the tFollow nudge; uses
+-    # the lead-jerk estimate refreshed in update() (one frame old here, ~50ms, negligible).
++    # quickly and the car catches up right away. Gated on the same knob as the tFollow nudge.
+     if self.dynamic_tf_gain > 0.0 and self.lead_jerk > DYNAMIC_JERK_LEAD_ACCEL_TH:
+       jerk_factor *= DYNAMIC_JERK_FACTOR
+     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
+@@ -156,16 +167,46 @@ class LongitudinalMpc:
+     else:
+       self.t_follow = limit_t_follow_increase(self.t_follow, target_t_follow, self.dt, self.rise_rate)
+     return self.t_follow
++  def reset_dynamic_lead(self, lead=None) -> None:
++    valid = (lead is not None and lead.status and
++             np.all(np.isfinite([lead.aLeadK, lead.dRel, lead.vLeadK])))
++    self.lead_jerk = 0.0
++    self.prev_a_lead_k = lead.aLeadK if valid else 0.0
++    self.dynamic_lead_track_id = int(lead.radarTrackId) if valid else -1
++    self.dynamic_lead_d_rel = float(lead.dRel) if valid else 0.0
++    self.dynamic_lead_v_lead_k = float(lead.vLeadK) if valid else 0.0
++    self.dynamic_lead_initialized = valid
++
++  def prepare_dynamic_lead(self, lead) -> bool:
++    finite_lead = lead.status and np.all(np.isfinite([lead.aLeadK, lead.dRel, lead.vLeadK]))
++    if self.dynamic_tf_gain <= 0.0 or not finite_lead:
++      self.reset_dynamic_lead(lead if finite_lead else None)
++      return False
++    track_id = int(lead.radarTrackId)
++    discontinuous = self.dynamic_lead_initialized and (
++      track_id != self.dynamic_lead_track_id or
++      abs(lead.dRel - self.dynamic_lead_d_rel) > DYNAMIC_TF_TRACK_JUMP_D or
++      abs(lead.vLeadK - self.dynamic_lead_v_lead_k) > DYNAMIC_TF_TRACK_JUMP_V
++    )
++    if not self.dynamic_lead_initialized or discontinuous:
++      self.reset_dynamic_lead(lead)
++      return False
++    return True
++
+   def apply_dynamic_t_follow(self, t_follow: float, lead) -> float:
+     """Nudge the base tFollow by the lead's jerk (CarrotPilot dynamic_t_follow). Lead jerk is the
+     EMA-smoothed derivative of the Kalman lead accel; a lead pulling away shrinks the gap so the car
+     keeps rolling, a braking lead opens it. Off (returns t_follow unchanged) when the gain is 0."""
+-    if self.dynamic_tf_gain <= 0.0 or not lead.status:
+-      self.lead_jerk = 0.0
+-      self.prev_a_lead_k = lead.aLeadK if lead.status else 0.0
++    if not self.prepare_dynamic_lead(lead):
+       return t_follow
+-    raw_jerk = (lead.aLeadK - self.prev_a_lead_k) / self.dt
++
++    track_id = int(lead.radarTrackId)
++    raw_jerk = float(np.clip((lead.aLeadK - self.prev_a_lead_k) / self.dt,
++                             -DYNAMIC_TF_RAW_JERK_LIMIT, DYNAMIC_TF_RAW_JERK_LIMIT))
+     self.prev_a_lead_k = lead.aLeadK
++    self.dynamic_lead_track_id = track_id
++    self.dynamic_lead_d_rel = float(lead.dRel)
++    self.dynamic_lead_v_lead_k = float(lead.vLeadK)
+     alpha = self.dt / (DYNAMIC_TF_JERK_TAU + self.dt)
+     self.lead_jerk += alpha * (raw_jerk - self.lead_jerk)
+     adjust = float(np.interp(self.lead_jerk, DYNAMIC_TF_JERK_BP, DYNAMIC_TF_JERK_V)) * self.dynamic_tf_gain
+diff --git a/selfdrive/controls/lib/longitudinal_planner.py b/selfdrive/controls/lib/longitudinal_planner.py
+index 08e5e3b..52164f1 100644
+--- a/selfdrive/controls/lib/longitudinal_planner.py
++++ b/selfdrive/controls/lib/longitudinal_planner.py
+@@ -23,6 +23,12 @@ ALLOW_THROTTLE_THRESHOLD = 0.4
+ PARAM_REFRESH_FRAMES = int(0.5 / DT_MDL)  # params hit disk; don't read every frame
+ MIN_ALLOW_THROTTLE_SPEED = 2.5
+ V_SOFT_LEAD_SPEED = 1.0  # m/s; v_soft only engages approaching a stopped/slow lead, not a moving one
++LEAD_CREEP_CONFIRM_TIME = 0.20       # s; reject one-frame radar velocity spikes
++LEAD_CREEP_MAX_EGO_SPEED = 2.5       # m/s; this is only a stop-and-go aid
++LEAD_CREEP_MAX_CLOSING_SPEED = 0.5  # m/s; never suppress a stop while rapidly closing
++LEAD_CREEP_MIN_ROOM = 1.0            # m beyond configured stop distance before stop suppression is allowed
++LEAD_CREEP_TRACK_JUMP_D = 5.0         # m; vision-only leads all use track id -1, so also guard continuity
++LEAD_CREEP_TRACK_JUMP_V = 3.0         # m/s; a different lead must restart confirmation
+ # Lookup table for turns
+ _A_TOTAL_MAX_V = [1.7, 3.2]
+ _A_TOTAL_MAX_BP = [20., 40.]
+@@ -53,6 +59,23 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
+   return [a_target[0], min(a_target[1], a_x_allowed)]
+ 
+ 
++def combine_should_stop(mpc_should_stop: bool, e2e_should_stop: bool, experimental_mode: bool,
++                        creep_follow_active: bool, mpc_stop_is_lead: bool) -> bool:
++  """Creep-follow may clear only a lead0/MPC stop; preserve cruise/forced and e2e stops."""
++  clear_mpc_stop = creep_follow_active and mpc_stop_is_lead
++  mpc_should_stop = mpc_should_stop and not clear_mpc_stop
++  return (e2e_should_stop or mpc_should_stop) if experimental_mode else mpc_should_stop
++
++
++def is_mpc_stop_clearable_by_creep(source, force_slow_decel: bool, v_cruise: float,
++                                   v_ego_stopping: float) -> bool:
++  """Only an ordinary lead0 stop may be released by a confirmed creeping lead."""
++  return (source == LongitudinalPlanSource.lead0 and
++          not force_slow_decel and
++          np.isfinite(v_cruise) and
++          v_cruise > v_ego_stopping)
++
++
+ class LongitudinalPlanner:
+   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL):
+     self.CP = CP
+@@ -78,6 +101,11 @@ class LongitudinalPlanner:
+     self.tesla_last_gap_adjust = self.params.get("TeslaLastGapAdjust", return_default=True) if CP.brand == "tesla" else 0
+     self.frame = 0
+     self.launch_accel = A_CRUISE_MAX_VALS[0]
++    self.lead_creep_frames = 0
++    self.lead_creep_track_id = -1
++    self.lead_creep_prev_d_rel = 0.0
++    self.lead_creep_prev_v_lead_k = 0.0
++    self.lead_creep_active = False
+     self.refresh_tuning()
+   def refresh_tuning(self) -> None:
+     """Only called while disengaged, so a change made mid-drive lands at the next engage
+@@ -103,6 +131,48 @@ class LongitudinalPlanner:
+     curve_on = curve_cms > 0
+     self.curve.set_tuning(min(max(curve_cms, 1) / 100.0, MAX_LATERAL_ACCEL_NO_ROLL - 0.4), enabled=curve_on)
+     self.governor.set_enabled(curve_on)
++
++  def reset_lead_creep(self, lead=None) -> None:
++    valid = lead is not None and lead.status
++    self.lead_creep_frames = 0
++    self.lead_creep_track_id = int(lead.radarTrackId) if valid else -1
++    self.lead_creep_prev_d_rel = float(lead.dRel) if valid else 0.0
++    self.lead_creep_prev_v_lead_k = float(lead.vLeadK) if valid else 0.0
++    self.lead_creep_active = False
++
++  def update_lead_creep(self, lead, v_ego: float, enabled: bool) -> bool:
++    """Confirm a genuinely creeping lead before suppressing the discrete stop latch.
++
++    A single vLeadK threshold is unsafe near a stopped car: the legacy radar can report short
++    positive velocity spikes. Require persistence, low ego speed, no rapid closing, enough room,
++    and track continuity.
++    """
++    finite_lead = lead.status and np.all(np.isfinite([lead.dRel, lead.vLeadK, lead.vRel]))
++    track_id = int(lead.radarTrackId) if finite_lead else -1
++    initialized = self.lead_creep_frames > 0 or self.lead_creep_active
++    discontinuous = initialized and (
++      track_id != self.lead_creep_track_id or
++      abs(lead.dRel - self.lead_creep_prev_d_rel) > LEAD_CREEP_TRACK_JUMP_D or
++      abs(lead.vLeadK - self.lead_creep_prev_v_lead_k) > LEAD_CREEP_TRACK_JUMP_V
++    )
++    if self.lead_creep_follow <= 0.0 or not enabled or not finite_lead or discontinuous:
++      self.reset_lead_creep(lead if finite_lead else None)
++      return False
++
++    room = lead.dRel - self.mpc.stop_distance
++    braking_room = max(v_ego, 0.0) ** 2 / (2.0 * COMFORT_BRAKE)
++    candidate = (v_ego <= LEAD_CREEP_MAX_EGO_SPEED and
++                 lead.vLeadK > self.lead_creep_follow and
++                 lead.vRel > -LEAD_CREEP_MAX_CLOSING_SPEED and
++                 room > LEAD_CREEP_MIN_ROOM + braking_room)
++    confirm_frames = max(1, int(round(LEAD_CREEP_CONFIRM_TIME / self.dt)))
++    self.lead_creep_frames = min(self.lead_creep_frames + 1, confirm_frames) if candidate else 0
++    self.lead_creep_active = self.lead_creep_frames >= confirm_frames
++    self.lead_creep_track_id = track_id
++    self.lead_creep_prev_d_rel = float(lead.dRel)
++    self.lead_creep_prev_v_lead_k = float(lead.vLeadK)
++    return self.lead_creep_active
++
+   @staticmethod
+   def parse_model(model_msg):
+     if (len(model_msg.position.x) == ModelConstants.IDX_N and
+@@ -147,14 +217,16 @@ class LongitudinalPlanner:
+ 
+     if force_slow_decel:
+       v_cruise = 0.0
++    lead = sm['radarState'].leadOne
++    creep_follow_active = self.update_lead_creep(lead, v_ego, not reset_state and not force_slow_decel)
+     # v_soft: approaching a stopped/slow lead, cap the speed on a physics stop curve by the room left
+     # to the target gap, so the car eases down to it instead of coasting past (CarrotPilot v_soft).
+-    if self.precise_stop:
+-      lead = sm['radarState'].leadOne
+-      if lead.status and lead.vLeadK < V_SOFT_LEAD_SPEED:
+-        stop_gap = max(lead.dRel - self.mpc.stop_distance - 1.0, 0.0)
+-        v_cruise = min(v_cruise, math.sqrt(2.0 * COMFORT_BRAKE * stop_gap))
+-    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
++    # If a creeping lead is confirmed, converge to its speed rather than incorrectly targeting zero.
++    if self.precise_stop and lead.status and lead.vLeadK < V_SOFT_LEAD_SPEED:
++      stop_gap = max(lead.dRel - self.mpc.stop_distance - 1.0, 0.0)
++      lead_target_speed = max(lead.vLeadK, 0.0) if creep_follow_active else 0.0
++      v_cruise = min(v_cruise, lead_target_speed + math.sqrt(2.0 * COMFORT_BRAKE * stop_gap))
++    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality, lead=lead)
+ 
+ 
+ 
+@@ -178,21 +250,20 @@ class LongitudinalPlanner:
+ 
+ 
+ 
+-    if sm['selfdriveState'].experimentalMode:
++    experimental_mode = sm['selfdriveState'].experimentalMode
++    # A driver-monitor/soft-disable force-decel or an external zero-speed cap must win even if
++    # lead0 happens to be the nearest obstacle. Creep-follow may clear only an ordinary lead0 stop.
++    mpc_stop_is_lead = is_mpc_stop_clearable_by_creep(self.mpc.source, force_slow_decel,
++                                                      v_cruise, self.CP.vEgoStopping)
++    if experimental_mode:
+       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
+-      self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
+       if output_a_target < output_a_target_mpc:
+         self.mpc.source = LongitudinalPlanSource.e2e
+     else:
+       output_a_target = output_a_target_mpc
+-      self.output_should_stop = output_should_stop_mpc
+-    # Don't latch a full stop while the lead itself is still creeping forward -- keep following it at
+-    # a low crawl instead of stopping and then creeping to catch up. The MPC still governs the actual
+-    # accel, so this only drops the discrete standstill latch; once the lead is (near) stopped its
+-    # speed falls back under the threshold and the normal stop re-engages. 0 disables it.
+-    lead_one = sm['radarState'].leadOne
+-    if (self.lead_creep_follow > 0.0 and self.output_should_stop
+-        and lead_one.status and lead_one.vLeadK > self.lead_creep_follow):
+-      self.output_should_stop = False
++    # Creep-follow is a lead0-following aid. It must not clear a cruise/forced stop, a leadTwo stop,
++    # or an experimental/e2e stop-line or traffic-light request.
++    self.output_should_stop = combine_should_stop(output_should_stop_mpc, output_should_stop_e2e, experimental_mode,
++                                                  creep_follow_active, mpc_stop_is_lead)
+     for idx in range(2):
+       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
+diff --git a/selfdrive/controls/tests/test_following_distance.py b/selfdrive/controls/tests/test_following_distance.py
+index 6a615c5..5b4c5f2 100644
+--- a/selfdrive/controls/tests/test_following_distance.py
++++ b/selfdrive/controls/tests/test_following_distance.py
+@@ -19,28 +19,28 @@ def desired_follow_distance(v_ego, v_lead, t_follow=None):
+ 
+ 
+ @pytest.mark.parametrize("gap, expected", [
+-  (1, 0.80),
+-  (2, 0.96),
+-  (3, 1.12),
+-  (4, 1.28),
+-  (5, 1.43),
+-  (6, 1.59),
+-  (7, 1.75),
++  (1, 1.10),
++  (2, 1.20),
++  (3, 1.30),
++  (4, 1.38),
++  (5, 1.45),
++  (6, 1.52),
++  (7, 1.60),
+ ])
+ def test_tesla_gap_t_follow(gap, expected):
+   assert get_T_FOLLOW(log.LongitudinalPersonality.standard, gap_adjust=gap) == pytest.approx(expected)
+ 
+ def test_invalid_gap_uses_personality():
+-  assert get_T_FOLLOW(log.LongitudinalPersonality.standard, gap_adjust=0) == pytest.approx(1.45)
++  assert get_T_FOLLOW(log.LongitudinalPersonality.standard, gap_adjust=0) == pytest.approx(1.30)
+ 
+ 
+ def test_t_follow_decrease_is_immediate():
+-  assert limit_t_follow_increase(1.75, 1.10, 0.05) == pytest.approx(1.10)
++  assert limit_t_follow_increase(1.60, 1.10, 0.05) == pytest.approx(1.10)
+ 
+ def test_t_follow_increase_is_rate_limited():
+   # rate passed explicitly so this keeps testing the limiter, not whatever the default is
+-  assert limit_t_follow_increase(1.10, 1.75, 0.05, 0.10) == pytest.approx(1.105)
+-  assert limit_t_follow_increase(1.10, 1.75, 0.05, 0.50) == pytest.approx(1.125)
++  assert limit_t_follow_increase(1.10, 1.60, 0.05, 0.10) == pytest.approx(1.105)
++  assert limit_t_follow_increase(1.10, 1.60, 0.05, 0.50) == pytest.approx(1.125)
+ 
+ 
+ def test_default_rise_rate_crosses_the_range_in_a_few_seconds():
+@@ -71,24 +71,19 @@ def test_launch_accel_leaves_braking_alone():
+   assert get_max_accel(0.0, 2.0) > get_max_accel(0.0)
+   assert ACCEL_MIN == pytest.approx(-3.5)
+ 
+-def test_gap_range_is_worth_turning_the_knob():
+-  """The old table moved 18m between the extremes at 100km/h, under 3m a step, which is why
+-  running the knob end to end barely changed anything."""
++def test_gap_table_matches_carrot_anchors_and_is_monotonic():
++  """Gap 1/3/5/7 are the chosen CarrotPilot anchors; the in-between steps stay monotonic."""
+   table = gap_t_follow_table(0)
+-  v = 100 / 3.6
+-  assert (table[7] - table[1]) * v > 25, "1 to 7 was only worth 18m before"
+-  steps = [(table[g + 1] - table[g]) * v for g in range(1, 7)]
+-  assert min(steps) > 4.0, "every step should be a car length or more at 100km/h"
+-  assert max(steps) - min(steps) < 0.5, "evenly spaced, as chosen"
++  assert {g: table[g] for g in (1, 3, 5, 7)} == {1: 1.10, 3: 1.30, 5: 1.45, 7: 1.60}
++  assert all(table[g] < table[g + 1] for g in range(1, 7))
+ 
+ 
+-def test_gap_7_is_unchanged():
+-  # the far end was the one setting that already felt right
+-  assert gap_t_follow_table(0)[7] == pytest.approx(1.75)
++def test_gap_7_matches_relaxed_anchor():
++  assert gap_t_follow_table(0)[7] == pytest.approx(1.60)
+ 
+ @pytest.mark.parametrize("profile", list(GAP_PROFILES))
+ def test_no_profile_goes_below_the_floor(profile):
+-  # 'closer' and 'wider' both shift gap 1 down, and the base is already deliberately close
++  # 'closer' and 'wider' can mathematically move gap 1 below the selected safety floor.
+   assert min(gap_t_follow_table(profile).values()) >= MIN_T_FOLLOW
+ 
+ 
+@@ -97,15 +92,15 @@ def test_profiles_still_move_the_table():
+ 
+ def test_no_gap_falls_back_to_personality():
+   mpc = LongitudinalMpc()
+-  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 0) == pytest.approx(1.45)
+-  assert mpc.update_t_follow(log.LongitudinalPersonality.relaxed, 0) == pytest.approx(1.75)
++  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 0) == pytest.approx(1.30)
++  assert mpc.update_t_follow(log.LongitudinalPersonality.relaxed, 0) == pytest.approx(1.45)
+ 
+ def test_gap_slew_survives_solver_reset():
+   # A solver reset must not re-arm the "first valid gap applies immediately" path, otherwise a
+   # pending tFollow increase lands in one step and brakes the car.
+   mpc = LongitudinalMpc()
+-  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 1) == pytest.approx(0.80)
++  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 1) == pytest.approx(1.10)
+   step = T_FOLLOW_RISE_RATE * mpc.dt
+-  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 7) == pytest.approx(0.80 + step)
++  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 7) == pytest.approx(1.10 + step)
+   mpc.reset()
+-  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 7) == pytest.approx(0.80 + 2 * step)
++  assert mpc.update_t_follow(log.LongitudinalPersonality.standard, 7) == pytest.approx(1.10 + 2 * step)
+diff --git a/selfdrive/controls/tests/test_longcontrol.py b/selfdrive/controls/tests/test_longcontrol.py
+index 1622857..1c1f7a7 100644
+--- a/selfdrive/controls/tests/test_longcontrol.py
++++ b/selfdrive/controls/tests/test_longcontrol.py
+@@ -1,5 +1,5 @@
+ from cereal import car
+-from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState, long_control_state_trans
++from openpilot.selfdrive.controls.lib.longcontrol import CONTROL_N_T_IDX, LongCtrlState, get_velocity_pid_target, long_control_state_trans
+ 
+ 
+ 
+@@ -51,3 +51,19 @@ def test_starting():
+   next_state = long_control_state_trans(CP, active, current_state, v_ego=1.0,
+                              should_stop=False, brake_pressed=False, cruise_standstill=False)
+   assert next_state == LongCtrlState.pid
++
++
++class TestVelocityPidTarget:
++  def test_uses_actuator_delay(self):
++    speeds = [float(t) for t in CONTROL_N_T_IDX]
++    action_t = 0.35
++    assert abs(get_velocity_pid_target(speeds, action_t, fallback=9.0) - action_t) < 1e-6
++
++  def test_incomplete_plan_uses_current_speed(self):
++    assert get_velocity_pid_target([], action_t=0.35, fallback=4.2) == 4.2
++    assert get_velocity_pid_target([1.0, 2.0], action_t=0.35, fallback=4.2) == 4.2
++    assert get_velocity_pid_target([], action_t=float('nan'), fallback=4.2) == 4.2
++
++  def test_e2e_source_uses_selected_acceleration(self):
++    assert get_velocity_pid_target([], action_t=0.2, fallback=5.0, a_target=-2.0, e2e_source=True) == 4.6
++    assert get_velocity_pid_target([], action_t=1.0, fallback=0.2, a_target=-2.0, e2e_source=True) == 0.0
+diff --git a/selfdrive/controls/tests/test_tesla_longitudinal_hardening.py b/selfdrive/controls/tests/test_tesla_longitudinal_hardening.py
+new file mode 100644
+index 0000000..f1637db
+--- /dev/null
++++ b/selfdrive/controls/tests/test_tesla_longitudinal_hardening.py
+@@ -0,0 +1,149 @@
++from types import SimpleNamespace
++
++from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import J_EGO_COST, LongitudinalMpc, LongitudinalPlanSource
++from openpilot.selfdrive.controls.lib.longitudinal_planner import (LongitudinalPlanner, combine_should_stop,
++                                                                  is_mpc_stop_clearable_by_creep)
++
++
++def lead(*, status=True, track_id=1, d_rel=10.0, v_lead=0.5, v_rel=0.0, a_lead=0.0):
++  return SimpleNamespace(status=status, radarTrackId=track_id, dRel=d_rel,
++                         vLeadK=v_lead, vRel=v_rel, aLeadK=a_lead)
++
++
++def dynamic_mpc():
++  mpc = LongitudinalMpc.__new__(LongitudinalMpc)
++  mpc.dt = 0.05
++  mpc.dynamic_tf_gain = 0.5
++  mpc.lead_jerk = 0.0
++  mpc.prev_a_lead_k = 0.0
++  mpc.dynamic_lead_initialized = False
++  mpc.dynamic_lead_track_id = -1
++  mpc.dynamic_lead_d_rel = 0.0
++  mpc.dynamic_lead_v_lead_k = 0.0
++  return mpc
++
++
++def creep_planner():
++  planner = LongitudinalPlanner.__new__(LongitudinalPlanner)
++  planner.dt = 0.05
++  planner.lead_creep_follow = 0.3
++  planner.lead_creep_frames = 0
++  planner.lead_creep_track_id = -1
++  planner.lead_creep_prev_d_rel = 0.0
++  planner.lead_creep_prev_v_lead_k = 0.0
++  planner.lead_creep_active = False
++  planner.mpc = SimpleNamespace(stop_distance=6.0)
++  return planner
++
++
++class TestDynamicFollowHardening:
++  def test_first_lead_and_track_change_seed_without_jerk(self):
++    mpc = dynamic_mpc()
++    base = 1.3
++    assert mpc.apply_dynamic_t_follow(base, lead(track_id=1, a_lead=1.0)) == base
++    assert mpc.lead_jerk == 0.0
++    mpc.lead_jerk = 1.0
++    assert not mpc.prepare_dynamic_lead(lead(track_id=2, a_lead=-2.0))
++    assert mpc.lead_jerk == 0.0
++    assert mpc.apply_dynamic_t_follow(base, lead(track_id=2, a_lead=-2.0)) == base
++
++    # Vision-only leads share track id -1, so distance/velocity continuity must also reset.
++    mpc.reset_dynamic_lead(lead(track_id=-1, d_rel=15.0, v_lead=2.0, a_lead=0.0))
++    assert mpc.apply_dynamic_t_follow(base, lead(track_id=-1, d_rel=30.0, v_lead=10.0, a_lead=3.0)) == base
++    assert mpc.lead_jerk == 0.0
++
++  def test_raw_accel_jump_is_clipped(self):
++    mpc = dynamic_mpc()
++    mpc.reset_dynamic_lead(lead(track_id=1, a_lead=0.0))
++    base = 1.3
++    # Without raw-jerk clipping this 10 m/s^2 acquisition jump immediately saturates the adjust.
++    assert mpc.apply_dynamic_t_follow(base, lead(track_id=1, a_lead=10.0)) == base
++    assert abs(mpc.lead_jerk) < 0.5
++
++  def test_nonfinite_lead_resets_dynamic_follow(self):
++    mpc = dynamic_mpc()
++    mpc.reset_dynamic_lead(lead(track_id=1, a_lead=0.0))
++    assert mpc.apply_dynamic_t_follow(1.3, lead(track_id=1, a_lead=float('nan'))) == 1.3
++    assert not mpc.dynamic_lead_initialized
++
++  def test_set_weights_resets_before_using_a_new_lead(self):
++    mpc = dynamic_mpc()
++    mpc.reset_dynamic_lead(lead(track_id=1, a_lead=0.0))
++    mpc.lead_jerk = 1.0  # old lead was pulling away, so jerk cost would otherwise be halved
++    captured = {}
++    mpc.set_cost_weights = lambda costs, constraints: captured.update(costs=costs, constraints=constraints)
++    mpc.set_weights(lead=lead(track_id=2, a_lead=-2.0))
++    assert mpc.lead_jerk == 0.0
++    assert captured['costs'][-1] == J_EGO_COST
++
++
++class TestLeadCreepHardening:
++  def test_requires_persistent_motion(self):
++    planner = creep_planner()
++    moving = lead(track_id=1, d_rel=10.0, v_lead=0.5, v_rel=0.0)
++    assert not planner.update_lead_creep(moving, v_ego=0.5, enabled=True)
++    assert not planner.update_lead_creep(moving, v_ego=0.5, enabled=True)
++    assert not planner.update_lead_creep(moving, v_ego=0.5, enabled=True)
++    assert planner.update_lead_creep(moving, v_ego=0.5, enabled=True)
++
++  def test_near_stop_noise_and_fast_closing_do_not_suppress_stop(self):
++    planner = creep_planner()
++    noisy_stopped = lead(track_id=1, d_rel=6.5, v_lead=0.9, v_rel=0.0)
++    for _ in range(10):
++      assert not planner.update_lead_creep(noisy_stopped, v_ego=0.2, enabled=True)
++
++    closing = lead(track_id=1, d_rel=10.0, v_lead=0.5, v_rel=-1.0)
++    for _ in range(10):
++      assert not planner.update_lead_creep(closing, v_ego=1.0, enabled=True)
++
++  def test_track_change_restarts_confirmation(self):
++    planner = creep_planner()
++    moving = lead(track_id=1, d_rel=10.0, v_lead=0.5, v_rel=0.0)
++    for _ in range(4):
++      active = planner.update_lead_creep(moving, v_ego=0.5, enabled=True)
++    assert active
++    assert not planner.update_lead_creep(lead(track_id=2, d_rel=10.0, v_lead=0.5), v_ego=0.5, enabled=True)
++
++  def test_braking_room_and_vision_lead_jump_restart_confirmation(self):
++    planner = creep_planner()
++    # At 2.5 m/s, 1.5m beyond the configured stop distance is not enough room to clear stop.
++    too_close = lead(track_id=1, d_rel=7.5, v_lead=0.8, v_rel=0.0)
++    for _ in range(10):
++      assert not planner.update_lead_creep(too_close, v_ego=2.5, enabled=True)
++
++    vision = lead(track_id=-1, d_rel=12.0, v_lead=0.6, v_rel=0.0)
++    for _ in range(4):
++      active = planner.update_lead_creep(vision, v_ego=0.5, enabled=True)
++    assert active
++    jumped = lead(track_id=-1, d_rel=25.0, v_lead=8.0, v_rel=0.0)
++    assert not planner.update_lead_creep(jumped, v_ego=0.5, enabled=True)
++
++  def test_nonfinite_lead_and_disabled_state_reset_confirmation(self):
++    planner = creep_planner()
++    moving = lead(track_id=1, d_rel=10.0, v_lead=0.5, v_rel=0.0)
++    assert not planner.update_lead_creep(moving, v_ego=0.5, enabled=True)
++    assert not planner.update_lead_creep(lead(track_id=1, d_rel=float('nan')), v_ego=0.5, enabled=True)
++    assert planner.lead_creep_frames == 0
++    assert not planner.update_lead_creep(moving, v_ego=0.5, enabled=False)
++
++
++class TestShouldStopSourceIsolation:
++  def test_creep_follow_does_not_clear_e2e_stop(self):
++    assert combine_should_stop(True, True, experimental_mode=True, creep_follow_active=True, mpc_stop_is_lead=True)
++    assert combine_should_stop(False, True, experimental_mode=True, creep_follow_active=True, mpc_stop_is_lead=True)
++
++  def test_creep_follow_only_clears_mpc_stop(self):
++    assert not combine_should_stop(True, False, experimental_mode=False, creep_follow_active=True, mpc_stop_is_lead=True)
++    assert not combine_should_stop(True, False, experimental_mode=True, creep_follow_active=True, mpc_stop_is_lead=True)
++    assert combine_should_stop(True, False, experimental_mode=False, creep_follow_active=False, mpc_stop_is_lead=True)
++
++  def test_creep_follow_preserves_non_lead_mpc_stop(self):
++    assert combine_should_stop(True, False, experimental_mode=False, creep_follow_active=True, mpc_stop_is_lead=False)
++    assert combine_should_stop(True, False, experimental_mode=True, creep_follow_active=True, mpc_stop_is_lead=False)
++
++  def test_only_ordinary_lead0_stop_is_clearable(self):
++    assert is_mpc_stop_clearable_by_creep(LongitudinalPlanSource.lead0, False, 5.0, 0.1)
++    assert not is_mpc_stop_clearable_by_creep(LongitudinalPlanSource.lead1, False, 5.0, 0.1)
++    assert not is_mpc_stop_clearable_by_creep(LongitudinalPlanSource.cruise, False, 5.0, 0.1)
++    assert not is_mpc_stop_clearable_by_creep(LongitudinalPlanSource.lead0, True, 5.0, 0.1)
++    assert not is_mpc_stop_clearable_by_creep(LongitudinalPlanSource.lead0, False, 0.0, 0.1)
+diff --git a/selfdrive/debug/tuning_server.py b/selfdrive/debug/tuning_server.py
+index 3a5388b..61c7ffd 100644
+--- a/selfdrive/debug/tuning_server.py
++++ b/selfdrive/debug/tuning_server.py
+@@ -4,16 +4,16 @@ SETTINGS = {
+     "label": "Gap 확대 반영 속도", "type": "int",
+     "help": "Gap을 크게 바꿨을 때 목표 거리가 늘어나는 속도입니다. 빠르면 즉각적이지만 "
+             "감속이 급해질 수 있습니다. 줄일 때는 항상 즉시 반영됩니다. "
+-            "gap 1↔7 전 구간 전환에 0.10은 9.5초, 0.35는 2.7초, 0.50은 1.9초가 걸립니다.",
++            "gap 1↔7 전 구간 전환에 0.10은 5.0초, 0.35는 약 1.4초, 0.50은 1.0초가 걸립니다.",
+     "options": [(10, "느리게 0.10초/초"), (20, "보통 0.20초/초"),
+                 (35, "빠르게 0.35초/초 (기본)"), (50, "즉각 0.50초/초")],
+   },
+   "LeadCreepFollowCms": {
+     "group": "차간 · 추종",
+     "label": "기어가는 앞차 따라가기", "type": "int",
+-    "help": "앞차가 이 속도 이상으로 조금씩 움직이면 완전정지하지 않고 저속으로 함께 굴러갑니다. "
+-            "가다 서다에서 '완전정지 후 크립으로 따라잡기'가 사라집니다. 앞차가 실제로 멈추면(이 속도 "
+-            "미만) 정상적으로 정지합니다. 실제 감속은 그대로 제어되며 정지 latch만 뺍니다. 0이면 사용 안 함.",
++    "help": "앞차가 이 속도 이상으로 0.2초 이상 계속 움직일 때만 완전정지하지 않고 함께 굴러갑니다. "
++            "정지거리 근처, 빠르게 접근 중, 레이더 트랙이 바뀐 직후에는 안전하게 정상 정지합니다. "
++            "정지차 속도 노이즈 한두 번으로 정지 latch가 풀리지 않도록 보호합니다. 0이면 사용 안 함.",
+     "options": [(0, "사용 안 함 (기본)"), (30, "0.30 m/s 이상"),
+                 (50, "0.50 m/s 이상"), (80, "0.80 m/s 이상")],
+   },
+@@ -25,16 +25,17 @@ PAGE_GUIDE = """<!doctype html><html lang="ko"><body>
+   <div class="lab">줄이 아주 조금씩 앞으로 갈 때</div>
+   <div class="vs">
+     <div class="w">예전</div><div>앞사람이 찔끔 움직여도 나는 <b>완전히 멈춰 섰다가</b>, 좀 멀어지면 <b>후다닥 따라붙어.</b> → 섰다 붙었다 덜컹덜컹.</div>
+-    <div class="w">지금</div><div>앞사람이 계속 조금씩 움직이면 나도 <b class="em">같이 살살 걸어가.</b> 앞사람이 진짜 딱 멈추면 그때 나도 멈춤.</div>
++    <div class="w">지금</div><div>앞사람이 <b>0.2초 이상 계속</b> 조금씩 움직이고 안전 여유가 있을 때만 나도 <b class="em">같이 살살 걸어가.</b> 앞사람이 멈추거나 가까우면 정상적으로 멈춤.</div>
+   </div>
+   <div class="blk"><div class="t">한 줄 로직</div>
+   <p>예전엔 "내가 갈 속도가 거의 0이네 → <b>완전 멈춤 확정!</b>" 스위치가 앞차가 움직이든 말든 눌려버렸어.
+-  지금은 "앞차가 아직 이 속도 이상으로 굴러가면 → <b>멈춤 스위치 누르지 마</b>" 조건을 붙인 거야.</p></div>
++  지금은 "같은 앞차가 0.2초 이상 움직이고, 내 차가 저속이며, 빠르게 가까워지지 않고, 정지할 공간도 남아 있을 때만 → <b>멈춤 스위치를 잠깐 미뤄</b>" 조건을 붙인 거야.</p></div>
+   <div class="blk"><div class="t">캐치포인트</div><ul>
+     <li><b class="ok">✅ 정체·가다서다에서 효과 최고.</b> "섰다 크립으로 따라잡기" 덜컹임이 사라짐.</li>
+     <li><b class="warn">⚠️ 숫자 = 문턱 속도.</b> 낮을수록(0.30) 아주 느린 기어감까지 따라가고, 높을수록(0.80) 어지간히 움직여야 따라감.</li>
+     <li><b class="bad">🚨 앞차가 진짜 멈췄는데 안 서는 느낌</b>이면 문턱을 올려(0.30→0.50). 그래도 이상하면 브레이크 밟고 off.</li>
+-    <li>실제 브레이크 세기는 그대로라 <b>앞차에 박는 위험은 없음.</b> "완전 정지 잠금"만 뺀 거.</li>
++    <li>앞차 트랙이 바뀌거나 cut-in이 생기면 확인 시간을 다시 시작하고, 빠르게 가까워지거나 정지거리 근처면 이 기능을 쓰지 않아.</li>
++    <li>실제 가감속은 MPC가 계속 계산하지만 정지 판단을 바꾸는 기능이므로, 처음에는 한적한 저속 구간에서 발을 브레이크 위에 두고 확인해.</li>
+   </ul></div>
+ </div>
+ <h2>2. 앞차 움직임 따라 차간 조절 <code>DynamicTFollowGain</code></h2>
+@@ -51,6 +52,7 @@ PAGE_GUIDE = """<!doctype html><html lang="ko"><body>
+     <li><b class="ok">✅ 재출발·감속 받아치기가 부드러워짐.</b> 1번이 "완전정지 자체"를 없앤다면, 이건 그 위에 <b>부드러움</b>을 얹는 보조.</li>
+     <li><b class="warn">⚠️ 숫자 = 조절 폭(초).</b> 클수록 더 많이 밀당함.</li>
+     <li><b class="em">🔑 일시적(과도) 효과.</b> 앞차가 일정 속도로 자리잡으면 간격은 네가 고른 Gap(1~7)으로 <b>되돌아와.</b> 정상임.</li>
++    <li>첫 인식, 앞차 변경, cut-in, 레이더↔비전 전환 때는 이전 앞차의 jerk를 이어 쓰지 않고 새 기준만 잡아. 다음 프레임부터 연속성이 확인될 때 조절함.</li>
+     <li>정속 고속에선 거의 체감 없음. <b>변화 잦은 저속에서 진가.</b></li>
+   </ul></div>
+ </div>
+-- 
+2.47.3
+

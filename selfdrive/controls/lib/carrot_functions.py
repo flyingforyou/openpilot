@@ -12,11 +12,16 @@ from openpilot.selfdrive.controls.lib.carrot_t_follow import ramp_t_follow
 from openpilot.selfdrive.controls.lib.map_cruise import MapCruiseController
 from openpilot.selfdrive.selfdrived.events import Events
 
-# Must match COMFORT_BRAKE in longitudinal_mpc_carrot/long_mpc.py, which cannot be imported
-# here because it imports XState from this module. get_stopped_equivalence_factor() hardcodes
-# that constant while get_safe_obstacle_distance() takes ours, so the v_ego**2 and v_lead**2
-# halves of the desired-gap formula only cancel while the two agree.
-MAX_COMFORT_BRAKE = 2.5
+# Both halves of the desired-gap formula are parameters now: ComfortBrake divides v_ego**2,
+# ComfortBrake2 divides v_lead**2. At steady state the gap is
+#
+#   k * v**2 + t_follow * v + stop_distance,  k = 1/(2*b1) - 1/(2*b2)
+#
+# so the pair sets the curve's curvature, the gap table sets its slope and stop_distance its
+# intercept -- three independent handles on distance-versus-speed. The one invariant that
+# matters is b1 <= b2, i.e. k >= 0: the moment b1 exceeds b2 the target gap starts *shrinking*
+# with the square of speed, which is what put the car 12m off a lead at 74mph on 2026-08-14.
+DEFAULT_COMFORT_BRAKE_2 = 2.5   # matches COMFORT_BRAKE in longitudinal_mpc_carrot/long_mpc.py
 
 EventName = log.OnroadEvent.EventName
 LaneChangeState = log.LaneChangeState
@@ -138,7 +143,9 @@ class CarrotPlanner:
     self.stop_distance = 6.0
     self.trafficStopDistanceAdjust = 2.5 #params.get_float("TrafficStopDistanceAdjust") / 100.
     self.comfortBrake = 2.4
+    self.comfortBrake2 = DEFAULT_COMFORT_BRAKE_2
     self.comfort_brake = self.comfortBrake
+    self.comfort_brake_2 = self.comfortBrake2
 
     self.soft_hold_active = 0
     self.events = Events()
@@ -243,10 +250,10 @@ class CarrotPlanner:
       self.cruiseMaxVals6 = self.params.get_float("CruiseMaxVals6") / 100.
     elif self.params_count == 40:
       self.stop_distance = self.params.get_float("StopDistanceCarrot") / 100.
-      # Above MAX_COMFORT_BRAKE the desired gap picks up a negative
-      # -v**2 * (1/(2*b) - 1/(2*MAX_COMFORT_BRAKE)) term that grows with the square of speed:
-      # at 3.2 that is -14m at 40mph and -48m at 74mph, i.e. a 6m target gap on the highway.
-      self.comfortBrake = min(self.params.get_float("ComfortBrake") / 100., MAX_COMFORT_BRAKE)
+      self.comfortBrake2 = self.params.get_float("ComfortBrake2") / 100.
+      # Clamp to keep k >= 0 (see DEFAULT_COMFORT_BRAKE_2). b1 > b2 shrinks the target gap
+      # quadratically with speed, so the clamp is what makes the pair safe to tune freely.
+      self.comfortBrake = min(self.params.get_float("ComfortBrake") / 100., self.comfortBrake2)
       self.j_lead_factor = self.params.get_float("JLeadFactor3") / 100.
       self.autoNaviSpeedDecelRate = float(self.params.get_int("AutoNaviSpeedDecelRate")) * 0.01
       self.aChangeCostStarting = self.params.get_float("AChangeCostStarting")
@@ -517,6 +524,7 @@ class CarrotPlanner:
     self.soft_hold_active = 0
 
     self.comfort_brake = self.comfortBrake
+    self.comfort_brake_2 = self.comfortBrake2
 
     v_ego = carstate.vEgo
     a_ego = carstate.aEgo

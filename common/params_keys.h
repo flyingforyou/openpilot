@@ -169,6 +169,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // earlier and harder for the same closing speed. Measured over a drive, this term was 60%
     // of the whole follow distance.
     {"ComfortBrake", {PERSISTENT, INT, "240"}},
+    {"ComfortBrake2", {PERSISTENT, INT, "250"}},
     {"StopDistanceCarrot", {PERSISTENT, INT, "550"}},
     // Stopping accel: the car must already be braking at least this hard before the controller
     // commits to its stopping ramp. 0 means "use the port's own stopAccel", which is what the
