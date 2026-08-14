@@ -37,7 +37,7 @@ class FakeCS:
 
 def make(v_max_mph=90, use_curve=False):
   c = MapCruiseController()
-  c.set_config(enabled=True, offset_ratio=1.0, use_car_offset=True,
+  c.set_config(enabled=True, offset_ratio=1.0,
                v_max=v_max_mph * MPH, use_curve=use_curve, sync_cluster=True)
   return c
 
@@ -77,11 +77,12 @@ class TestPerLimitOffset:
     assert (40 * MPH) >= OFFSET_SPLIT
     assert settle(make(), 40, 85) == pytest.approx(50, abs=1.0)
 
-  def test_car_offset_is_a_ceiling_not_the_value(self):
-    # A driver who set +3 in the car's own menu gets +3, not the ladder's +10.
-    nav = FakeNav(65, road_class_for(65))
+  def test_car_offset_no_longer_participates(self):
+    # UI_userSpeedOffset used to cap the ladder. It is one number for every road and read +10
+    # in 99.9% of logged frames, so it only ever suppressed the ladder where it matters.
+    nav = FakeNav(25, road_class_for(25))
     nav.speedOffset = 3 * MPH
-    assert settle(make(), 65, 85, nav=nav) == pytest.approx(68, abs=1.0)
+    assert settle(make(), 25, 70, nav=nav) == pytest.approx(30, abs=1.0)
 
   def test_ladder_constants_are_ordered(self):
     assert OFFSET_BELOW < OFFSET_ABOVE

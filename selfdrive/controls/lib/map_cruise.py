@@ -145,7 +145,6 @@ class MapCruiseController:
   def __init__(self):
     self.enabled = False
     self.offset_ratio = 1.0
-    self.use_car_offset = True
     self.use_curve = True
     self.sync_cluster = False
     self.v_max = 129 * CV.KPH_TO_MS
@@ -160,13 +159,12 @@ class MapCruiseController:
     self.last_posted = 0.0
 
 
-  def set_config(self, enabled: bool, offset_ratio: float, use_car_offset: bool,
+  def set_config(self, enabled: bool, offset_ratio: float,
                  v_max: float, use_curve: bool = True, sync_cluster: bool = False) -> None:
     if not enabled and self.enabled:
       self.reset()
     self.enabled = enabled
     self.offset_ratio = offset_ratio
-    self.use_car_offset = use_car_offset
     self.use_curve = use_curve
     self.sync_cluster = sync_cluster
     self.v_max = v_max
@@ -197,21 +195,19 @@ class MapCruiseController:
         return float(value), name
     return 0.0, 'none'
 
-  def _limit_offset(self, limit: float, nav) -> float:
+  def _limit_offset(self, limit: float) -> float:
     """How far over this limit to sit. See OFFSET_SPLIT.
 
-    The car's own UI_userSpeedOffset is a ceiling rather than the value: it is one number for
-    every road, which is the thing being fixed here, but a driver who has set it *below* the
-    ladder has said something specific and gets it.
+    The car's own UI_userSpeedOffset used to feed this. It is one number for every road, which
+    is the thing the ladder exists to fix, and on this car it read +10 in 99.9% of logged frames
+    -- so honouring it only ever meant "ignore the ladder below 40mph", which is where the ladder
+    matters most. The ladder is the whole answer now.
     """
-    step = OFFSET_ABOVE if limit >= OFFSET_SPLIT else OFFSET_BELOW
-    if self.use_car_offset and nav.speedOffset > 0.0:
-      step = min(step, float(nav.speedOffset))
-    return step
+    return OFFSET_ABOVE if limit >= OFFSET_SPLIT else OFFSET_BELOW
 
-  def _with_offset(self, limit: float, nav) -> float:
+  def _with_offset(self, limit: float) -> float:
     """Posted limit -> what to actually target."""
-    return limit * self.offset_ratio + self._limit_offset(limit, nav)
+    return limit * self.offset_ratio + self._limit_offset(limit)
 
   def _fleet_speed(self, nav) -> float:
     """What the fleet drives at this point on the road, 0.0 if nothing is reported.
@@ -280,7 +276,7 @@ class MapCruiseController:
     elif posted > 0.0:
       self.state = MapCruiseState.mapped
       self.source = source
-      target = self._with_offset(posted, nav)
+      target = self._with_offset(posted)
     else:
       # No limit, no ramp: an unmapped road, a parking lot, or the map still catching up. Keep
       # what we had but never above what this class of road can be, so a freeway setpoint cannot
@@ -291,7 +287,7 @@ class MapCruiseController:
       self.source = source if source == 'stale' else 'hold'
       target = self.v_output if self.v_output > 0.0 else v_cruise_driver
       if ceiling > 0.0:
-        target = min(target, self._with_offset(ceiling, nav))
+        target = min(target, self._with_offset(ceiling))
 
     # Curve deceleration, from what the fleet actually drives here.
     #
@@ -327,7 +323,7 @@ class MapCruiseController:
     # only number here that comes from the road rather than from the loop. Same ladder as the
     # target's own offset, so the cap cannot be looser than what the map would have asked for.
     if posted > 0.0:
-      cap = posted + self._limit_offset(posted, nav)
+      cap = posted + self._limit_offset(posted)
       if self.v_target > cap:
         self.v_target = float(max(MIN_TARGET, cap))
         self.source = 'capped'
