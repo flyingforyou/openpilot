@@ -177,16 +177,28 @@ class TestCurveLatAccelCap:
     loose = self._run(self.make_curve(3.5), 45, 40.0, 100)
     assert tight < loose
 
-  def test_on_ramp_is_not_slowed_by_curvature(self):
-    # Merging must not be held back; the ramp branch takes fleet outright.
+  def test_on_ramp_loop_does_get_the_curvature_cap(self):
+    # The tight loop at the start of an on-ramp: 14.2% of logged on-ramp frames, where the
+    # fleet reads 38.6mph against a car actually doing 27.8.
     c = self.make_curve()
     nav = FakeNav(45, road_class_for(45))
     nav.rampType = 1
-    nav.fleetSplineSpeed = 50 * MPH
+    nav.fleetSplineSpeed = 38.6 * MPH
     cs = FakeCS(nav)
     for _ in range(40):
-      c.update(cs, 45 * MPH, 70 * MPH, 1.0 / 31)
-    assert c.v_ceiling / MPH > 30.0
+      c.update(cs, 40 * MPH, 70 * MPH, 1.0 / 31)
+    assert c.v_ceiling / MPH < 30.0
+
+  def test_on_ramp_merge_is_not_held_back(self):
+    # Straight acceleration lane: no curvature, so the cap lets go and the merge guard rules.
+    c = self.make_curve()
+    nav = FakeNav(45, road_class_for(45))
+    nav.rampType = 1
+    nav.fleetSplineSpeed = 38.6 * MPH
+    cs = FakeCS(nav)
+    for _ in range(40):
+      c.update(cs, 55 * MPH, 70 * MPH, 0.0)
+    assert c.v_ceiling / MPH >= 55.0
 
   def test_off_ramp_does_get_the_curvature_cap(self):
     c = self.make_curve()

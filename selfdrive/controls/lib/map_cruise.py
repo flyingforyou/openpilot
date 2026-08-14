@@ -328,23 +328,28 @@ class MapCruiseController:
     # lead is in time rather than distance -- 3.5s/63m at 40mph against 4.0s/100m at 56mph --
     # so it does not shrink at speed, and 4s covers even the largest observed deficit (11.1mph)
     # at a comfortable 1.25 m/s^2. Slewing it is still SLEW_DOWN's job, not this line's.
-    # Two inputs, whichever is lower. They miss different things: the fleet carries traffic,
-    # lights and everything else the map cannot see but flattens the tightest point of a bend;
-    # the curvature limit is the bend itself but says nothing about why else a road is slow. On
-    # a straight the curvature limit reads around 100mph and the fleet governs; in a hairpin it
-    # is the fleet that is too high and the curvature governs.
+    # Two caps, applied separately because they fail differently.
     #
-    # Skipped on an on-ramp only. Merging must not be slowed, but an off-ramp is exactly where
-    # the fleet's segment average is worst -- 19 logged exits needed a median 24.3mph against a
-    # fleet that bottomed out at 33.6.
-    if self.use_curve and ramp != RAMP_ON:
-      caps = [c for c in (fleet, self._curve_speed(curvature)) if c > 0.0]
-      if caps:
-        cap = min(caps)
-        if cap < target:
-          target = cap
-          self.state = MapCruiseState.curve
-          self.source = 'curve'
+    # The curvature limit runs everywhere, ramps included. It is read at a point rather than
+    # averaged over a segment, so it lets go the moment the road straightens: across 10.3k
+    # on-ramp frames its median is 113mph and it binds 5.1% of the time -- but on the 14.2% of
+    # those frames that are genuinely tight it says 27.3mph against a fleet reading 38.6 and a
+    # car actually driven through at 27.8. That is the loop at the start of an on-ramp, and
+    # leaving it to the driver's brake pedal is not a merge protection, just a gap.
+    v_curve = self._curve_speed(curvature) if self.use_curve else 0.0
+    if 0.0 < v_curve < target:
+      target = v_curve
+      self.state = MapCruiseState.curve
+      self.source = 'curve'
+
+    # The fleet carries traffic, lights and everything else the map cannot see, but it is a
+    # segment average and flattens the tightest point of a bend. On a ramp it is already the
+    # branch above's own target -- complete with the merge guard that keeps its average from
+    # holding back an acceleration lane -- so it only caps elsewhere.
+    if self.use_curve and ramp not in (RAMP_ON, RAMP_OFF) and 0.0 < fleet < target:
+      target = fleet
+      self.state = MapCruiseState.curve
+      self.source = 'curve'
 
     # The configured ceiling is the only thing standing between the map and the throttle, so it
     # is applied to the target itself rather than anywhere further down, where a later rule could
