@@ -41,9 +41,21 @@ def make(v_max_mph=80):
   return c
 
 
+def road_class_for(limit_mph):
+  """The class cross-check rejects a posted limit above what the class can carry, so a fixture
+  has to pair them the way the map does -- a 65 zone is a freeway, not an arterial."""
+  if limit_mph > 50:
+    return 1
+  if limit_mph > 35:
+    return 4
+  if limit_mph > 30:
+    return 5
+  return 6
+
+
 def settle(c, limit_mph, stalk_mph, v_ego_mph=40, n=40):
   """Run enough frames for slews and dwells to finish, return the ceiling in mph."""
-  cs = FakeCS(FakeNav(limit_mph))
+  cs = FakeCS(FakeNav(limit_mph, road_class_for(limit_mph)))
   for _ in range(n):
     c.update(cs, v_ego_mph * MPH, stalk_mph * MPH)
   return c.v_ceiling / MPH
@@ -97,7 +109,7 @@ class TestOverrideFollowsTheRoad:
 
   def test_no_posted_limit_does_not_latch_a_delta(self):
     c = make()
-    nav = FakeNav(45)
+    nav = FakeNav(45, road_class_for(45))
     nav.baseSpeedLimit = nav.mapSpeedLimit = nav.mppSpeedLimit = nav.fusedSpeedLimit = 0.0
     cs = FakeCS(nav)
     for _ in range(40):
