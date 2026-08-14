@@ -54,7 +54,10 @@ class TestComfortBrakePair:
     deltas = [c - b for c, b in zip(curved, base, strict=True)]
     assert all(d >= 0.0 for d in deltas)
     assert deltas == sorted(deltas)          # grows monotonically with speed
-    assert deltas[0] < 0.5 and deltas[-1] > 5.0
+    # and it stays concentrated at the top of the range -- that concentration is the whole
+    # reason the pair can buy highway room without giving any of it back at low speed.
+    assert deltas[0] / deltas[-1] < 0.05
+    assert deltas[-1] > 5.0
 
   def test_inverted_pair_shrinks_gap_with_speed(self):
     # The failure mode the clamp exists to prevent -- b1 > b2 made the 74mph target 6m.
