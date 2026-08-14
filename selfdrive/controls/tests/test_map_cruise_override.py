@@ -115,3 +115,48 @@ class TestOverrideFollowsTheRoad:
     for _ in range(40):
       c.update(cs, 40 * MPH, 60 * MPH)
     assert abs(c.override_delta) <= OVERRIDE_MAX_DELTA + 1e-6
+
+
+class TestCapsSurviveAnOverride:
+  """Everything upstream of the override must still bind while a delta stands."""
+
+  def test_curve_still_slows_with_an_override_standing(self):
+    c = make()
+    settle(c, 45, 50)                     # driver 5 under the map's 55
+    assert c.has_override
+    nav = FakeNav(45, road_class_for(45))
+    nav.fleetSplineSpeed = 30 * MPH       # fleet crawls the curve
+    cs = FakeCS(nav)
+    for _ in range(60):
+      c.update(cs, 40 * MPH, 50 * MPH)
+    assert c.v_ceiling / MPH < 45.0, "curve cap discarded while override stood"
+
+  def test_ramp_fleet_speed_still_used_with_an_override(self):
+    c = make()
+    settle(c, 45, 50)
+    nav = FakeNav(45, road_class_for(45))
+    nav.rampType = 1                      # RAMP_ON
+    nav.fleetSplineSpeed = 30 * MPH
+    cs = FakeCS(nav)
+    for _ in range(60):
+      c.update(cs, 25 * MPH, 50 * MPH)
+    assert c.v_ceiling / MPH < 45.0
+
+  def test_configured_max_still_binds(self):
+    c = make(v_max_mph=50)
+    assert settle(c, 65, 75) <= 51.0
+
+  def test_class_ceiling_still_rejects_an_impossible_limit(self):
+    # A 65 limit reported on a residential class is not believed, override or not.
+    c = make()
+    settle(c, 45, 50)
+    nav = FakeNav(65, 6)                  # local road, 30mph class ceiling
+    cs = FakeCS(nav)
+    for _ in range(60):
+      c.update(cs, 40 * MPH, 50 * MPH)
+    assert c.v_ceiling / MPH < 55.0
+
+  def test_over_limit_cap_beats_the_delta(self):
+    c = make(v_max_mph=90)
+    settle(c, 65, 75)                     # +10 delta on a freeway
+    assert settle(c, 25, 75) <= (25 * MPH + OVER_LIMIT_CAP) / MPH + 1.0

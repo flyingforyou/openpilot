@@ -360,12 +360,14 @@ class MapCruiseController:
     # step over it.
     self.v_target = float(np.clip(target, MIN_TARGET, self.v_max))
 
-    # The driver's own answer, if they have given one for this road, replaces it outright --
-    # including upward, since "no, 55 here" is as valid an instruction as "no, 35 here". Read
-    # after v_target is settled: releasing the override keys off the map's target moving.
-    # Held as a delta, so it rides on whatever the map decided above -- posted+offset, a ramp's
-    # fleet speed, a curve -- and moves with it when the road changes instead of pinning MAX to
-    # the last number dialled.
+    # The driver's own answer for this road, in both directions -- "no, 55 here" is as valid an
+    # instruction as "no, 35 here". Held as a delta against whatever the map decided above, so it
+    # rides on posted+offset, a ramp's fleet speed or a curve alike, and moves with them when the
+    # road changes instead of pinning MAX to the last number dialled.
+    #
+    # Riding on top rather than replacing also means the caps above survive an override: a curve
+    # still slows the car while the driver's correction stands, where the old absolute value
+    # discarded the curve, the ramp speed and the class ceiling the moment the stalk was touched.
     map_target = self.v_target
     self._update_override(v_cruise_driver, map_target)
     if self.has_override:
