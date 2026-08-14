@@ -41,8 +41,8 @@ the driver to pre-set 80 mph before pulling out of a residential street is not a
 the same manual work with extra steps.
 
 So the bound is TeslaMapAutoSpeedMax, set once, and the map moves freely underneath it. The stalk
-stays live as an override: moving it says "not this, that", and what the driver asks for stands
-until the road itself changes. The curve controller sits downstream and lowers the result further,
+is the trigger rather than a setpoint: engaging cruise hands the road to the map, and from there
+the map owns the number. The curve controller sits downstream and lowers the result further,
 which is what keeps a map limit from being carried into a corner it does not fit.
 """
 from enum import IntEnum
@@ -115,12 +115,15 @@ MIN_TARGET = 20 * CV.KPH_TO_MS
 # Only applied where there is a posted limit to measure against. On a ramp or an unmapped road
 # there is nothing to add 10mph to, and clamping to a stale number there is worse than not
 # clamping at all.
-OVER_LIMIT_CAP = 10 * CV.MPH_TO_MS
-
-# Bounds on the driver's delta. The band stops one stalk press from carrying an arbitrary
-# correction onto every later road, and the deadband is what "they put it back" looks like.
-OVERRIDE_MAX_DELTA = 15 * CV.MPH_TO_MS
-OVERRIDE_DEADBAND = 1 * CV.MPH_TO_MS
+# How far over the posted limit to target, by the limit itself. A flat +10 is most of the limit
+# again on a 25 zone, and the fleet does not drive it: over the whole log set, fleetSplineSpeed
+# runs +4.1 over a 25 (359k samples) and +4.7 over a 35 (669k), against +7.7 over a 65 (1.6M).
+# Two steps rather than a fitted curve -- the fleet signal carries traffic and intersections as
+# well as pace, so it reads -7.1 on a congested 30 and +0.4 on a 55, and is not clean enough to
+# justify anything finer.
+OFFSET_SPLIT = 40 * CV.MPH_TO_MS
+OFFSET_BELOW = 5 * CV.MPH_TO_MS
+OFFSET_ABOVE = 10 * CV.MPH_TO_MS
 
 # How far above the car's own speed the setpoint may always sit, m/s, regardless of slew in
 # either direction. Both limits need it and they need to agree on it. Raising: a setpoint the
@@ -156,15 +159,6 @@ class MapCruiseController:
     self.loss_timer = 0.0
     self.last_posted = 0.0
 
-    # The driver's correction, held as a delta against the map's own target rather than as an
-    # absolute speed. An absolute value stops meaning anything the moment the road changes: it
-    # pinned MAX to the number dialled on the previous zone and the map could then only trim it
-    # down through OVER_LIMIT_CAP, never raise it, so entering a 65 zone at 45 left MAX at 45.
-    # A delta keeps the driver's intent ("this road minus 5") while the road it applies to moves,
-    # which is what the car's own limit+n offset already does.
-    self.override_delta = 0.0
-    self.has_override = False
-    self.stalk_last = 0.0
 
   def set_config(self, enabled: bool, offset_ratio: float, use_car_offset: bool,
                  v_max: float, use_curve: bool = True, sync_cluster: bool = False) -> None:
@@ -186,11 +180,6 @@ class MapCruiseController:
     self.raise_timer = 0.0
     self.loss_timer = 0.0
     self.last_posted = 0.0
-    self.clear_override()
-
-  def clear_override(self) -> None:
-    self.override_delta = 0.0
-    self.has_override = False
 
   def _posted_limit(self, nav) -> tuple[float, str]:
     """Best posted limit available, and where it came from. 0.0 if none is trustworthy.
@@ -208,12 +197,21 @@ class MapCruiseController:
         return float(value), name
     return 0.0, 'none'
 
+  def _limit_offset(self, limit: float, nav) -> float:
+    """How far over this limit to sit. See OFFSET_SPLIT.
+
+    The car's own UI_userSpeedOffset is a ceiling rather than the value: it is one number for
+    every road, which is the thing being fixed here, but a driver who has set it *below* the
+    ladder has said something specific and gets it.
+    """
+    step = OFFSET_ABOVE if limit >= OFFSET_SPLIT else OFFSET_BELOW
+    if self.use_car_offset and nav.speedOffset > 0.0:
+      step = min(step, float(nav.speedOffset))
+    return step
+
   def _with_offset(self, limit: float, nav) -> float:
-    """Posted limit -> what to actually target. The car already knows the driver's answer to
-    this: UI_userSpeedOffset is the "limit + n" set in its own menu, so the default is to honour
-    it rather than invent a second place to configure the same thing."""
-    offset = float(nav.speedOffset) if self.use_car_offset else 0.0
-    return limit * self.offset_ratio + offset
+    """Posted limit -> what to actually target."""
+    return limit * self.offset_ratio + self._limit_offset(limit, nav)
 
   def _fleet_speed(self, nav) -> float:
     """What the fleet drives at this point on the road, 0.0 if nothing is reported.
@@ -231,53 +229,12 @@ class MapCruiseController:
       return float(nav.fleetMedianSpeed) * 1.15
     return 0.0
 
-  def _update_override(self, stalk: float, map_target: float) -> None:
-    """Track the driver overruling the automation with the stalk.
-
-    On this car the stalk is v_cruise itself, so a change in it is the only unambiguous statement
-    of intent available -- there is no separate "the driver disagrees" signal. What they dial in
-    stands for the road they dialled it on, and is dropped once the map's own target has moved
-    somewhere genuinely different, which is the next speed zone. Holding it forever would make one
-    stalk press disable the feature for the rest of the drive; dropping it on the next map wobble
-    would make the press look ignored.
-    """
-    if stalk <= 0.0:
-      self.stalk_last = stalk
-      return
-
-    # With cluster sync on, openpilot drives the stalk itself to make the car's own MAX number
-    # match this target, and those writes come back here as stalk movement.
-    #
-    # This used to ask whether the stalk had arrived at the target, within a detent. It walks
-    # there one detent at a time, so every step along the way sat far from the target and read as
-    # the driver disagreeing -- with the car's own echo. The first press of any correction pinned
-    # the target to wherever the walk had got to, and since the target was then equal to the
-    # stalk there was nothing left to correct: the map stopped moving the setpoint for the rest
-    # of the zone. Measured over a drive it left the map deciding the target for 2% of the time,
-    # with the stalk being pressed almost continuously to no effect.
-    #
-    # Direction is what actually distinguishes the two, and it does not require knowing who
-    # turned the stalk: an override means the driver disagrees with the map, and a stalk moving
-    # toward the map's target is not a disagreement with it. Moving away from it, or past it, is.
-    if self.sync_cluster and self.v_output > 0.0 and self.stalk_last > 0.0:
-      if abs(stalk - self.v_output) <= abs(self.stalk_last - self.v_output):
-        self.stalk_last = stalk
-        return
-
-    if self.stalk_last > 0.0 and abs(stalk - self.stalk_last) > 0.1:
-      delta = stalk - map_target if map_target > 0.0 else 0.0
-      self.override_delta = float(np.clip(delta, -OVERRIDE_MAX_DELTA, OVERRIDE_MAX_DELTA))
-      self.has_override = abs(self.override_delta) > OVERRIDE_DEADBAND
-    elif self.has_override and abs(self.override_delta) <= OVERRIDE_DEADBAND:
-      self.clear_override()
-    self.stalk_last = stalk
-
   def update(self, CS, v_ego: float, v_cruise_driver: float) -> float:
     """Returns the cruise target in m/s, or 0.0 when the map has nothing to say.
 
     This is the target, not a cap: the caller uses it in place of the stalk value, so it raises
     the setpoint as well as lowering it. Everything that bounds it is in here -- the configured
-    ceiling, the road-class cross-check, the dwell before any raise, and the driver's own override.
+    ceiling, the road-class cross-check, the dwell before any raise, and the per-limit offset.
     """
     nav = CS.navMap
     if not self.enabled or not nav.valid:
@@ -360,26 +317,20 @@ class MapCruiseController:
     # step over it.
     self.v_target = float(np.clip(target, MIN_TARGET, self.v_max))
 
-    # The driver's own answer for this road, in both directions -- "no, 55 here" is as valid an
-    # instruction as "no, 35 here". Held as a delta against whatever the map decided above, so it
-    # rides on posted+offset, a ramp's fleet speed or a curve alike, and moves with them when the
-    # road changes instead of pinning MAX to the last number dialled.
-    #
-    # Riding on top rather than replacing also means the caps above survive an override: a curve
-    # still slows the car while the driver's correction stands, where the old absolute value
-    # discarded the curve, the ramp speed and the class ceiling the moment the stalk was touched.
-    map_target = self.v_target
-    self._update_override(v_cruise_driver, map_target)
-    if self.has_override:
-      self.source = 'driver'
-      self.v_target = float(np.clip(map_target + self.override_delta, MIN_TARGET, self.v_max))
+    # The stalk is the trigger, not a setpoint. Engaging cruise is how the driver hands this
+    # road to the map; from there the map owns the number, and a later press is just how the
+    # cluster's own MAX gets moved. Treating a press as a standing override is what pinned MAX
+    # to the last number dialled and stopped it following the road at all.
 
-    # Last word, over the driver's too. See OVER_LIMIT_CAP: everything above this line can be
-    # walked somewhere the road does not support, and the posted limit is the only number here
-    # that comes from the road rather than from the loop.
-    if posted > 0.0 and self.v_target > posted + OVER_LIMIT_CAP:
-      self.v_target = float(max(MIN_TARGET, posted + OVER_LIMIT_CAP))
-      self.source = 'capped'
+    # Last word. Everything above this line can be walked somewhere the road does not support --
+    # a stale hold, a ramp's fleet speed carried past the merge -- and the posted limit is the
+    # only number here that comes from the road rather than from the loop. Same ladder as the
+    # target's own offset, so the cap cannot be looser than what the map would have asked for.
+    if posted > 0.0:
+      cap = posted + self._limit_offset(posted, nav)
+      if self.v_target > cap:
+        self.v_target = float(max(MIN_TARGET, cap))
+        self.source = 'capped'
 
     # Everything above has had its say; what is left is the ceiling for this stretch of road.
     # Deliberately taken before the slew: the slew is how the car gets there, not how fast the
