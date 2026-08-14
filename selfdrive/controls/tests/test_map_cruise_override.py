@@ -34,10 +34,10 @@ class FakeCS:
     self.navMap = nav
 
 
-def make(v_max_mph=80):
+def make(v_max_mph=80, use_curve=False):
   c = MapCruiseController()
   c.set_config(enabled=True, offset_ratio=1.0, use_car_offset=True,
-               v_max=v_max_mph * MPH, use_curve=False, sync_cluster=True)
+               v_max=v_max_mph * MPH, use_curve=use_curve, sync_cluster=True)
   return c
 
 
@@ -121,7 +121,7 @@ class TestCapsSurviveAnOverride:
   """Everything upstream of the override must still bind while a delta stands."""
 
   def test_curve_still_slows_with_an_override_standing(self):
-    c = make()
+    c = make(use_curve=True)
     settle(c, 45, 50)                     # driver 5 under the map's 55
     assert c.has_override
     nav = FakeNav(45, road_class_for(45))
@@ -132,7 +132,7 @@ class TestCapsSurviveAnOverride:
     assert c.v_ceiling / MPH < 45.0, "curve cap discarded while override stood"
 
   def test_ramp_fleet_speed_still_used_with_an_override(self):
-    c = make()
+    c = make(use_curve=True)
     settle(c, 45, 50)
     nav = FakeNav(45, road_class_for(45))
     nav.rampType = 1                      # RAMP_ON
