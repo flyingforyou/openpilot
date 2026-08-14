@@ -21,3 +21,15 @@ third_party/acados/*/t_renderer filter=lfs diff=lfs merge=lfs -text
 third_party/qt5/larch64/bin/lrelease filter=lfs diff=lfs merge=lfs -text
 third_party/qt5/larch64/bin/lupdate filter=lfs diff=lfs merge=lfs -text
 third_party/catch2/include/catch2/catch.hpp filter=lfs diff=lfs merge=lfs -text
+
+# These five are symlinks, not binaries. The rules above match them by extension, so what went
+# into LFS was each link's target string -- nineteen or twenty-two bytes naming the file next to
+# it. Those objects are not on the configured LFS server, so every checkout writes the pointer
+# text where the target should be and leaves a broken link; on the device it took scons down
+# twice, hunting a missing libqpOASES_e.so that was sitting right there under its versioned name.
+# Exempt them and the blob is the target string again, which is all a symlink ever needed to be.
+selfdrive/modeld/models/big_driving_policy.onnx -filter -diff -merge -text
+selfdrive/modeld/models/big_driving_vision.onnx -filter -diff -merge -text
+third_party/acados/larch64/lib/libqpOASES_e.so -filter -diff -merge -text
+third_party/acados/x86_64/lib/libqpOASES_e.so -filter -diff -merge -text
+third_party/acados/Darwin/lib/libqpOASES_e.dylib -filter -diff -merge -text
