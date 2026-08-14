@@ -53,6 +53,17 @@ def road_class_for(limit_mph):
   return 6
 
 
+def override_to(c, limit_mph, stalk_mph, v_ego_mph=40):
+  """Put a real override on the controller.
+
+  An override is a *change* in the stalk, not a value: on a fresh controller stalk_last is 0 and
+  the first frame only records where the stalk is. So sit on the map's own target first, then
+  move -- which is also what the driver actually does.
+  """
+  settle(c, limit_mph, limit_mph + CAR_OFFSET / MPH, v_ego_mph)
+  return settle(c, limit_mph, stalk_mph, v_ego_mph)
+
+
 def settle(c, limit_mph, stalk_mph, v_ego_mph=40, n=40):
   """Run enough frames for slews and dwells to finish, return the ceiling in mph."""
   cs = FakeCS(FakeNav(limit_mph, road_class_for(limit_mph)))
@@ -82,7 +93,9 @@ class TestOverrideFollowsTheRoad:
     # "5 under" has to keep meaning 5 under when the road changes, not 40 forever.
     c = make()
     settle(c, 45, 55)            # sitting on the map's own target, no delta
-    low = settle(c, 45, 50)      # driver dials 5 below it
+    assert not c.has_override
+    low = settle(c, 45, 50)      # driver dials 5 below it -- a change, so a real override
+    assert c.has_override
     assert low == pytest.approx(50, abs=1.5)
     moved = settle(c, 65, 50)    # same stalk value, new road
     assert moved > low + 5.0
@@ -91,6 +104,7 @@ class TestOverrideFollowsTheRoad:
     c = make()
     settle(c, 45, 55)
     settle(c, 45, 5)             # absurd dial-down
+    assert c.has_override
     assert abs(c.override_delta) <= OVERRIDE_MAX_DELTA + 1e-6
 
   def test_returning_to_the_map_clears_the_override(self):
@@ -122,7 +136,7 @@ class TestCapsSurviveAnOverride:
 
   def test_curve_still_slows_with_an_override_standing(self):
     c = make(use_curve=True)
-    settle(c, 45, 50)                     # driver 5 under the map's 55
+    override_to(c, 45, 50)                # driver 5 under the map's 55
     assert c.has_override
     nav = FakeNav(45, road_class_for(45))
     nav.fleetSplineSpeed = 30 * MPH       # fleet crawls the curve
@@ -133,7 +147,8 @@ class TestCapsSurviveAnOverride:
 
   def test_ramp_fleet_speed_still_used_with_an_override(self):
     c = make(use_curve=True)
-    settle(c, 45, 50)
+    override_to(c, 45, 50)
+    assert c.has_override
     nav = FakeNav(45, road_class_for(45))
     nav.rampType = 1                      # RAMP_ON
     nav.fleetSplineSpeed = 30 * MPH
@@ -149,7 +164,7 @@ class TestCapsSurviveAnOverride:
   def test_class_ceiling_still_rejects_an_impossible_limit(self):
     # A 65 limit reported on a residential class is not believed, override or not.
     c = make()
-    settle(c, 45, 50)
+    override_to(c, 45, 50)
     nav = FakeNav(65, 6)                  # local road, 30mph class ceiling
     cs = FakeCS(nav)
     for _ in range(60):
@@ -158,5 +173,6 @@ class TestCapsSurviveAnOverride:
 
   def test_over_limit_cap_beats_the_delta(self):
     c = make(v_max_mph=90)
-    settle(c, 65, 75)                     # +10 delta on a freeway
-    assert settle(c, 25, 75) <= (25 * MPH + OVER_LIMIT_CAP) / MPH + 1.0
+    override_to(c, 65, 80)                # driver above the map's own target on a freeway
+    assert c.has_override
+    assert settle(c, 25, 80) <= (25 * MPH + OVER_LIMIT_CAP) / MPH + 1.0
