@@ -12,6 +12,12 @@ from openpilot.selfdrive.controls.lib.carrot_t_follow import ramp_t_follow
 from openpilot.selfdrive.controls.lib.map_cruise import MapCruiseController
 from openpilot.selfdrive.selfdrived.events import Events
 
+# Must match COMFORT_BRAKE in longitudinal_mpc_carrot/long_mpc.py, which cannot be imported
+# here because it imports XState from this module. get_stopped_equivalence_factor() hardcodes
+# that constant while get_safe_obstacle_distance() takes ours, so the v_ego**2 and v_lead**2
+# halves of the desired-gap formula only cancel while the two agree.
+MAX_COMFORT_BRAKE = 2.5
+
 EventName = log.OnroadEvent.EventName
 LaneChangeState = log.LaneChangeState
 
@@ -237,7 +243,10 @@ class CarrotPlanner:
       self.cruiseMaxVals6 = self.params.get_float("CruiseMaxVals6") / 100.
     elif self.params_count == 40:
       self.stop_distance = self.params.get_float("StopDistanceCarrot") / 100.
-      self.comfortBrake = self.params.get_float("ComfortBrake") / 100.
+      # Above MAX_COMFORT_BRAKE the desired gap picks up a negative
+      # -v**2 * (1/(2*b) - 1/(2*MAX_COMFORT_BRAKE)) term that grows with the square of speed:
+      # at 3.2 that is -14m at 40mph and -48m at 74mph, i.e. a 6m target gap on the highway.
+      self.comfortBrake = min(self.params.get_float("ComfortBrake") / 100., MAX_COMFORT_BRAKE)
       self.j_lead_factor = self.params.get_float("JLeadFactor3") / 100.
       self.autoNaviSpeedDecelRate = float(self.params.get_int("AutoNaviSpeedDecelRate")) * 0.01
       self.aChangeCostStarting = self.params.get_float("AChangeCostStarting")
