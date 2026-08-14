@@ -9,7 +9,8 @@ from openpilot.common.filter_simple import MyMovingAverage
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_t_follow import ramp_t_follow
-from openpilot.selfdrive.controls.lib.map_cruise import MapCruiseController
+from openpilot.selfdrive.controls.lib.map_cruise import CURVE_LOOKAHEAD_T, MapCruiseController
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.selfdrived.events import Events
 
 # Both halves of the desired-gap formula are parameters now: ComfortBrake divides v_ego**2,
@@ -22,6 +23,8 @@ from openpilot.selfdrive.selfdrived.events import Events
 # matters is b1 <= b2, i.e. k >= 0: the moment b1 exceeds b2 the target gap starts *shrinking*
 # with the square of speed, which is what put the car 12m off a lead at 74mph on 2026-08-14.
 DEFAULT_COMFORT_BRAKE_2 = 2.5   # matches COMFORT_BRAKE in longitudinal_mpc_carrot/long_mpc.py
+
+_CURVE_MASK = np.asarray(ModelConstants.T_IDXS) <= CURVE_LOOKAHEAD_T
 
 EventName = log.OnroadEvent.EventName
 LaneChangeState = log.LaneChangeState
@@ -93,6 +96,27 @@ def _personality_int(personality) -> int:
 # itself uses -- steps 2/4/6 are the straight-line interpolation between them, not separately tuned.
 GAP_MULT_BPS = [1, 3, 5, 7]
 GAP_MULT_VALS = [1.0, 1.3, 1.6, 2.0]
+
+def _model_curvature(model) -> float:
+  """Tightest curvature the model sees within CURVE_LOOKAHEAD_T, 1/m. 0.0 if it cannot say.
+
+  Curvature is the yaw rate the path asks for divided by the speed it asks for. Taking the max
+  over the window rather than the value at the horizon's end is what makes this a cap on the
+  corner ahead rather than a reading of the one the car is already in.
+  """
+  try:
+    orientation_rate = np.asarray(model.orientationRate.z)
+    velocity = np.asarray(model.velocity.x)
+  except (AttributeError, ValueError):
+    return 0.0
+  n = min(len(orientation_rate), len(velocity), len(_CURVE_MASK))
+  if n < 2:
+    return 0.0
+  mask = _CURVE_MASK[:n]
+  if not mask.any():
+    return 0.0
+  return float(np.max(np.abs(orientation_rate[:n][mask]) / np.maximum(velocity[:n][mask], 1.0)))
+
 
 class CarrotPlanner:
   def __init__(self):
@@ -208,6 +232,7 @@ class CarrotPlanner:
     self.mapAutoSpeedRatio = 1.0
     self.mapAutoSpeedMax = 129.0
     self.mapAutoSpeedCurve = True
+    self.mapCurveLatAccel = 3.0
     self.syncClusterSpeed = False
 
   def _params_update(self):
@@ -262,10 +287,12 @@ class CarrotPlanner:
       self.mapAutoSpeedRatio = self.params.get_float("TeslaMapAutoSpeedRatio") / 100.
       self.mapAutoSpeedMax = self.params.get_float("TeslaMapAutoSpeedMax")
       self.mapAutoSpeedCurve = self.params.get_bool("TeslaMapAutoSpeedCurve")
+      self.mapCurveLatAccel = self.params.get_float("TeslaMapCurveLatAccel") / 100.
       self.syncClusterSpeed = self.params.get_bool("TeslaSyncClusterSpeed")
       self.map_cruise.set_config(self.mapAutoSpeed, self.mapAutoSpeedRatio,
                                  self.mapAutoSpeedMax * CV.KPH_TO_MS,
-                                 self.mapAutoSpeedCurve, self.syncClusterSpeed)
+                                 self.mapAutoSpeedCurve, self.syncClusterSpeed,
+                                 self.mapCurveLatAccel)
     elif self.params_count >= 100:
 
       self.params_count = 0
@@ -477,7 +504,8 @@ class CarrotPlanner:
     bound is TeslaMapAutoSpeedMax instead, applied inside the controller, and the stalk keeps
     working as an override there.
     """
-    v_map = self.map_cruise.update(sm['carState'], sm['carState'].vEgo, v_cruise_kph * CV.KPH_TO_MS)
+    v_map = self.map_cruise.update(sm['carState'], sm['carState'].vEgo,
+                                   v_cruise_kph * CV.KPH_TO_MS, _model_curvature(sm['modelV2']))
     # The ceiling rides alongside the target. 0 means the map has no opinion, and a cluster
     # showing MAX should keep showing whatever the stalk already says rather than be driven.
     self.cruiseCeiling = self.map_cruise.v_ceiling * CV.MS_TO_KPH

@@ -137,3 +137,63 @@ class TestCapsStillBind:
   def test_cap_uses_the_same_ladder(self):
     # A 25 zone may not be capped at 25+10 while its target is 25+5.
     assert settle(make(), 25, 85) <= (25 * MPH + OFFSET_BELOW) / MPH + 1.0
+
+
+class TestCurveLatAccelCap:
+  """min(fleet, curvature limit): each covers what the other misses."""
+
+  def _run(self, c, limit_mph, fleet_mph, radius_m, stalk=70, n=40):
+    nav = FakeNav(limit_mph, road_class_for(limit_mph))
+    nav.fleetSplineSpeed = fleet_mph * MPH
+    cs = FakeCS(nav)
+    curv = (1.0 / radius_m) if radius_m > 0 else 0.0
+    for _ in range(n):
+      c.update(cs, 40 * MPH, stalk * MPH, curv)
+    return c.v_ceiling / MPH
+
+  def make_curve(self, lat_accel=3.0):
+    c = MapCruiseController()
+    c.set_config(enabled=True, offset_ratio=1.0, v_max=90 * MPH,
+                 use_curve=True, sync_cluster=True, curve_lat_accel=lat_accel)
+    return c
+
+  def test_hairpin_curvature_beats_fleet(self):
+    # radius 31m, fleet 28.5mph -- the logged hairpin. sqrt(3.0 * 31) = 9.6m/s = 21.4mph.
+    assert self._run(self.make_curve(), 45, 28.5, 31) == pytest.approx(21.4, abs=1.5)
+
+  def test_straight_fleet_beats_curvature(self):
+    # No curvature to speak of: the limit is ~100mph and the fleet governs.
+    assert self._run(self.make_curve(), 45, 47.0, 3000) == pytest.approx(47.0, abs=1.5)
+
+  def test_neither_exceeds_the_map_target(self):
+    # Both inputs high -> the posted target still bounds it.
+    assert self._run(self.make_curve(), 45, 80.0, 3000) == pytest.approx(55, abs=1.0)
+
+  def test_off_defaults_to_fleet_only(self):
+    assert self._run(self.make_curve(lat_accel=0.0), 45, 28.5, 31) == pytest.approx(28.5, abs=1.5)
+
+  def test_lower_criterion_slows_more(self):
+    tight = self._run(self.make_curve(2.5), 45, 40.0, 100)
+    loose = self._run(self.make_curve(3.5), 45, 40.0, 100)
+    assert tight < loose
+
+  def test_on_ramp_is_not_slowed_by_curvature(self):
+    # Merging must not be held back; the ramp branch takes fleet outright.
+    c = self.make_curve()
+    nav = FakeNav(45, road_class_for(45))
+    nav.rampType = 1
+    nav.fleetSplineSpeed = 50 * MPH
+    cs = FakeCS(nav)
+    for _ in range(40):
+      c.update(cs, 45 * MPH, 70 * MPH, 1.0 / 31)
+    assert c.v_ceiling / MPH > 30.0
+
+  def test_off_ramp_does_get_the_curvature_cap(self):
+    c = self.make_curve()
+    nav = FakeNav(45, road_class_for(45))
+    nav.rampType = 2
+    nav.fleetSplineSpeed = 34.0 * MPH
+    cs = FakeCS(nav)
+    for _ in range(40):
+      c.update(cs, 40 * MPH, 70 * MPH, 1.0 / 31)
+    assert c.v_ceiling / MPH < 30.0

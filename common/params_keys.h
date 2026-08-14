@@ -210,6 +210,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // on ramps. This is the curve slowdown: the gateway's fleetSplineSpeed leads a curve by a
     // median 4s, so it arrives in time to be braked for. Only ever lowers the target.
     {"TeslaMapAutoSpeedCurve", {PERSISTENT, BOOL, "1"}},
+    {"TeslaMapCurveLatAccel", {PERSISTENT, INT, "300"}},
     {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "150"}},
     {"TeslaCoopMaxTorqueCNm", {PERSISTENT, INT, "250"}},
     // Drive the cluster's MAX number to match what openpilot is actually targeting, by

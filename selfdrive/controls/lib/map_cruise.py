@@ -121,6 +121,12 @@ MIN_TARGET = 20 * CV.KPH_TO_MS
 # Two steps rather than a fitted curve -- the fleet signal carries traffic and intersections as
 # well as pace, so it reads -7.1 on a congested 30 and +0.4 on a 55, and is not clean enough to
 # justify anything finer.
+# How far ahead the model's curvature is read for the curve cap, seconds. The fleet signal
+# leads a curve by a median 4.0s (158 of 173 segments), so matching it keeps the two inputs
+# talking about the same corner. Shorter and the cap arrives after the car is already in it;
+# longer and a bend well down the road holds the straight before it down.
+CURVE_LOOKAHEAD_T = 4.0
+
 OFFSET_SPLIT = 40 * CV.MPH_TO_MS
 OFFSET_BELOW = 5 * CV.MPH_TO_MS
 OFFSET_ABOVE = 10 * CV.MPH_TO_MS
@@ -147,6 +153,7 @@ class MapCruiseController:
     self.offset_ratio = 1.0
     self.use_curve = True
     self.sync_cluster = False
+    self.curve_lat_accel = 0.0
     self.v_max = 129 * CV.KPH_TO_MS
 
     self.state = MapCruiseState.off
@@ -160,13 +167,15 @@ class MapCruiseController:
 
 
   def set_config(self, enabled: bool, offset_ratio: float,
-                 v_max: float, use_curve: bool = True, sync_cluster: bool = False) -> None:
+                 v_max: float, use_curve: bool = True, sync_cluster: bool = False,
+                 curve_lat_accel: float = 0.0) -> None:
     if not enabled and self.enabled:
       self.reset()
     self.enabled = enabled
     self.offset_ratio = offset_ratio
     self.use_curve = use_curve
     self.sync_cluster = sync_cluster
+    self.curve_lat_accel = curve_lat_accel
     self.v_max = v_max
 
   def reset(self) -> None:
@@ -225,7 +234,23 @@ class MapCruiseController:
       return float(nav.fleetMedianSpeed) * 1.15
     return 0.0
 
-  def update(self, CS, v_ego: float, v_cruise_driver: float) -> float:
+  def _curve_speed(self, curvature: float) -> float:
+    """Fastest this corner may be taken, m/s, or 0.0 when the criterion is off.
+
+    A corner of radius R taken at v asks v**2/R of the tyres sideways. Bounding that at
+    curve_lat_accel gives sqrt(bound / curvature) as the speed it may be taken at. The bound
+    sits near this car's measured p99 lateral acceleration (median 0.40, p99 3.43, p99.9 4.54,
+    steering's own limit 5.0), so it binds on hairpins and essentially nowhere else.
+
+    This exists because the fleet speed cannot see a hairpin: the spline is a segment average,
+    so the tightest point is flattened. Measured at radius 31m the fleet said 28.5mph, this says
+    21.4, and the car was actually driven through at 17.3.
+    """
+    if self.curve_lat_accel <= 0.0 or curvature <= 1e-5:
+      return 0.0
+    return float(np.sqrt(self.curve_lat_accel / curvature))
+
+  def update(self, CS, v_ego: float, v_cruise_driver: float, curvature: float = 0.0) -> float:
     """Returns the cruise target in m/s, or 0.0 when the map has nothing to say.
 
     This is the target, not a cap: the caller uses it in place of the stalk value, so it raises
@@ -303,10 +328,23 @@ class MapCruiseController:
     # lead is in time rather than distance -- 3.5s/63m at 40mph against 4.0s/100m at 56mph --
     # so it does not shrink at speed, and 4s covers even the largest observed deficit (11.1mph)
     # at a comfortable 1.25 m/s^2. Slewing it is still SLEW_DOWN's job, not this line's.
-    if self.use_curve and ramp not in (RAMP_ON, RAMP_OFF) and fleet > 0.0 and fleet < target:
-      target = fleet
-      self.state = MapCruiseState.curve
-      self.source = 'curve'
+    # Two inputs, whichever is lower. They miss different things: the fleet carries traffic,
+    # lights and everything else the map cannot see but flattens the tightest point of a bend;
+    # the curvature limit is the bend itself but says nothing about why else a road is slow. On
+    # a straight the curvature limit reads around 100mph and the fleet governs; in a hairpin it
+    # is the fleet that is too high and the curvature governs.
+    #
+    # Skipped on an on-ramp only. Merging must not be slowed, but an off-ramp is exactly where
+    # the fleet's segment average is worst -- 19 logged exits needed a median 24.3mph against a
+    # fleet that bottomed out at 33.6.
+    if self.use_curve and ramp != RAMP_ON:
+      caps = [c for c in (fleet, self._curve_speed(curvature)) if c > 0.0]
+      if caps:
+        cap = min(caps)
+        if cap < target:
+          target = cap
+          self.state = MapCruiseState.curve
+          self.source = 'curve'
 
     # The configured ceiling is the only thing standing between the map and the throttle, so it
     # is applied to the target itself rather than anywhere further down, where a later rule could
