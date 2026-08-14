@@ -105,11 +105,6 @@ MIN_CONFIDENCE = 60
 # lead car or the curve controller doing the work -- not a speed limit.
 MIN_TARGET = 20 * CV.KPH_TO_MS
 
-# How far the map's own target must move before a driver's stalk override is released, m/s.
-# Roughly one speed-limit step: enough that the next zone drops it, little enough that the map
-# jittering within a zone does not.
-OVERRIDE_RELEASE = 5 * CV.MPH_TO_MS
-
 # Hard ceiling over the posted limit, applied last and to everything -- the map's own target, a
 # ramp's fleet speed, and the driver's stalk alike. It exists because the pieces above it can be
 # argued into a number the road cannot justify: with cluster sync on, openpilot's own stalk
@@ -121,6 +116,11 @@ OVERRIDE_RELEASE = 5 * CV.MPH_TO_MS
 # there is nothing to add 10mph to, and clamping to a stale number there is worse than not
 # clamping at all.
 OVER_LIMIT_CAP = 10 * CV.MPH_TO_MS
+
+# Bounds on the driver's delta. The band stops one stalk press from carrying an arbitrary
+# correction onto every later road, and the deadband is what "they put it back" looks like.
+OVERRIDE_MAX_DELTA = 15 * CV.MPH_TO_MS
+OVERRIDE_DEADBAND = 1 * CV.MPH_TO_MS
 
 # How far above the car's own speed the setpoint may always sit, m/s, regardless of slew in
 # either direction. Both limits need it and they need to agree on it. Raising: a setpoint the
@@ -156,8 +156,14 @@ class MapCruiseController:
     self.loss_timer = 0.0
     self.last_posted = 0.0
 
-    self.override = 0.0        # driver's stalk value, while it is standing
-    self.override_ref = 0.0    # what the map wanted when they overrode it
+    # The driver's correction, held as a delta against the map's own target rather than as an
+    # absolute speed. An absolute value stops meaning anything the moment the road changes: it
+    # pinned MAX to the number dialled on the previous zone and the map could then only trim it
+    # down through OVER_LIMIT_CAP, never raise it, so entering a 65 zone at 45 left MAX at 45.
+    # A delta keeps the driver's intent ("this road minus 5") while the road it applies to moves,
+    # which is what the car's own limit+n offset already does.
+    self.override_delta = 0.0
+    self.has_override = False
     self.stalk_last = 0.0
 
   def set_config(self, enabled: bool, offset_ratio: float, use_car_offset: bool,
@@ -183,8 +189,8 @@ class MapCruiseController:
     self.clear_override()
 
   def clear_override(self) -> None:
-    self.override = 0.0
-    self.override_ref = 0.0
+    self.override_delta = 0.0
+    self.has_override = False
 
   def _posted_limit(self, nav) -> tuple[float, str]:
     """Best posted limit available, and where it came from. 0.0 if none is trustworthy.
@@ -225,7 +231,7 @@ class MapCruiseController:
       return float(nav.fleetMedianSpeed) * 1.15
     return 0.0
 
-  def _update_override(self, stalk: float) -> None:
+  def _update_override(self, stalk: float, map_target: float) -> None:
     """Track the driver overruling the automation with the stalk.
 
     On this car the stalk is v_cruise itself, so a change in it is the only unambiguous statement
@@ -259,9 +265,10 @@ class MapCruiseController:
         return
 
     if self.stalk_last > 0.0 and abs(stalk - self.stalk_last) > 0.1:
-      self.override = stalk
-      self.override_ref = self.v_target
-    elif self.override > 0.0 and abs(self.v_target - self.override_ref) > OVERRIDE_RELEASE:
+      delta = stalk - map_target if map_target > 0.0 else 0.0
+      self.override_delta = float(np.clip(delta, -OVERRIDE_MAX_DELTA, OVERRIDE_MAX_DELTA))
+      self.has_override = abs(self.override_delta) > OVERRIDE_DEADBAND
+    elif self.has_override and abs(self.override_delta) <= OVERRIDE_DEADBAND:
       self.clear_override()
     self.stalk_last = stalk
 
@@ -356,10 +363,14 @@ class MapCruiseController:
     # The driver's own answer, if they have given one for this road, replaces it outright --
     # including upward, since "no, 55 here" is as valid an instruction as "no, 35 here". Read
     # after v_target is settled: releasing the override keys off the map's target moving.
-    self._update_override(v_cruise_driver)
-    if self.override > 0.0:
+    # Held as a delta, so it rides on whatever the map decided above -- posted+offset, a ramp's
+    # fleet speed, a curve -- and moves with it when the road changes instead of pinning MAX to
+    # the last number dialled.
+    map_target = self.v_target
+    self._update_override(v_cruise_driver, map_target)
+    if self.has_override:
       self.source = 'driver'
-      self.v_target = float(np.clip(self.override, MIN_TARGET, self.v_max))
+      self.v_target = float(np.clip(map_target + self.override_delta, MIN_TARGET, self.v_max))
 
     # Last word, over the driver's too. See OVER_LIMIT_CAP: everything above this line can be
     # walked somewhere the road does not support, and the posted limit is the only number here
