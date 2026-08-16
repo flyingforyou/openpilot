@@ -9,6 +9,7 @@ from openpilot.common.realtime import DT_DMON
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.stat_live import RunningStatFilter
+from openpilot.common.swaglog import cloudlog
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 
 AlertLevel = log.DriverMonitoringState.AlertLevel
@@ -167,8 +168,45 @@ class DriverMonitoring:
     self.dcam_uncertain_cnt = 0
     self.dcam_reset_cnt = 0
 
+    self.params = Params()
+    self.bypass = False
+    self.bypass_logged = False
+    self.frame = 0
+    self._refresh_bypass()
+
     self._reset_awareness()
     self._set_policy(MonitoringPolicy.vision)
+
+  def _refresh_bypass(self) -> None:
+    was = self.bypass
+    self.bypass = bool(self.params.get("DriverMonitorBypass", return_default=True))
+    if self.bypass and not self.bypass_logged:
+      cloudlog.warning("driver monitoring bypassed: attention is not being monitored")
+      self.bypass_logged = True
+    if was and not self.bypass:
+      self.bypass_logged = False
+
+  def _apply_bypass(self) -> None:
+    """Report an attentive driver whatever the model saw.
+
+    Setting only face_detected/driver_distracted/awareness isn't enough: _update_events also
+    alerts off driver_distraction_filter (certainly_distracted) and hi_stds (maybe_distracted),
+    and awareness only holds while pose.low_std. It escalates on its own counters too, so
+    alert_3_cnt and no_response_cnt have to be held down or the lockout arrives regardless.
+    Clear the lot, or alerts still fire.
+
+    The model and driver camera keep running, so recording is unaffected -- this suppresses the
+    assessment, not the capture, and saves no power.
+    """
+    self.face_detected = True
+    self.driver_distracted = False
+    self.driver_distraction_filter.x = 0.
+    self.hi_stds = 0
+    self.is_model_uncertain = False
+    self.pose.low_std = True
+    self.awareness = self.last_vision_awareness = self.last_wheeltouch_awareness = 1.
+    self.alert_3_cnt = 0
+    self.no_response_cnt = 0
 
   def _reset_awareness(self):
     self.awareness = 1.
@@ -306,6 +344,14 @@ class DriverMonitoring:
       self.hi_stds += 1
     elif self.face_detected and self.pose.low_std:
       self.hi_stds = 0
+
+    # Last thing before the events are judged, so nothing between here and there can put a
+    # distracted verdict back. Re-read once a second rather than every frame: it is a param.
+    self.frame += 1
+    if self.frame % int(1.0 / DT_DMON) == 0:
+      self._refresh_bypass()
+    if self.bypass:
+      self._apply_bypass()
 
   def _update_events(self, driver_engaged, op_engaged, lowspeed, wrong_gear):
     self.alert_level = AlertLevel.none
