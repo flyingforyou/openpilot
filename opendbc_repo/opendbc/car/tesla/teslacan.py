@@ -31,8 +31,23 @@ class TeslaCAN:
 
     return self.packer.make_can_msg("DAS_steeringControl", CANBUS.party, values)
 
-  def create_longitudinal_command(self, acc_state, accel, counter, v_ego, active, gas_pressed):
-    set_speed = min(max(v_ego + accel, 0) * CV.MS_TO_KPH, 400)
+  def create_longitudinal_command(self, acc_state, accel, counter, v_ego, active, gas_pressed, hud_set_speed=0.0):
+    from opendbc.car.interfaces import V_CRUISE_MAX
+
+    set_speed = max(v_ego * CV.MS_TO_KPH, 0)
+    if active:
+      # Zero is how this car is told to slow down, not a placeholder for a display value: the DI
+      # works to the target it is given, and the accel command only bounds how hard. Sending the
+      # real cruise target while decelerating leaves the car with no reason to brake, which is
+      # what stopped deceleration working entirely. So the decel case is decided first and is
+      # not negotiable; hud_set_speed only ever fills in the cruising case, where the target is
+      # genuinely what the car should be driving to.
+      if accel < 0:
+        set_speed = 0
+      elif hud_set_speed > 0:
+        set_speed = hud_set_speed * CV.MS_TO_KPH
+      else:
+        set_speed = V_CRUISE_MAX
 
     if gas_pressed:
       self.jerk_upper = self.jerk_lower = 0.0

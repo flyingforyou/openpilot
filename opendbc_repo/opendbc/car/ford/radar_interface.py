@@ -113,7 +113,7 @@ class RadarInterface(RadarInterfaceBase):
     else:
       raise ValueError(f"Unsupported radar: {self.radar}")
 
-  def update(self, can_strings):
+  def update(self, can_strings, v_ego: float = 0.0):
     if self.rcp is None:
       return super().update(None)
 

@@ -39,7 +39,7 @@ class RadarInterface(RadarInterfaceBase):
     self.trigger_msg = self.RADAR_B_MSGS[-1]
     self.updated_messages = set()
 
-  def update(self, can_strings):
+  def update(self, can_strings, v_ego: float = 0.0):
     if self.rcp is None:
       return super().update(None)
 

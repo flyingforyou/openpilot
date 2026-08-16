@@ -12,6 +12,18 @@ BOSCH_NUM_POINTS = 32
 BOSCH_RADAR_POINT_FRQ = 8
 BOSCH_TRIGGER_MSG = 878
 
+VehicleClass = structs.RadarData.RadarPoint.VehicleClass
+# The Bosch radar's own per-point classifier. Raw values above 4 are reserved/unused in the
+# generator's VAL_ table (opendbc/dbc/generator/tesla/_radar_common.py) and fold to unknown here
+# rather than raising, since a reserved value showing up is a decode question, not a crash.
+BOSCH_CLASS_MAP = {
+  0: VehicleClass.unknown,
+  1: VehicleClass.fourWheel,
+  2: VehicleClass.twoWheel,
+  3: VehicleClass.pedestrian,
+  4: VehicleClass.constructionElement,
+}
+
 
 def _is_bosch_radar(CP):
   return CP.carFingerprint in BOSCH_RADAR_CARS
@@ -60,9 +72,9 @@ class RadarInterface(RadarInterfaceBase):
     self.rcp = get_radar_can_parser(CP)
     self.last_radar_data: structs.RadarData | None = None
 
-  def update(self, can_strings):
+  def update(self, can_strings, v_ego: float = 0.0):
     if self.radar_off_can or self.rcp is None:
-      return super().update(None)
+      return super().update(None, v_ego)
 
     vls = self.rcp.update(can_strings)
     self.updated_messages.update(vls)
@@ -73,13 +85,13 @@ class RadarInterface(RadarInterfaceBase):
         return self.last_radar_data
       return None
 
-    rr = self._update(self.updated_messages)
+    rr = self._update(self.updated_messages, v_ego)
     self.updated_messages.clear()
     self.last_radar_data = rr
 
     return rr
 
-  def _update(self, updated_messages):
+  def _update(self, updated_messages, v_ego: float = 0.0):
     ret = structs.RadarData()
     if self.rcp is None:
       return ret
@@ -124,6 +136,24 @@ class RadarInterface(RadarInterfaceBase):
       self.pts[i].dRel = msg_a['LongDist']
       self.pts[i].yRel = msg_a['LatDist']
       self.pts[i].vRel = msg_a['LongSpeed']
+      self.pts[i].aRel = msg_a['LongAccel']
+      self.pts[i].yvRel = msg_b['LatSpeed']
+      self.pts[i].measured = bool(msg_a['Meas'])
+      # One forward radar on this car; vLead/aLead/jLead are filled by apply_lead_filtering.
+      self.pts[i].radarSource = structs.RadarData.RadarPoint.RadarSource.frontRadar
+
+      # Continental's _B message has no Class/ProbClass/Length signals at all -- reading them
+      # there would KeyError, not just return zero.
+      if self.bosch_radar:
+        self.pts[i].vehicleClass = BOSCH_CLASS_MAP.get(int(msg_b['Class']), VehicleClass.unknown)
+        self.pts[i].classProb = float(msg_b['ProbClass']) / 100.0
+        self.pts[i].length = float(msg_b['Length'])
+
+    # Before the points are handed out, and once per fresh radar frame rather than once per
+    # call: between Bosch triggers update() replays last_radar_data, and filtering the same
+    # points again would run the differentiator over a standstill and decay every lead's
+    # acceleration toward zero.
+    self.apply_lead_filtering(v_ego)
 
     ret.points = list(self.pts.values())
     return ret

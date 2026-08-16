@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from enum import Enum, IntFlag
-from opendbc.car import Bus, CarSpecs, DbcDict, PlatformConfig, Platforms
-from opendbc.car.lateral import AngleSteeringLimitsVM
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, CarSpecs, DbcDict, PlatformConfig, Platforms
+from opendbc.car.lateral import AVERAGE_ROAD_ROLL, AngleSteeringLimitsVM
 from opendbc.car.structs import CarParams, CarState
 from opendbc.car.docs_definitions import CarDocs, CarFootnote, CarHarness, CarParts, Column
 from opendbc.car.fw_query_definitions import FwQueryConfig, Request, StdQueries
@@ -179,17 +179,57 @@ GEAR_MAP = {
 }
 
 
+# STW_ACTN_RQ.SpdCtrlLvr_Stat, the cruise stalk. The DI applies a step on the release edge --
+# press then IDLE -- and moves its own setpoint, which is what the cluster draws as MAX and what
+# DI_state.DI_digitalSpeed reports back. Verified against the logs: DN_2ND took 70->65->60 and
+# UP_2ND took 60->65 while the car itself was doing 60-64mph throughout.
+#
+# 1 and 2 are FWD and RWD on the same field. On Model S/X this stalk is also the gear selector,
+# so those two values are never sent and panda refuses them outright.
+class StalkLever:
+  IDLE = 0
+  UP_1 = 16    # UP_1ST,  +1 mph
+  DOWN_1 = 32  # DN_1ST,  -1 mph
+  UP_5 = 4     # UP_2ND,  +5 mph
+  DOWN_5 = 8   # DN_2ND,  -5 mph
+
+
+# Add extra tolerance for average banked road since safety doesn't have the roll
+AVERAGE_ROAD_ROLL = 0.06  # ~3.4 degrees, 6% superelevation. higher actual roll lowers lateral acceleration
+
+
 class CarControllerParams:
   ANGLE_LIMITS: AngleSteeringLimitsVM = AngleSteeringLimitsVM(
     # EPAS faults above this angle
     360,  # deg
+
+    # Vehicle model angle limits.
+    # Deliberately past ISO 11270 (3.0 m/s^2) + the road-roll tolerance (~3.6): today's drive
+    # data showed openpilot topping out around 100 deg of a car that hits 480 by hand, all of it
+    # governed by this number (curvature = accel / speed^2) rather than the 360 deg EPAS-fault
+    # angle limit above. Raising it tightens intersection turns, but it is a speed-independent
+    # multiplier -- it also raises the highway-speed steering-authority ceiling on a tall SUV.
+    # Must match opendbc/safety/lateral.h's steer_angle_cmd_checks_vm, which is the real backstop
+    # -- panda clips anything past its own compiled value regardless of what this asks for.
+    MAX_LATERAL_ACCEL=5.0,  # m/s^2
+    MAX_LATERAL_JERK=3.0 + (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_ROAD_ROLL),  # ~3.6 m/s^3
+
     # limit angle rate to both prevent a fault and for low speed comfort (~12 mph rate down to 0 mph)
     MAX_ANGLE_RATE=5,  # deg/20ms frame, EPS faults at 12 at a standstill
   )
 
   STEER_STEP = 2  # Angle command is sent at 50 Hz
   ACCEL_MAX = 2.0    # m/s^2
+  # ISO 15622:2018's ACC deceleration ceiling, rounded to a whole DAS_control step (0.04 m/s^2).
   ACCEL_MIN = -3.48  # m/s^2
+  # HW1/HW2 cars brake harder than the ISO number. Measured over six drives on a Model X HW1:
+  # with the driver's foot off the pedal the factory ACC asks down to -4.52 m/s^2 on DAS_accelMin.
+  # -4.2 is the nearest whole DAS_control step (0.04) below that, so this stays inside what the
+  # factory system requests of the car on its own.
+  # openpilot #22148 introduced the ISO limit and exempted Honda Nidec and GM in the same commit;
+  # this is the same exemption, backed by this car's own behaviour. Model 3/Y stay at the ISO
+  # value -- nothing has been measured there, and their panda mode still enforces it.
+  ACCEL_MIN_LEGACY = -4.2  # m/s^2, DAS_control raw 270
   JERK_LIMIT_MAX = 4.9  # m/s^3, ACC faults at 5.0
   JERK_LIMIT_MIN = -4.9  # m/s^3, ACC faults at 5.0
   JERK_RAMP_RATE = JERK_LIMIT_MAX * 0.002  # m/s^3 per control step, for smooth gas override
@@ -206,12 +246,20 @@ class TeslaSafetyFlags(IntFlag):
   FLAG_HW1 = 8
   FLAG_HW2 = 16
   FLAG_HW3 = 32
+  STOCK_AUTOPARK = 64
+  CARS_AS_TRUCKS = 128
+  SYNC_CLUSTER_SPEED = 256
 
 
 class TeslaFlags(IntFlag):
   LONG_CONTROL = 1
   FSD_14 = 2
   MISSING_DAS_SETTINGS = 4
+  # 8 rather than the next free bit in this enum: TeslaLegacyParams shares CP.flags and already
+  # claims 1, so the two enums have to be read as one bit space.
+  COOP_STEER = 8
+  CARS_AS_TRUCKS = 16
+  SYNC_CLUSTER_SPEED = 32
 
 
 DBC = CAR.create_dbc_map()

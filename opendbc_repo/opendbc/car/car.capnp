@@ -195,6 +195,13 @@ struct CarState {
   invalidLkasSetting @55 :Bool;    # stock LKAS is incorrectly configured (i.e. on or off)
   stockAeb @30 :Bool;
   stockLkas @59 :Bool;
+  # The factory ACC's own commanded band, decoded straight off the AP module's own bus (bus 2 on
+  # HW1) rather than off anything forwarded to the car -- so it is populated every cycle
+  # regardless of who currently owns DAS_control, openpilotLongitudinalControl, or the
+  # forwarding gate. 5.44 m/s^2 (raw 511) is the message's own SNA value: no reading yet, not a
+  # request to accelerate that hard. Legacy Tesla only for now; not decoded for other platforms.
+  stockAccelMin @62 :Float32;
+  stockAccelMax @63 :Float32;
   stockFcw @31 :Bool;
   espDisabled @32 :Bool;
   accFaulted @42 :Bool;
@@ -229,12 +236,45 @@ struct CarState {
   fuelGauge @41 :Float32; # battery or fuel tank level from [0.0, 1.0]
   charging @43 :Bool;
 
+  # The car's own navigation/map view of the road ahead, decoded off the gateway's map messages.
+  # Legacy Tesla only; left at its zero value on every other platform, and `valid` is the flag
+  # that says whether any of it means anything.
+  navMap @64 :NavMapData;
+
   struct WheelSpeeds {
     # optional wheel speeds
     fl @0 :Float32;
     fr @1 :Float32;
     rl @2 :Float32;
     rr @3 :Float32;
+  }
+
+  # Tesla legacy: UI_driverAssistRoadSign (0x238, multiplexed on UI_roadSign),
+  # UI_driverAssistMapData (0x3C8) and UI_gpsVehicleSpeed (0x2F8), all on the party bus.
+  struct NavMapData {
+    valid @0 :Bool;  # the map messages are actually arriving
+
+    # Posted limits, m/s. 0 means "this source has no value for where we are", which is a real
+    # and common state on ramps and unmapped roads -- it is not a request to stop.
+    baseSpeedLimit @1 :Float32;   # UI_baseMapSpeedLimitMPS, the freshest of the three
+    mapSpeedLimit @2 :Float32;    # UI_mapSpeedLimit, banded (LESS_OR_EQ_n) and slow to move
+    mppSpeedLimit @3 :Float32;    # UI_mppSpeedLimit
+    fusedSpeedLimit @4 :Float32;  # DAS_fusedSpeedLimit, the AP module's vision+map fusion
+
+    # What the fleet actually drives here. The spline pair is indexed by position along the
+    # current road spline, so it keeps moving through a ramp where the posted limit cannot;
+    # the quartiles are per-segment aggregates and step rather than sweep.
+    fleetSplineSpeed @5 :Float32;       # m/s, UI_meanFleetSplineSpeedMPS
+    fleetSplineAccel @6 :Float32;       # m/s^2, UI_meanFleetSplineAccelMPS2
+    fleetMedianSpeed @7 :Float32;       # m/s, UI_medianFleetSpeedMPS
+    fleetTopQuartileSpeed @8 :Float32;  # m/s, UI_topQrtlFleetSpeedMPS
+
+    roadClass @9 :UInt8;   # 1 freeway, 4 arterial, 5 collector, 6 local. 0 = unknown.
+    rampType @10 :UInt8;   # 0 none, 1 on-ramp, 2 off-ramp
+    splineConfidence @11 :UInt8;  # 0-100, UI_splineLocConfidence
+    gpsRoadMatch @12 :Bool;
+    navRouteActive @13 :Bool;
+    speedOffset @14 :Float32;  # driver's configured limit offset, m/s (UI_userSpeedOffset)
   }
 
   struct CruiseState {
@@ -244,6 +284,10 @@ struct CarState {
     available @2 :Bool;
     standstill @4 :Bool;
     nonAdaptive @5 :Bool;
+
+    # 0 means unavailable or not implemented.
+    # Tesla legacy (HW1/HW2/HW3) uses values 1 through 7.
+    gapAdjust @7 :UInt8;
 
     deprecated :group {
       speedOffset @3 :Float32;
@@ -315,14 +359,51 @@ struct RadarData @0x888ad6581cf0aacb {
   struct RadarPoint {
     # all fields required
     trackId @0 :UInt64;  # no trackId reuse
-    dRel @1 :Float32;    # m from the front bumper of the car
-    yRel @2 :Float32;    # m
-    vRel @3 :Float32;    # m/s
 
-    deprecated :group {
-      aRel @4 :Float32; # m/s^2
-      yvRel @5 :Float32; # m/s
-      measured @6 :Bool;  # measurement VS estimate flag
+    # these 3 are the minimum required
+    dRel @1 :Float32; # m from the front bumper of the car
+    yRel @2 :Float32; # m
+    vRel @3 :Float32; # m/s
+
+    # these are optional and valid if they are not NaN
+    aRel @4 :Float32; # m/s^2
+    yvRel @5 :Float32; # m/s
+
+    # some radars flag measurements VS estimates
+    measured @6 :Bool;
+
+    # Absolute lead motion, filtered in the radar interface rather than derived per-track in
+    # radard. Ported from CarrotPilot: aRel is NaN or noisy on most radars, so vLead is filtered
+    # and differentiated there, where the raw point and its measured flag are still in hand.
+    # jLead is what the longitudinal MPC reads to tell a lead easing off from one braking hard.
+    vLead @7 :Float32; # m/s
+    aLead @8 :Float32; # m/s^2
+    jLead @9 :Float32; # m/s^3
+    radarSource @10 :RadarSource;
+
+    # What the radar itself classifies this return as, where it reports one -- decoded from the
+    # Tesla Bosch radar's own per-point Class signal. unknown is both "the radar doesn't know"
+    # and "this radar doesn't report a class at all", which is every radar except that one.
+    vehicleClass @11 :VehicleClass;
+    classProb @12 :Float32;  # 0.0-1.0, 0 if not reported
+    length @13 :Float32;  # m, rough object length where the radar reports one, 0 otherwise
+
+    # Which sensor produced the point. This car has one forward Bosch radar, so everything is
+    # frontRadar; the rest are carried so the field means the same thing across ports.
+    enum RadarSource {
+      frontRadar @0;
+      scc @1;
+      corner235 @2;
+      corner180 @3;
+      corner430 @4;
+    }
+
+    enum VehicleClass {
+      unknown @0;
+      fourWheel @1;
+      twoWheel @2;
+      pedestrian @3;
+      constructionElement @4;
     }
   }
 
@@ -408,6 +489,11 @@ struct CarControl {
     rightLaneDepart @8: Bool;
     leftLaneDepart @9: Bool;
     leadDistanceBars @10: Int8;  # 1-3: 1 is closest, 3 is farthest. some ports may utilize 2-4 bars instead
+
+    # m/s. The ceiling for this stretch of road rather than the moment's target -- what a cluster
+    # should show as MAX. Separate from setSpeed because on some cars that field is a control
+    # signal and has to keep carrying the value the car is actually being driven to.
+    cruiseCeiling @11: Float32;
 
     # not used with the dash, TODO: separate structs for dash UI and device UI
     audibleAlert @5: AudibleAlert;
@@ -510,6 +596,12 @@ struct CarParams {
   steerControlType @34 :SteerControlType;
   radarUnavailable @35 :Bool; # True when radar objects aren't visible on CAN or aren't parsed out
   stopAccel @60 :Float32; # Required acceleration to keep vehicle stationary
+  # Hardest deceleration the planner may ask this car for, m/s^2. Zero means "unset": use the
+  # ISO 15622:2018 ACC limit that interfaces.ACCEL_MIN carries. Ports whose car is known to
+  # brake harder state it here rather than being held to another car's number.
+  # stoppingDecelRate, startAccel and startingState were retired into the deprecated group on
+  # 0.11.2 and stay there; only this one is new.
+  minAccel @78 :Float32;
 
   steerActuatorDelay @36 :Float32; # Steering wheel actuator delay in seconds
   longitudinalActuatorDelay @58 :Float32; # Gas/Brake actuator delay in seconds

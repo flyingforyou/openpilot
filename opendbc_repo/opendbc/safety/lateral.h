@@ -352,8 +352,11 @@ bool steer_angle_cmd_checks_vm(int desired_angle, bool steer_control_enabled, co
   // This check uses a simple vehicle model to allow for constant lateral acceleration and jerk limits across all speeds.
   // TODO: remove the inaccurate breakpoint angle limiting function above and always use this one
 
-  // Highway curves are rolled in the direction of the turn, add tolerance to compensate
-  static const float MAX_LATERAL_ACCEL = ISO_LATERAL_ACCEL + (EARTH_G * AVERAGE_ROAD_ROLL);  // ~3.6 m/s^2
+  // Only tesla.h and tesla_legacy.h call this check. Deliberately past ISO 11270 (3.0 m/s^2)
+  // + the road-roll tolerance (~3.6) for tighter low-speed turns -- must match
+  // opendbc/car/tesla/values.py's CarControllerParams.ANGLE_LIMITS.MAX_LATERAL_ACCEL, which is
+  // what actually asks for it; this is the real backstop and clips anything past it regardless.
+  static const float MAX_LATERAL_ACCEL = 5.0;  // m/s^2
   // Lower than ISO 11270 lateral jerk limit, which is 5.0 m/s^3
   static const float MAX_LATERAL_JERK = 3.0 + (EARTH_G * AVERAGE_ROAD_ROLL);  // ~3.6 m/s^3
 
