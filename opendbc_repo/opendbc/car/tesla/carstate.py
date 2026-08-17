@@ -51,6 +51,31 @@ def decode_tesla_gap(raw_gap: int) -> int:
   return TESLA_DTR_RAW_TO_GAP.get(int(raw_gap), 0)
 
 
+def snap_base_speed_limit(v_ms: float, units_kph: bool) -> float:
+  """UI_baseMapSpeedLimitMPS -> m/s on the grid a posted limit can actually sit on.
+
+  This is the only limit that arrives as a raw m/s number -- 8 bits at 0.25 m/s -- and the gateway
+  truncates rather than rounds, so every value lands up to 0.25 m/s (0.56 mph) *below* the real
+  limit. Measured: a 35 comes over as 34.673, a 40 as 39.706, a 45 as 44.739, a 65 as 64.871. The
+  other three sources are quantised in the display unit and are exact.
+
+  Left alone that fraction is not cosmetic. It drops a 40 mph road under OFFSET_SPLIT so the
+  offset ladder pays +5 instead of +10 -- a 5 mph loss on the most common road of the drive -- and
+  the cluster stalk's own 1 mph deadband then settles either side of it and stays, which is why
+  the same road showed 44 on one pass and 45 on the next.
+
+  Posted limits are multiples of five in whichever unit the car displays, which is also the
+  quantum of the other three sources, so snapping to that grid is what puts base back on the
+  number the sign actually carries. The largest correction possible is half a step, far short of
+  the 5-unit spacing, so this cannot turn one limit into its neighbour.
+  """
+  if v_ms <= 0.0:
+    return 0.0
+  to_unit = CV.MS_TO_KPH if units_kph else CV.MS_TO_MPH
+  from_unit = CV.KPH_TO_MS if units_kph else CV.MPH_TO_MS
+  return round(v_ms * to_unit / 5.0) * 5.0 * from_unit
+
+
 def decode_banded_speed_limit(raw: float, units_kph: bool) -> float:
   """UI_mapSpeedLimit / DAS_fusedSpeedLimit style band -> m/s, or 0.0 for no usable value."""
   idx = int(raw)
@@ -115,7 +140,7 @@ class NavMapDecoder:
 
     nav = ret.navMap
     nav.valid = map_nanos != 0 and self.stale_frames < NAV_MAP_STALE_FRAMES
-    nav.baseSpeedLimit = self.base_speed_limit
+    nav.baseSpeedLimit = snap_base_speed_limit(self.base_speed_limit, mpp_kph)
     nav.mapSpeedLimit = decode_banded_speed_limit(map_data["UI_mapSpeedLimit"],
                                                   bool(map_data["UI_mapSpeedUnits"]))
     # mppSpeedLimit is a plain number in the declared unit, not a band. 0 is no value and the

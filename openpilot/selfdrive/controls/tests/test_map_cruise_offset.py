@@ -116,10 +116,14 @@ class TestStalkIsATriggerNotASetpoint:
 
 
 class TestCapsStillBind:
-  def test_curve_still_slows(self):
+  def test_fleet_does_not_cap_an_ordinary_road(self):
+    # The fleet caps ramps only. It used to cap every road on the theory that it stood in for the
+    # bends point curvature misses; measured over 183k non-ramp frames its correlation with
+    # lateral acceleration is +0.043, so it was capping for traffic, not geometry. A slow fleet
+    # reading on a straight 45 must now leave the posted target alone.
     nav = FakeNav(45, road_class_for(45))
     nav.fleetSplineSpeed = 30 * MPH
-    assert settle(make(use_curve=True), 45, 55, nav=nav) < 45.0
+    assert settle(make(use_curve=True), 45, 85, nav=nav) == pytest.approx(55.0, abs=1.0)
 
   def test_ramp_fleet_speed_still_used(self):
     nav = FakeNav(45, road_class_for(45))
@@ -140,7 +144,7 @@ class TestCapsStillBind:
 
 
 class TestCurveLatAccelCap:
-  """min(fleet, curvature limit): each covers what the other misses."""
+  """The curvature limit is the only geometry cap; the fleet caps ramps only."""
 
   def _run(self, c, limit_mph, fleet_mph, radius_m, stalk=70, n=40):
     nav = FakeNav(limit_mph, road_class_for(limit_mph))
@@ -161,16 +165,19 @@ class TestCurveLatAccelCap:
     # radius 31m, fleet 28.5mph -- the logged hairpin. sqrt(3.0 * 31) = 9.6m/s = 21.4mph.
     assert self._run(self.make_curve(), 45, 28.5, 31) == pytest.approx(21.4, abs=1.5)
 
-  def test_straight_fleet_beats_curvature(self):
-    # No curvature to speak of: the limit is ~100mph and the fleet governs.
-    assert self._run(self.make_curve(), 45, 47.0, 3000) == pytest.approx(47.0, abs=1.5)
+  def test_straight_leaves_the_posted_target_alone(self):
+    # No curvature to speak of, so the curvature limit is ~100mph and nothing else caps a
+    # non-ramp road: the posted target stands even with the fleet reading well below it.
+    assert self._run(self.make_curve(), 45, 47.0, 3000) == pytest.approx(55.0, abs=1.0)
 
   def test_neither_exceeds_the_map_target(self):
     # Both inputs high -> the posted target still bounds it.
     assert self._run(self.make_curve(), 45, 80.0, 3000) == pytest.approx(55, abs=1.0)
 
-  def test_off_defaults_to_fleet_only(self):
-    assert self._run(self.make_curve(lat_accel=0.0), 45, 28.5, 31) == pytest.approx(28.5, abs=1.5)
+  def test_off_leaves_the_hairpin_uncapped(self):
+    # curve_lat_accel = 0 turns the only geometry cap off. Nothing else looks at the corner, so
+    # even the logged hairpin comes back at the posted target -- this is what the toggle costs.
+    assert self._run(self.make_curve(lat_accel=0.0), 45, 28.5, 31) == pytest.approx(55.0, abs=1.0)
 
   def test_lower_criterion_slows_more(self):
     tight = self._run(self.make_curve(2.5), 45, 40.0, 100)
