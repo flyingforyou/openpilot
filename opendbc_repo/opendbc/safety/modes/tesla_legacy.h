@@ -4,6 +4,8 @@
 
 static bool tesla_external_panda = false;
 static bool tesla_hw1 = false;
+static bool tesla_hw2 = false;
+static bool tesla_hw3 = false;
 
 static unsigned int chassis_bus = 0U;
 static unsigned int das_control_msg = 0x2bfU;
@@ -313,7 +315,9 @@ static bool tesla_legacy_fwd_hook(int bus_num, int addr) {
     // HW1: the external-panda configs drive longitudinal through the second panda without ever
     // carrying TESLA_FLAG_LONG_CONTROL, so they must keep blocking unconditionally.
     const bool op_owns_das_control = tesla_external_panda || (tesla_hw1 && tesla_legacy_longitudinal);
-    if (op_owns_das_control && (addr == das_control_msg) && !tesla_legacy_stock_aeb) {
+    // das_control_msg is unsigned and addr is not; 0.11.2's panda builds with -Werror=sign-compare
+    // so the cast is required, not cosmetic. Address is never negative here.
+    if (op_owns_das_control && ((unsigned int)addr == das_control_msg) && !tesla_legacy_stock_aeb) {
       block_msg = true;
     }
 
@@ -322,7 +326,7 @@ static bool tesla_legacy_fwd_hook(int bus_num, int addr) {
     // put two frames for the same group on the bus a few ms apart, one saying CAR and one saying
     // TRUCK, and which one the cluster ends up drawing is not ours to decide. Display only: this
     // message reaches nothing that steers or brakes.
-    if (tesla_legacy_cars_as_trucks && (addr == 0x309U)) {
+    if (tesla_legacy_cars_as_trucks && (addr == 0x309)) {
       block_msg = true;
     }
   }
