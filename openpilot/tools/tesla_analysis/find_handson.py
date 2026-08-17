@@ -16,7 +16,7 @@ from collections import Counter
 
 import capnp
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 
 EAC_STATUS = {0: 'EAC_INHIBITED', 1: 'EAC_AVAILABLE', 2: 'EAC_ACTIVE', 3: 'EAC_FAULT'}
 

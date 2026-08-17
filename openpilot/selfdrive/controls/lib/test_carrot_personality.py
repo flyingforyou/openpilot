@@ -7,8 +7,8 @@ NotImplementedError out of the planner, killing it the moment anyone engages.
 """
 import pytest
 
-import cereal.messaging as messaging
-from cereal import log
+import openpilot.cereal.messaging as messaging
+from openpilot.cereal import log
 from openpilot.selfdrive.controls.lib.carrot_functions import (
     GAP_TO_PERSONALITY_INT, PERSONALITY_TO_GAP_POS, _personality_int)
 

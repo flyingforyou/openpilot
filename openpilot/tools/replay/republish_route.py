@@ -19,7 +19,7 @@ import pickle
 import sys
 import time
 
-import cereal.messaging as messaging
+import openpilot.cereal.messaging as messaging
 
 SERVICES = [
   'carState', 'radarState', 'modelV2', 'liveCalibration', 'selfdriveState',

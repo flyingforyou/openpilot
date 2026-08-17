@@ -27,7 +27,7 @@ from collections import defaultdict
 import capnp
 import numpy as np
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 
 BUS = int(os.environ.get('OP_BUS', 0))
 

@@ -32,7 +32,7 @@ import time
 sys.setswitchinterval(0.001)
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-import cereal.messaging as messaging
+import openpilot.cereal.messaging as messaging
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.debug import vehicle_state, video_source

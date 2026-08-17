@@ -2,14 +2,14 @@
 import math
 import numpy as np
 
-import cereal.messaging as messaging
+import openpilot.cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
-from cereal import car
+from opendbc.car.structs import car
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc import LongitudinalMpc, N
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N

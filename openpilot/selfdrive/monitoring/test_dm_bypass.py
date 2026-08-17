@@ -1,6 +1,6 @@
 import pytest
 
-from cereal import log
+from openpilot.cereal import log
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_DMON
 from openpilot.selfdrive.monitoring.helpers import DriverMonitoring

@@ -19,7 +19,7 @@ from collections import Counter
 
 import capnp
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 
 LO, HI = float(sys.argv[1]), float(sys.argv[2])
 ROUTE = sys.argv[3]

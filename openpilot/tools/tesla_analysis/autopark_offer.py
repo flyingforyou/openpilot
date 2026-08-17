@@ -18,7 +18,7 @@ import sys
 
 import capnp
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 
 ACC_STATE = {0: 'ACC_CANCEL_GENERIC', 3: 'ACC_HOLD', 4: 'ACC_ON', 5: 'APC_BACKWARD',
              6: 'APC_FORWARD', 7: 'APC_COMPLETE', 8: 'APC_ABORT', 9: 'APC_PAUSE',

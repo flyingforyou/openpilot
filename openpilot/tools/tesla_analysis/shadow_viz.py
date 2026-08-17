@@ -42,7 +42,7 @@ import urllib.request
 
 import capnp
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 
 # The command range the car accepts, from CarControllerParams. Normalising by the authority the
 # controller actually has is what makes 1.0 mean something -- a fixed pretty number would not.

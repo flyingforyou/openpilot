@@ -13,7 +13,7 @@ from collections import defaultdict
 
 import capnp
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 
 WATCH = {0x102, 0x232, 0x302, 0x382}
 

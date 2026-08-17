@@ -24,7 +24,7 @@ from collections import Counter
 
 import capnp
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 
 # How much more conservative openpilot has to be before it counts as a real disagreement.
 # Below this the two are effectively agreeing and the difference is noise.

@@ -18,7 +18,7 @@ import sys
 
 import capnp
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 from opendbc.can.dbc import DBC
 from opendbc.can.parser import get_raw_value
 

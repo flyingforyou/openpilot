@@ -10,7 +10,7 @@ import threading
 import time
 from collections import defaultdict
 
-import cereal.messaging as messaging
+import openpilot.cereal.messaging as messaging
 from opendbc.can.dbc import DBC
 from opendbc.can.parser import CANDefine, get_raw_value
 

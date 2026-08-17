@@ -20,7 +20,7 @@ controller's own saturation flag rather than any per-brand tuning.
 """
 import numpy as np
 
-import cereal.messaging as messaging
+import openpilot.cereal.messaging as messaging
 from openpilot.selfdrive.controls.lib.drive_helpers import MAX_LATERAL_ACCEL_NO_ROLL
 from openpilot.selfdrive.controls.lib.curve_speed import MIN_V, V_UNSET
 

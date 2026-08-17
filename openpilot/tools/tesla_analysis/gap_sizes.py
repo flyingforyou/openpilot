@@ -17,7 +17,7 @@ import re
 
 import capnp
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 
 ROUTE = '0000000c--a28806246c'
 LO, HI = 60.0, 90.0

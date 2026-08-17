@@ -17,7 +17,7 @@ from enum import IntEnum
 
 import numpy as np
 
-import cereal.messaging as messaging
+import openpilot.cereal.messaging as messaging
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.curve_speed import MIN_V, V_UNSET
 

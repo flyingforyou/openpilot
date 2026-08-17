@@ -17,7 +17,7 @@ from multiprocessing import Pool
 
 import capnp
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 
 LOG_ROOT = os.environ.get("OP_LOG_ROOT", os.path.expanduser("~/openpilot/op-logs-carrotlong"))
 SCRATCH = '/tmp/op-analysis'

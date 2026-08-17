@@ -12,7 +12,8 @@ import time
 import capnp
 import zstandard
 
-from cereal import log as capnp_log, car, messaging
+from openpilot.cereal import log as capnp_log, messaging
+from opendbc.car.structs import car
 from openpilot.common.params import Params
 from openpilot.selfdrive.debug.can_viewer import CanDecoder
 

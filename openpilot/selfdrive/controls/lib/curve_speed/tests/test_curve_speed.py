@@ -1,7 +1,7 @@
 import numpy as np
 
-import cereal.messaging as messaging
-from cereal import log
+import openpilot.cereal.messaging as messaging
+from openpilot.cereal import log
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.curve_speed import V_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed.curve_speed_controller import (

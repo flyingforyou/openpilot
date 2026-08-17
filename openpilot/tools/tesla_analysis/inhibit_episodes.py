@@ -11,7 +11,7 @@ import sys
 
 import capnp
 import zstandard
-from cereal import log as capnp_log
+from openpilot.cereal import log as capnp_log
 
 EAC_STATUS = {0: 'EAC_INHIBITED', 1: 'EAC_AVAILABLE', 2: 'EAC_ACTIVE', 3: 'EAC_FAULT'}
 EAC_ERR = {0: 'IDLE', 1: 'MIN_SPEED', 2: 'MAX_SPEED', 3: 'HANDS_ON', 4: 'TMP_FAULT',

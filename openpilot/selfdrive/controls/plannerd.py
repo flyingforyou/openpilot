@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-from cereal import car
+from opendbc.car.structs import car
 from openpilot.common.params import Params
 from openpilot.common.realtime import Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.ldw import LaneDepartureWarning
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
 from openpilot.selfdrive.controls.lib.longitudinal_planner_carrot import CarrotLongitudinalPlanner
-import cereal.messaging as messaging
+import openpilot.cereal.messaging as messaging
 
 
 def main():

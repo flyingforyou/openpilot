@@ -3,7 +3,7 @@ from enum import Enum
 
 import numpy as np
 
-from cereal import log
+from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import MyMovingAverage
 from openpilot.common.realtime import DT_MDL

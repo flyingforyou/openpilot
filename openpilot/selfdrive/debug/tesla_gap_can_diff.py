@@ -20,7 +20,7 @@ actually turned the knob to find the real signal.
 import time
 from collections import defaultdict
 
-import cereal.messaging as messaging
+import openpilot.cereal.messaging as messaging
 
 DURATION_S = 90
 MAX_CHANGES_PER_SEC = 2.0  # drop bytes that change more often than this (analog/noisy sensors)

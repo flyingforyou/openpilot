@@ -14,7 +14,7 @@ momentary request and the latching logic in carstate.py has to be reworked befor
 """
 import time
 
-import cereal.messaging as messaging
+import openpilot.cereal.messaging as messaging
 from opendbc.car.tesla.carstate import decode_tesla_gap
 
 
