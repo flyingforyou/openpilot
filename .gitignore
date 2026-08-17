@@ -97,3 +97,6 @@ build/
 .context/
 PLAN.md
 TASK.md
+
+# unpacked by scripts/setup-device.sh; rednose needs <eigen3/Eigen/Dense> and 0.11.2 ships no eigen
+eigen3
