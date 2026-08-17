@@ -84,10 +84,10 @@ procs = [
   PythonProcess("journald", "openpilot.system.journald", only_onroad, platform.system() != "Darwin"),
   PythonProcess("micd", "openpilot.system.micd", iscar),
   PythonProcess("timed", "openpilot.system.timed", always_run, enabled=not PC),
-  # The tuning page. always_run so the settings are reachable with the car off, and restarted on a
-  # crash because losing it means losing the only way to change anything without a laptop.
+  # The tuning page. always_run so the settings are reachable with the car off. 0.11.2's
+  # PythonProcess takes no restart_if_crash, so a crash is simply a crash here.
   PythonProcess("tuning_server", "openpilot.selfdrive.debug.tuning_server", always_run,
-                enabled=not PC, restart_if_crash=True),
+                enabled=not PC),
 
   PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
   PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview, enabled=(WEBCAM or not PC)),
