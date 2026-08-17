@@ -2,9 +2,8 @@
 import math
 from numbers import Number
 
-from openpilot.cereal import log
-from opendbc.car.structs import car
-import openpilot.cereal.messaging as messaging
+from cereal import car, log
+import cereal.messaging as messaging
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority, Ratekeeper
@@ -16,7 +15,6 @@ from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
-from openpilot.selfdrive.controls.lib.latcontrol_curvature import LatControlCurvature
 from openpilot.selfdrive.controls.lib.latcontrol_torque import LatControlTorque
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
@@ -38,12 +36,21 @@ class Controls:
 
     self.CI = interfaces[self.CP.carFingerprint](self.CP)
 
-    self.sm = messaging.SubMaster(['lateralDelay', 'vehicleParameters', 'lateralTorqueParameters', 'modelV2', 'selfdriveState',
-                                   'extrinsicsCalibration', 'deviceMotion', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance'], poll='selfdriveState')
+    self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
+                                   'liveCalibration', 'livePose', 'longitudinalPlan', 'carState', 'carOutput',
+                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance',
+                                   'radarState'], poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'])
 
     self.steer_limited_by_safety = False
+
+    # CarrotPilot's stopping accel. Only read when its planner is the one running -- under the
+    # stock planner the port's own stopAccel is the right number and this stays zero, which
+    # means "leave it alone".
+    self._carrot_long = self.params.get_bool("CarrotLongEnabled")
+    self._stopping_accel = 0.0
+    self._gains: tuple[float, float, float] | None = None
+    self._param_frame = 0
     self.curvature = 0.0
     self.desired_curvature = 0.0
 
@@ -55,8 +62,6 @@ class Controls:
     self.LaC: LatControl
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
       self.LaC = LatControlAngle(self.CP, self.CI, DT_CTRL)
-    elif self.CP.steerControlType == car.CarParams.SteerControlType.curvature:
-      self.LaC = LatControlCurvature(self.CP, self.CI, DT_CTRL)
     elif self.CP.lateralTuning.which() == 'pid':
       self.LaC = LatControlPID(self.CP, self.CI, DT_CTRL)
     elif self.CP.lateralTuning.which() == 'torque':
@@ -64,17 +69,17 @@ class Controls:
 
   def update(self):
     self.sm.update(15)
-    if self.sm.updated["extrinsicsCalibration"]:
-      self.pose_calibrator.feed_extrinsics_calibration(self.sm['extrinsicsCalibration'])
-    if self.sm.updated["deviceMotion"]:
-      device_motion = Pose.from_device_motion(self.sm['deviceMotion'])
-      self.calibrated_pose = self.pose_calibrator.build_calibrated_pose(device_motion)
+    if self.sm.updated["liveCalibration"]:
+      self.pose_calibrator.feed_live_calib(self.sm['liveCalibration'])
+    if self.sm.updated["livePose"]:
+      device_pose = Pose.from_live_pose(self.sm['livePose'])
+      self.calibrated_pose = self.pose_calibrator.build_calibrated_pose(device_pose)
 
   def state_control(self):
     CS = self.sm['carState']
 
     # Update VehicleModel
-    lp = self.sm['vehicleParameters']
+    lp = self.sm['liveParameters']
     x = max(lp.stiffnessFactor, 0.1)
     sr = max(lp.steerRatio, 0.1)
     self.VM.update_params(x, sr)
@@ -84,9 +89,9 @@ class Controls:
 
     # Update Torque Params
     if self.CP.lateralTuning.which() == 'torque':
-      torque_params = self.sm['lateralTorqueParameters']
-      if self.sm.all_checks(['lateralTorqueParameters']) and torque_params.useParams:
-        self.LaC.update_torque_parameters(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
+      torque_params = self.sm['liveTorqueParameters']
+      if self.sm.all_checks(['liveTorqueParameters']) and torque_params.useParams:
+        self.LaC.update_live_torque_params(torque_params.latAccelFactorFiltered, torque_params.latAccelOffsetFiltered,
                                            torque_params.frictionCoefficientFiltered)
 
     long_plan = self.sm['longitudinalPlan']
@@ -116,26 +121,35 @@ class Controls:
 
     # accel PID loop
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
-    actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits))
+    # Params.get hits disk, so not every frame.
+    self._param_frame += 1
+    if self._carrot_long and self._param_frame % 50 == 0:
+      def _p(key, default):
+        v = self.params.get(key, return_default=True)
+        return int(v) if v is not None else default
+      self._stopping_accel = _p("StoppingAccel", 0) * 0.01
+      # carrot's own scaling: Kp and Kf in hundredths, Ki in thousandths.
+      self._gains = (_p("LongTuningKpV", 100) * 0.01,
+                     _p("LongTuningKiV", 0) * 0.001,
+                     _p("LongTuningKf", 100) * 0.01)
+    lead = self.sm['radarState'].leadOne
+    lead_d_rel = float(lead.dRel) if lead.status else None
+    actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop,
+                                            pid_accel_limits, self._stopping_accel, lead_d_rel,
+                                            self._gains))
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
-    if self.sm.valid['lateralManeuverPlan']:
-      new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
-    else:
-      new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+    new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
-    lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+    lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
-    steer, lateral_output, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
-                                                     self.steer_limited_by_safety, self.desired_curvature,
-                                                     curvature_limited, lat_delay)
+    steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
+                                                       self.steer_limited_by_safety, self.desired_curvature,
+                                                       curvature_limited, lat_delay)
     actuators.torque = float(steer)
-    if self.CP.steerControlType == car.CarParams.SteerControlType.curvature:
-      actuators.curvature = float(lateral_output)
-    else:
-      actuators.steeringAngleDeg = float(lateral_output)
+    actuators.steeringAngleDeg = float(steeringAngleDeg)
     # Ensure no NaNs/Infs
     for p in ACTUATOR_FIELDS:
       attr = getattr(actuators, p)
@@ -163,7 +177,18 @@ class Controls:
     CC.cruiseControl.resume = CC.enabled and CS.cruiseState.standstill and not self.sm['longitudinalPlan'].shouldStop
 
     hudControl = CC.hudControl
-    hudControl.setSpeed = float(CS.vCruiseCluster * CV.KPH_TO_MS)
+    long_plan = self.sm['longitudinalPlan']
+    # carrot's own target (eco control, the Tesla map auto-speed override, ...) rather than a
+    # blind mirror of what the car already reports -- otherwise every carrot-driven speed change
+    # reaches the actuators but never the cluster, and looks like it silently did nothing.
+    if self.sm.valid['longitudinalPlan'] and long_plan.cruiseTarget > 0:
+      hudControl.setSpeed = float(long_plan.cruiseTarget * CV.KPH_TO_MS)
+    if self.sm.valid['longitudinalPlan']:
+      # The road's ceiling, not the moment's target. Kept separate from setSpeed because that one
+      # doubles as a control signal on Tesla and has to stay the value the car is driven to.
+      hudControl.cruiseCeiling = float(long_plan.cruiseCeiling * CV.KPH_TO_MS)
+    else:
+      hudControl.setSpeed = float(CS.vCruiseCluster * CV.KPH_TO_MS)
     hudControl.speedVisible = CC.enabled
     hudControl.lanesVisible = CC.enabled
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
@@ -200,17 +225,12 @@ class Controls:
     cs.upAccelCmd = float(self.LoC.pid.p)
     cs.uiAccelCmd = float(self.LoC.pid.i)
     cs.ufAccelCmd = float(self.LoC.pid.f)
-    cs.forceDecel = bool(self.sm['driverMonitoringState'].noResponseForceDecel or
+    cs.forceDecel = bool((self.sm['driverMonitoringState'].awarenessStatus < 0.) or
                          (self.sm['selfdriveState'].state == State.softDisabling))
-
-    # trigger the car's stock driver monitoring escalation
-    CC.driverMonitoringEscalation = cs.forceDecel
 
     lat_tuning = self.CP.lateralTuning.which()
     if self.CP.steerControlType == car.CarParams.SteerControlType.angle:
       cs.lateralControlState.angleState = lac_log
-    elif self.CP.steerControlType == car.CarParams.SteerControlType.curvature:
-      cs.lateralControlState.curvatureState = lac_log
     elif lat_tuning == 'pid':
       cs.lateralControlState.pidState = lac_log
     elif lat_tuning == 'torque':

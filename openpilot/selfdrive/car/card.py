@@ -3,10 +3,9 @@ import os
 import time
 import threading
 
-import openpilot.cereal.messaging as messaging
+import cereal.messaging as messaging
 
-from openpilot.cereal import log
-from opendbc.car.structs import car
+from cereal import car, log
 
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper
@@ -18,6 +17,7 @@ from opendbc.car.carlog import carlog
 from opendbc.car.fw_versions import ObdCallback
 from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
+from opendbc.car.tesla.values import TeslaFlags, TeslaSafetyFlags
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 
@@ -34,7 +34,7 @@ def obd_callback(params: Params) -> ObdCallback:
     if params.get_bool("ObdMultiplexingEnabled") != obd_multiplexing:
       cloudlog.warning(f"Setting OBD multiplexing to {obd_multiplexing}")
       params.remove("ObdMultiplexingChanged")
-      params.put_bool("ObdMultiplexingEnabled", obd_multiplexing, block=True)
+      params.put_bool("ObdMultiplexingEnabled", obd_multiplexing)
       params.get_bool("ObdMultiplexingChanged", block=True)
       cloudlog.warning("OBD multiplexing set successfully")
   return set_obd_multiplexing
@@ -66,7 +66,7 @@ class Car:
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
     self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents'])
-    self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'radarTracks'])
+    self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'liveTracks'])
 
     self.can_rcv_cum_timeout_counter = 0
 
@@ -104,7 +104,7 @@ class Car:
       self.CP = self.CI.CP
 
       # continue onto next fingerprinting step in pandad
-      self.params.put_bool("FirmwareQueryDone", True, block=True)
+      self.params.put_bool("FirmwareQueryDone", True)
     else:
       self.CI, self.CP = CI, CI.CP
       self.RI = RI
@@ -118,13 +118,63 @@ class Car:
       safety_config.safetyModel = structs.CarParams.SafetyModel.noOutput
       self.CP.safetyConfigs = [safety_config]
 
+    # Stock longitudinal: hand speed control back to the car's own ACC and do lateral only.
+    # Clearing openpilotLongitudinalControl stops controlsd/the planner actuating long and makes
+    # the car controller go silent on DAS_control; dropping the panda LONG_CONTROL flag is what
+    # then makes the factory DAS_control forward through instead of being blocked, and drops the
+    # message from the TX allowlist so openpilot cannot transmit it at all. Both halves are
+    # required -- with only the first, the stock frames stayed blocked and the car lost TACC and
+    # Autopilot together. Set at init, so a restart is required to change it.
+    if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaStockLong"):
+      self.CP.openpilotLongitudinalControl = False
+      for cfg in self.CP.safetyConfigs:
+        cfg.safetyParam &= ~TeslaSafetyFlags.LONG_CONTROL.value
+
+    # Cooperative steering: openpilot shifts its angle target toward the driver instead of
+    # letting go of the wheel, so a takeover never has to push hard enough for the EPS to
+    # inhibit. CarState reads CP.flags every frame off this same object.
+    if self.CP.brand == "tesla" and self.params.get_bool("TeslaCoopSteer"):
+      self.CP.flags |= TeslaFlags.COOP_STEER.value
+      # the two numbers are read here rather than in the car port, which has no access to params
+      if self.CI.CC is not None and hasattr(self.CI.CC, "coop_steer"):
+        self.CI.CC.coop_steering = True
+        self.CI.CC.coop_steer.set_tuning(
+          int(self.params.get("TeslaCoopMaxTorqueCNm", return_default=True) or 250) / 100.0,
+          int(self.params.get("TeslaCoopLatAccelCms", return_default=True) or 150) / 100.0)
+
+    # Tesla's 2026.26.1 update left AP1 clusters drawing TRUCK and MOTORCYCLE but not CAR, which
+    # is most of the traffic, so almost nothing appears. Everything upstream of the cluster is
+    # correct, so openpilot re-sends the factory's own object list with the type swapped to one
+    # the cluster still renders. Cars then show up wearing a truck icon.
+    if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaCarsAsTrucks"):
+      self.CP.flags |= TeslaFlags.CARS_AS_TRUCKS.value
+      # Panda has to stop forwarding the factory's copy, or the cluster gets both labels.
+      for cfg in self.CP.safetyConfigs:
+        if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
+          cfg.safetyParam |= TeslaSafetyFlags.CARS_AS_TRUCKS.value
+
+    # Cluster MAX speed sync. Writes the cruise stalk, so it stays opt-in and panda restricts the
+    # lever field to the four speed steps -- the same field selects gear on this car.
+    if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaSyncClusterSpeed"):
+      self.CP.flags |= TeslaFlags.SYNC_CLUSTER_SPEED.value
+      for cfg in self.CP.safetyConfigs:
+        if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
+          cfg.safetyParam |= TeslaSafetyFlags.SYNC_CLUSTER_SPEED.value
+
+    # Let the stock HW1 autopark module drive while openpilot is disengaged. Panda ignores the
+    # flag on anything but teslaLegacy HW1, but the toggle is only meaningful there anyway.
+    if not self.CP.passive and self.params.get_bool("TeslaStockAutopark"):
+      for cfg in self.CP.safetyConfigs:
+        if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
+          cfg.safetyParam |= TeslaSafetyFlags.STOCK_AUTOPARK.value
+
     if self.CP.secOcRequired:
       # Copy user key if available
       try:
         with open("/cache/params/SecOCKey") as f:
           user_key = f.readline().strip()
           if len(user_key) == 32:
-            self.params.put("SecOCKey", user_key, block=True)
+            self.params.put("SecOCKey", user_key)
       except Exception:
         pass
 
@@ -142,13 +192,13 @@ class Car:
     # Write previous route's CarParams
     prev_cp = self.params.get("CarParamsPersistent")
     if prev_cp is not None:
-      self.params.put("CarParamsPrevRoute", prev_cp, block=True)
+      self.params.put("CarParamsPrevRoute", prev_cp)
 
     # Write CarParams for controls and radard
     cp_bytes = self.CP.to_bytes()
-    self.params.put("CarParams", cp_bytes, block=True)
-    self.params.put("CarParamsCache", cp_bytes)
-    self.params.put("CarParamsPersistent", cp_bytes)
+    self.params.put("CarParams", cp_bytes)
+    self.params.put_nonblocking("CarParamsCache", cp_bytes)
+    self.params.put_nonblocking("CarParamsPersistent", cp_bytes)
 
     self.v_cruise_helper = VCruiseHelper(self.CP)
 
@@ -167,8 +217,10 @@ class Car:
     # Update carState from CAN
     CS = self.CI.update(can_list)
 
-    # Update radar tracks from CAN
-    RD: structs.RadarDataT | None = self.RI.update(can_list)
+    # Update radar tracks from CAN. vEgo goes in because absolute lead speed, and the
+    # acceleration and jerk derived from it, are only recoverable at this point -- the radar
+    # reports closing speed and nothing else.
+    RD: structs.RadarDataT | None = self.RI.update(can_list, CS.vEgo)
 
     self.sm.update(0)
 
@@ -217,10 +269,10 @@ class Car:
     self.pm.send('carState', cs_send)
 
     if RD is not None:
-      tracks_msg = messaging.new_message('radarTracks')
+      tracks_msg = messaging.new_message('liveTracks')
       tracks_msg.valid = not any(RD.errors.to_dict().values())
-      tracks_msg.radarTracks = RD
-      self.pm.send('radarTracks', tracks_msg)
+      tracks_msg.liveTracks = RD
+      self.pm.send('liveTracks', tracks_msg)
 
   def controls_update(self, CS: car.CarState, CC: car.CarControl):
     """control update loop, driven by carControl"""
@@ -230,7 +282,7 @@ class Car:
       # TODO: this can make us miss at least a few cycles when doing an ECU knockout
       self.CI.init(self.CP, *self.can_callbacks)
       # signal pandad to switch to car safety mode
-      self.params.put_bool("ControlsReady", True)
+      self.params.put_bool_nonblocking("ControlsReady", True)
 
     if self.sm.all_alive(['carControl']):
       # send car controls over can
