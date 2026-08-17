@@ -772,6 +772,11 @@ struct RadarState @0x9a185389d6fdd05f {
     jLead @16 :Float32;
     score @17 :Float32;
 
+    # Lead acceleration, kept out of the deprecated group at its original number because
+    # CarrotPilot's follow-distance logic reads it (carrot_functions.py). aLeadK is the Kalman
+    # estimate; this is what the radar interface reported, which is the one that tree tuned on.
+    aLead @5 :Float32;
+
     # Carried straight through from the matched RadarPoint -- see car.capnp for what these mean.
     # unknown/0/0 for a vision-only lead, or any radar that does not report a class at all.
     vehicleClass @18 :Car.RadarData.RadarPoint.VehicleClass;
@@ -780,7 +785,6 @@ struct RadarState @0x9a185389d6fdd05f {
 
     deprecated :group {
       aRel @3 :Float32;
-      aLead @5 :Float32;
       dPath @6 :Float32;
       vLat @7 :Float32;
       fcw @10 :Bool;

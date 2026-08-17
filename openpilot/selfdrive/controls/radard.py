@@ -241,13 +241,11 @@ class Track:
       "aLeadK": float(self.aLeadK),
       "aLeadTau": float(self.aLeadTau.x),
       "present": True,
-      "fcw": self.is_potential_fcw(model_prob),
       "modelProb": model_prob,
       "radar": True,
       "radarTrackId": self.identifier,
       "aLead": float(self.aLead),
       "jLead": float(self.jLead),
-      "dPath": float(self.dPath),
       "score": float(self.score),
       "vehicleClass": self.vehicleClass,
       "classProb": float(self.classProb),
@@ -472,7 +470,6 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
     "vLeadK": float(v_ego + lead_v_rel_pred),
     "aLeadK": float(lead_msg.a[0]),
     "aLeadTau": 0.3,
-    "fcw": False,
     "modelProb": float(lead_msg.prob),
     "present": True,
     "radar": False,
@@ -481,7 +478,6 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
     # rather than carrying over a previous frame's radar numbers under a vision-only lead.
     "aLead": float(lead_msg.a[0]),
     "jLead": 0.0,
-    "dPath": 0.0,
     "score": 0.0,
   }
 
