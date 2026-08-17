@@ -1,6 +1,6 @@
 import math
 import pyray as rl
-from typing import TYPE_CHECKING, Union
+from typing import Union
 from enum import Enum
 from collections.abc import Callable
 from openpilot.system.ui.widgets import Widget
@@ -9,14 +9,12 @@ from openpilot.system.ui.widgets.scroller import DO_ZOOM
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.common.filter_simple import BounceFilter
 
-if TYPE_CHECKING:
+try:
   from openpilot.common.params import Params
-else:
-  try:
-    from openpilot.common.params import Params
-  except (ImportError, OSError):
-    Params = None
+except ImportError:
+  Params = None
 
+SCROLLING_SPEED_PX_S = 50
 COMPLICATION_SIZE    = 36
 LABEL_COLOR          = rl.Color(255, 255, 255, int(255 * 0.9))
 COMPLICATION_GREY    = rl.Color(0xAA, 0xAA, 0xAA, 255)
@@ -377,7 +375,6 @@ class GreyBigButton(BigButton):
 class BigMultiParamToggle(BigMultiToggle):
   def __init__(self, text: str, param: str, options: list[str], toggle_callback: Callable | None = None,
                select_callback: Callable | None = None):
-    assert Params is not None
     super().__init__(text, options, toggle_callback, select_callback)
     self._param = param
 
@@ -385,17 +382,21 @@ class BigMultiParamToggle(BigMultiToggle):
     self._load_value()
 
   def _load_value(self):
-    self.set_value(self._options[self._params.get(self._param) or 0])
+    idx = self._params.get(self._param) or 0
+    # LongitudinalPersonality can hold values this toggle's own (shorter) option list doesn't
+    # cover -- e.g. the gap stalk driving it directly on Tesla. Leave the displayed value as-is
+    # rather than indexing out of range.
+    if 0 <= idx < len(self._options):
+      self.set_value(self._options[idx])
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
     super()._handle_mouse_release(mouse_pos)
     new_idx = self._options.index(self.value)
-    self._params.put(self._param, new_idx)
+    self._params.put_nonblocking(self._param, new_idx)
 
 
 class BigParamControl(BigToggle):
   def __init__(self, text: str, param: str, toggle_callback: Callable | None = None):
-    assert Params is not None
     super().__init__(text, "", toggle_callback=toggle_callback)
     self.param = param
     self.params = Params()
@@ -403,7 +404,7 @@ class BigParamControl(BigToggle):
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
     super()._handle_mouse_release(mouse_pos)
-    self.params.put_bool(self.param, self._checked, block=True)
+    self.params.put_bool(self.param, self._checked)
 
   def refresh(self):
     self.set_checked(self.params.get_bool(self.param, False))
@@ -413,7 +414,6 @@ class BigParamControl(BigToggle):
 class BigCircleParamControl(BigCircleToggle):
   def __init__(self, icon: rl.Texture, param: str, toggle_callback: Callable | None = None,
                icon_offset: tuple[int, int] = (0, 0)):
-    assert Params is not None
     super().__init__(icon, toggle_callback, icon_offset=icon_offset)
     self._param = param
     self.params = Params()
@@ -421,7 +421,7 @@ class BigCircleParamControl(BigCircleToggle):
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
     super()._handle_mouse_release(mouse_pos)
-    self.params.put_bool(self._param, self._checked, block=True)
+    self.params.put_bool(self._param, self._checked)
 
   def refresh(self):
     self.set_checked(self.params.get_bool(self._param, False))

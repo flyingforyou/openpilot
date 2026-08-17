@@ -1,0 +1,490 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>순정 ACC vs openpilot 예측</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--hot:#F5B942;--bad:#FF6B5A;--ok:#4FC98A;
+--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--hot:#9A6210;--bad:#C23B28;--ok:#1E7A4B}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);
+padding:18px;padding-bottom:calc(18px + env(safe-area-inset-bottom))}
+h1{font-size:17px;margin:0 0 3px}
+.sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:11px;
+margin-bottom:11px;overflow:hidden}
+.card>h2{font-size:12px;margin:0;padding:10px 13px;border-bottom:1px solid var(--line);
+color:var(--mut);font-weight:600;letter-spacing:.02em}
+
+.segs{display:flex;gap:4px;padding:11px 13px;overflow-x:auto}
+.seg{flex:0 0 auto;width:52px;background:transparent;border:1px solid var(--line);
+border-radius:8px;padding:6px 4px 5px;cursor:pointer;color:var(--mut);font-family:var(--m);
+font-size:10px;text-align:center}
+.seg:hover{border-color:var(--radar);color:var(--tx)}
+.seg[aria-selected=true]{border-color:var(--radar);color:var(--radar);background:rgba(90,200,250,.08)}
+.seg .n{font-size:12px;font-weight:600;display:block;line-height:1.3}
+.seg .bar{height:3px;border-radius:2px;background:var(--line);margin:4px 0 3px;overflow:hidden}
+.seg .bar>i{display:block;height:100%;background:var(--bad)}
+.seg .pc{font-variant-numeric:tabular-nums}
+.seg.novid{opacity:.55}
+
+/* 영상은 그대로 보여주고, 그래프는 아래에 둔다. 영상 위에 겹치는 방식은 재생이 시작되면
+   브라우저가 video를 별도 합성 레이어로 올리면서 캔버스를 덮어버려 접었다. */
+.vid{margin:13px 13px 0;background:#000;border-radius:9px;overflow:hidden}
+.vid video{width:100%;max-height:62vh;display:block}
+.novideo{aspect-ratio:16/9;display:flex;align-items:center;justify-content:center;
+color:var(--dim);font-size:12px}
+
+.chart{margin:11px 13px 0}
+.chart canvas{width:100%;height:236px;display:block;cursor:pointer;border-radius:8px;
+border:1px solid var(--line);background:var(--bg)}
+.chart canvas#dist{height:172px}
+
+.controls{display:flex;gap:8px;align-items:center;padding:11px 13px 13px;flex-wrap:wrap}
+button.pb{background:transparent;border:1px solid var(--line);color:var(--tx);border-radius:8px;
+padding:6px 13px;font-size:12px;cursor:pointer;font-family:var(--s)}
+button.pb:hover{border-color:var(--radar);color:var(--radar)}
+.tt{font-family:var(--m);font-size:11px;color:var(--dim);margin-left:auto;
+font-variant-numeric:tabular-nums}
+
+.read{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:1px;
+background:var(--line);border-top:1px solid var(--line)}
+.rd{background:var(--card);padding:9px 11px}
+.rd .k{font-size:10px;color:var(--dim);margin-bottom:2px}
+.rd .v{font-family:var(--m);font-size:14px;font-variant-numeric:tabular-nums}
+.rd .v small{font-size:10px;color:var(--mut);margin-left:2px}
+
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:11px;color:var(--mut);
+padding:9px 13px 0;align-items:center}
+.legend i{display:inline-block;width:14px;height:3px;border-radius:2px;margin-right:5px;
+vertical-align:middle}
+.legend .sw{display:inline-block;width:11px;height:11px;border-radius:3px;margin-right:5px;
+vertical-align:-1px;opacity:.45}
+
+.note{font-size:11.5px;color:var(--mut);line-height:1.6;padding:13px}
+.note b{color:var(--tx);font-weight:600}
+.worst{font-family:var(--m);font-variant-numeric:tabular-nums}
+#err{display:none;background:rgba(255,107,90,.12);border:1px solid var(--bad);color:var(--bad);
+border-radius:9px;padding:10px 13px;margin-bottom:11px;font-family:var(--m);font-size:11.5px;
+white-space:pre-wrap}
+</style></head><body>
+
+<h1>순정 ACC vs openpilot 예측</h1>
+<div class="sub" id="sub">불러오는 중…</div>
+<div id="err"></div>
+
+<div class="card">
+  <h2>세그먼트 — 막대는 리드 추종 중 openpilot이 더 보수적이었던 시간 비율</h2>
+  <div class="segs" id="segs"></div>
+</div>
+
+<div class="card">
+  <h2 id="stageTitle">재생</h2>
+  <div class="vid" id="vidwrap"></div>
+  <div class="legend">
+    <span><i style="background:#F5B942"></i>순정 ACC 실제 가속 (aEgo)</span>
+    <span><i style="background:#5AC8FA"></i>openpilot 계획 가속 (aTarget)</span>
+    <span><span class="sw" style="background:#FF6B5A"></span>openpilot이 더 감속을 원한 구간</span>
+    <span><span class="sw" style="background:#4FC98A"></span>리드 추종 중</span>
+  </div>
+  <div class="chart"><canvas id="chart"></canvas></div>
+  <div class="legend" style="padding-top:11px">
+    <span><i style="background:#F5B942"></i>실제 차간거리 (순정 ACC가 유지한 거리)</span>
+    <span><i style="background:#5AC8FA"></i>openpilot 목표 차간거리 (갭 노브 × 속도 + 정지거리)</span>
+    <span><span class="sw" style="background:#FF6B5A;border-radius:50%;opacity:.9"></span>리드 타겟이 바뀐 지점</span>
+  </div>
+  <div class="chart"><canvas id="dist"></canvas></div>
+  <div class="controls">
+    <button class="pb" id="play">▶ 재생</button>
+    <button class="pb" id="jump" title="이 세그먼트에서 가장 크게 갈린 순간으로 이동">최대 격차로</button>
+    <button class="pb" id="smooth" aria-pressed="true" title="거리 측정 잡음을 걷어낸다. 타겟이 바뀐 지점은 표시로 남는다">거리 평활 0.5초</button>
+    <span class="tt" id="tt">—</span>
+  </div>
+  <div class="read" id="read"></div>
+</div>
+
+<div class="card">
+  <h2>읽는 법</h2>
+  <div class="note">
+    두 선은 <b>같은 선형 스케일</b>로 정규화돼 있습니다 — 차가 받아들이는 가장 강한 명령
+    (<span class="worst" id="amin"></span> mph/s)로 나눈 값이라, <b>−1.0이 최대 제동 권한</b>이고
+    선 사이의 간격이 곧 “openpilot이 얼마나 더 원했는가”입니다. 실제 값은 아래 표에 mph/s로 나옵니다.
+    <br><br>
+    순정 ACC가 운전한 주행이라 <b>openpilot의 선은 한 번도 차에 전달되지 않았습니다</b> —
+    plannerd는 종방향을 openpilot이 잡든 안 잡든 계속 돌기 때문에, 모든 로그에 “차가 한 것”과
+    “openpilot이었으면 했을 것”이 쌍으로 남습니다. 빨간 구간이 곧 경고 후보이고,
+    그 중 운전자가 실제로 개입하지 않은 구간이 헛경보가 될 지점입니다.
+  </div>
+</div>
+
+<script>
+const F_LEAD=1, F_RADAR=2, F_ENG=4, F_BRAKE=8, F_GAS=16;
+
+// 로그는 전부 SI다. 비교·정규화는 SI 그대로 하고, 화면에 낼 때만 바꾼다.
+// 가속도를 ft/s^2가 아니라 mph/s로 내는 이유: 속도를 mph로 보고 있으므로 "초당 몇 mph를 더
+// 줄이려 했는가"로 바로 읽힌다. m/s -> mph와 m/s^2 -> mph/s는 같은 계수다.
+const MPH = 2.2369363;
+const FT  = 3.2808399;
+const acc  = a => a*MPH;                       // m/s^2 -> mph/s
+const dist = d => d*FT;                        // m -> ft
+const accS = (a,d=1) => (a>=0?'+':'')+acc(a).toFixed(d);
+
+// openpilot이 유지하려는 차간거리. 정지 시 stopDistance에서 출발해 속도에 비례해 벌어진다.
+// 순정 ACC 쪽은 목표를 알 수 없으므로, 실제로 유지한 거리(dRel)를 그대로 쓴다.
+const tFollowOf = gap => (META.tFollow && META.tFollow[gap]) || null;
+// dRel의 프레임간 변화는 vRel이 설명하는 양보다 잡음이 크다(측정 잡음 우세). 보기 좋으라고
+// 무작정 미는 대신, 물리적으로 불가능한 점프(=트래커가 다른 차로 갈아탄 지점)에서 창을 끊는
+// 이동중앙값을 쓴다. 진짜 불연속은 뭉개지 않고 아래에 점으로 표시한다.
+const JUMP_M = 1.0;            // 50ms에 1m = 20m/s, 실제 상대운동으로는 불가능
+let SMOOTHED = null;
+function smoothDist(){
+  const rows=SEG.rows, out=new Array(rows.length).fill(null), cuts=[];
+  const W=5;                   // ±5프레임 = 0.5초
+  for(let i=0;i<rows.length;i++){
+    const r=rows[i];
+    if(!(r[6]&F_LEAD) || r[5]==null) continue;
+    if(i>0){
+      const q=rows[i-1];
+      if(q[5]!=null && (q[6]&F_LEAD) && Math.abs(r[5]-q[5])>JUMP_M) cuts.push(i);
+    }
+    if(!smooth){ out[i]=r[5]; continue; }
+    const win=[];
+    for(let j=i-W;j<=i+W;j++){
+      if(j<0||j>=rows.length) continue;
+      const b=rows[j];
+      if(b[5]==null || !(b[6]&F_LEAD)) continue;
+      if(Math.abs(b[5]-r[5])>JUMP_M) continue;   // 다른 타겟은 창에 넣지 않는다
+      win.push(b[5]);
+    }
+    win.sort((a,b)=>a-b);
+    out[i]= win.length ? win[win.length>>1] : r[5];
+  }
+  return {d:out, cuts};
+}
+
+function wantDist(gap, vEgo){
+  const tf = tFollowOf(gap);
+  return tf==null ? null : tf*vEgo + META.stopDistance;
+}
+let META=null, SEG=null, vt=0, ticks=0, VOFF=0, smooth=true;   // VOFF: 영상 타임라인의 시작 오프셋
+
+const $=id=>document.getElementById(id);
+const fmt=(v,d=2)=>v==null?'—':v.toFixed(d);
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const video=()=>$('v');
+
+function fail(what,e){
+  const box=$('err'); box.style.display='block';
+  if(box.textContent.length<2000) box.textContent += `${what}: ${e&&e.message?e.message:e}\n`;
+  console.error(what,e);
+}
+addEventListener('error', e=>fail('오류', e.error||e.message));
+addEventListener('unhandledrejection', e=>fail('로드 실패', e.reason));
+
+async function boot(){ try{ await start(); }catch(e){ fail('시작 실패', e); } }
+
+async function start(){
+  META = await (await fetch('data/route.json')).json();
+  $('sub').textContent = `${META.route} · ${META.segments.length}개 세그먼트 · 정규화 기준 ${accS(META.accelMin)} … ${accS(META.accelMax)} mph/s`;
+  $('amin').textContent = accS(META.accelMin);
+  $('segs').innerHTML = META.segments.map(s=>`
+    <button class="seg${s.video?'':' novid'}" data-seg="${s.seg}" aria-selected="false"
+      title="세그먼트 ${s.seg} · 리드 ${s.leadFrames}프레임 · 최대 격차 ${accS(s.worst)} mph/s">
+      <span class="n">${s.seg}</span>
+      <span class="bar"><i style="width:${Math.min(100,s.disagreePct)}%"></i></span>
+      <span class="pc">${s.disagreePct}%</span></button>`).join('');
+  $('segs').onclick = e=>{ const b=e.target.closest('.seg'); if(b) load(+b.dataset.seg); };
+  const best = META.segments.slice().sort((a,b)=>a.worst-b.worst)[0];
+  await load(best ? best.seg : META.segments[0].seg);
+}
+
+async function load(n){
+  const v0=video(); if(v0) v0.pause();
+  document.querySelectorAll('.seg').forEach(b=>b.setAttribute('aria-selected', +b.dataset.seg===n));
+  const info = META.segments.find(s=>s.seg===n);
+  SEG = await (await fetch(`data/seg-${n}.json`)).json();
+  SEG.info = info;
+  $('stageTitle').textContent =
+    `재생 — 세그먼트 ${n} · ${info.dur.toFixed(0)}초 · 최대 격차 ${accS(info.worst)} mph/s`;
+
+  // controls를 브라우저에 맡긴다. 재생 제어가 이 페이지의 코드에 의존하지 않으므로,
+  // 스크립트 쪽에 무슨 문제가 생겨도 영상은 재생되고 그래프는 currentTime만 읽어 따라간다.
+  $('vidwrap').innerHTML = info.video
+    ? `<video id="v" controls preload="auto" playsinline src="video/seg-${n}.mp4"></video>`
+    : `<div class="novideo">이 세그먼트에는 영상이 없습니다</div>`;
+  const v=video();
+  VOFF=0;
+  if(v){
+    v.onplay  = ()=>$('play').textContent='❚❚ 일시정지';
+    v.onpause = ()=>$('play').textContent='▶ 재생';
+    v.onerror = ()=>fail('영상 재생 불가', v.error ? `code ${v.error.code}` : 'unknown');
+    // qcamera는 MPEG-TS라 첫 타임스탬프가 0이 아니고, 리먹스가 그걸 그대로 옮기면 MP4의
+    // 재생 시각이 그 오프셋에서 시작한다. video_source.py에서 리베이스하도록 고쳤지만,
+    // 이미 받아둔 파일도 그대로 보이도록 길이 차이에서 오프셋을 되돌린다.
+    v.onloadedmetadata = ()=>{
+      if(isFinite(v.duration) && v.duration > (SEG.info.dur||0) + 1){
+        VOFF = v.duration - SEG.info.dur;
+        try{ v.currentTime = VOFF; }catch(e){}
+      }
+      draw();
+    };
+  }
+  vt=0; SMOOTHED=null; draw();
+}
+
+$('play').onclick = ()=>{ const v=video(); if(!v) return;
+  if(v.paused) v.play().catch(e=>fail('재생 거부', e)); else v.pause(); };
+$('smooth').onclick = ()=>{ smooth=!smooth; $('smooth').setAttribute('aria-pressed',smooth);
+  $('smooth').textContent = smooth?'거리 평활 0.5초':'거리 원본'; SMOOTHED=null; draw(); };
+$('jump').onclick = ()=>{
+  const t=SEG&&SEG.info.worstT; if(t==null) return;
+  // 최대 격차는 순간이라 멈춰 있으면 무슨 일이 있었는지 알 수 없다. 조금 앞에서 재생을 건다.
+  seek(Math.max(0, t-4));
+  const v=video();
+  if(v && v.paused) v.play().catch(err=>fail('재생 거부', err));
+};
+
+function seek(t){
+  if(!SEG) return;
+  t=Math.max(0, Math.min(SEG.info.dur||0, t));
+  vt=t; const v=video(); if(v) try{ v.currentTime=t+VOFF; }catch(e){}
+  draw();
+}
+
+// 상시 rAF. 재생 이벤트로 루프를 켜는 구조였을 때는 그 이벤트를 한 번 놓치면 화면이 영영
+// 갱신되지 않고 원인도 드러나지 않았다. 그냥 계속 돌린다.
+function tick(){
+  ticks++;
+  const v=video();
+  // 영상 컨테이너의 mvhd duration이 실제 트랙 길이와 어긋나 있으므로(리먹스 버그) 축은
+  // 항상 로그에서 얻은 세그먼트 길이를 쓰고, 재생 위치만 영상에서 읽는다.
+  if(v && !v.paused) vt = Math.max(0, v.currentTime - VOFF);
+  draw();
+  requestAnimationFrame(tick);
+}
+
+const idxAt=t=>Math.max(0, Math.min(SEG.rows.length-1, Math.round(t*META.hz)));
+
+function ctx(id){
+  const cv=$(id), w=cv.clientWidth, h=cv.clientHeight;
+  if(!(w>0&&h>0)) return null;
+  const dpr=devicePixelRatio||1, cw=Math.round(w*dpr), ch=Math.round(h*dpr);
+  const g=cv.getContext('2d');
+  if(cv.width!==cw||cv.height!==ch){ cv.width=cw; cv.height=ch; }
+  g.setTransform(dpr,0,0,dpr,0,0);
+  return {g,w,h};
+}
+
+function draw(){
+  if(!SEG) return;
+  try{
+    const a=ctx('chart'); if(a) paint(a.g,a.w,a.h);
+    const b=ctx('dist');  if(b) paintDist(b.g,b.w,b.h);
+    readout();
+  }catch(e){ fail('그리기 실패', e); }
+}
+
+function paint(g,w,h){
+  g.clearRect(0,0,w,h);
+  const rows=SEG.rows, dur=SEG.info.dur||1, S=Math.abs(META.accelMin);
+  const L=46,R=14,T=14,B=h-26, iw=w-L-R, ih=B-T;
+  const x=t=>L+iw*(t/dur), y=a=>T+ih*(0.5-(a/S)/2);
+
+  // 리드 추종 레일
+  g.fillStyle=css('--ok'); g.globalAlpha=.22; let s=null;
+  for(let i=0;i<rows.length;i++){
+    const lead=rows[i][6]&F_LEAD;
+    if(lead&&s===null) s=rows[i][0];
+    if((!lead||i===rows.length-1)&&s!==null){ g.fillRect(x(s),B+3,Math.max(1,x(rows[i][0])-x(s)),4); s=null; }
+  }
+  g.globalAlpha=1;
+
+  // openpilot이 더 감속을 원한 구간
+  g.fillStyle=css('--bad'); g.globalAlpha=.30;
+  for(let i=0;i<rows.length-1;i++){
+    const [t,a,p,,,,f]=rows[i];
+    if(!(f&F_LEAD)||p-a>=-META.disagreeMs2) continue;
+    g.fillRect(x(t), y(a), Math.max(1,x(rows[i+1][0])-x(t)), y(p)-y(a));
+  }
+  g.globalAlpha=1;
+
+  // 눈금
+  g.font='10px '+css('--m'); g.textAlign='right'; g.lineWidth=1;
+  for(const [a,lab] of [[META.accelMax,accS(META.accelMax)],[0,'0'],[META.accelMin,accS(META.accelMin)]]){
+    const yy=Math.round(y(a))+.5;
+    g.strokeStyle=css('--line');
+    g.beginPath(); g.moveTo(L,yy); g.lineTo(w-R,yy); g.stroke();
+    g.fillStyle=css('--dim'); g.fillText(lab,L-6,yy+3);
+  }
+  g.textAlign='center';
+  const step = dur>45?10:5;
+  for(let t=0;t<=dur;t+=step){ g.fillStyle=css('--dim'); g.fillText(`${t}`,x(t),B+20); }
+
+  for(const [col,color] of [[1,'#F5B942'],[2,'#5AC8FA']]){
+    g.strokeStyle=color; g.lineWidth=1.8; g.lineJoin=g.lineCap='round';
+    g.beginPath();
+    for(let i=0;i<rows.length;i++){ const px=x(rows[i][0]), py=y(rows[i][col]);
+      i?g.lineTo(px,py):g.moveTo(px,py); }
+    g.stroke();
+  }
+
+  playhead(g,x,y,L,T,B,w,h);
+}
+
+// 현재 재생 위치 -- 지나온 구간을 덮고, 경계에 손잡이와 시각을 세운다.
+function playhead(g,x,y,L,T,B,w,h){
+  const r=SEG.rows[idxAt(vt)], px=Math.round(x(vt))+.5;
+
+  g.fillStyle=css('--bg'); g.globalAlpha=.55;
+  g.fillRect(L,T,Math.max(0,px-L),B-T); g.globalAlpha=1;
+
+  g.strokeStyle=css('--radar'); g.lineWidth=2;
+  g.beginPath(); g.moveTo(px,T-6); g.lineTo(px,B+8); g.stroke();
+
+  g.fillStyle=css('--radar');
+  g.beginPath(); g.moveTo(px-5,T-8); g.lineTo(px+5,T-8); g.lineTo(px,T-1); g.closePath(); g.fill();
+
+  if(r) for(const [col,color] of [[1,'#F5B942'],[2,'#5AC8FA']]){
+    g.beginPath(); g.arc(px,y(r[col]),4,0,7);
+    g.fillStyle=color; g.fill();
+    g.strokeStyle=css('--card'); g.lineWidth=1.8; g.stroke();
+  }
+
+  const lab=`${vt.toFixed(1)}s`;
+  g.font='600 10px '+css('--m');
+  const tw=g.measureText(lab).width+9, right=px+6+tw<w-4;
+  const bx=right?px+6:px-6-tw;
+  g.fillStyle=css('--radar');
+  g.beginPath(); g.rect(bx,B+10,tw,14); g.fill();
+  g.fillStyle=css('--bg'); g.textAlign='center'; g.textBaseline='middle';
+  g.fillText(lab,bx+tw/2,B+17.5); g.textBaseline='alphabetic';
+}
+
+// 차간거리: 순정 ACC가 실제로 유지한 거리와, openpilot이 같은 갭 설정에서 노렸을 거리.
+// 이쪽이 "추종이 어떻게 다른가"에 대한 직접적인 답이다 -- 위 차트는 가속 명령이라
+// 순간적인 반응만 보여주고, 정작 얼마나 붙어 다니는지는 드러나지 않는다.
+function paintDist(g,w,h){
+  g.clearRect(0,0,w,h);
+  const rows=SEG.rows, dur=SEG.info.dur||1;
+  if(!SMOOTHED) SMOOTHED = smoothDist();
+  const DS = SMOOTHED.d;
+  const L=46,R=14,T=14,B=h-24, iw=w-L-R, ih=B-T;
+
+  // 세로 눈금은 이 세그먼트에서 실제로 나온 거리에 맞춘다
+  let dmax=1;
+  for(let i=0;i<rows.length;i++){
+    const r=rows[i];
+    if(r[6]&F_LEAD && DS[i]!=null) dmax=Math.max(dmax,DS[i]);
+    const wd=wantDist(r[7], r[3]);
+    if(wd!=null && (r[6]&F_LEAD)) dmax=Math.max(dmax,wd);
+  }
+  dmax*=1.1;
+  const x=t=>L+iw*(t/dur), y=d=>T+ih*(1-d/dmax);
+
+  g.font='10px '+css('--m'); g.textAlign='right'; g.lineWidth=1;
+  for(let i=0;i<=3;i++){
+    const d=dmax*i/3, yy=Math.round(y(d))+.5;
+    g.strokeStyle=css('--line');
+    g.beginPath(); g.moveTo(L,yy); g.lineTo(w-R,yy); g.stroke();
+    g.fillStyle=css('--dim'); g.fillText(`${dist(d).toFixed(0)}`, L-6, yy+3);
+  }
+  g.textAlign='left'; g.fillStyle=css('--dim'); g.fillText('ft', 6, T+4);
+
+  // 순정이 openpilot 목표보다 가깝게 붙은 구간
+  g.fillStyle=css('--bad'); g.globalAlpha=.26;
+  for(let i=0;i<rows.length-1;i++){
+    const r=rows[i];
+    if(!(r[6]&F_LEAD) || DS[i]==null) continue;
+    const wd=wantDist(r[7], r[3]);
+    if(wd==null || DS[i]>=wd) continue;
+    g.fillRect(x(r[0]), y(wd), Math.max(1,x(rows[i+1][0])-x(r[0])), y(DS[i])-y(wd));
+  }
+  g.globalAlpha=1;
+
+  // 리드가 없으면 선을 끊는다 -- 이어 그리면 없는 추종을 있는 것처럼 보이게 한다
+  for(const [color,pick] of [['#F5B942', (r,i)=>(r[6]&F_LEAD) ? DS[i] : null],
+                             ['#5AC8FA', (r,i)=>(r[6]&F_LEAD) ? wantDist(r[7],r[3]) : null]]){
+    g.strokeStyle=color; g.lineWidth=1.8; g.lineJoin=g.lineCap='round';
+    g.beginPath(); let pen=false;
+    for(let i=0;i<rows.length;i++){
+      const d=pick(rows[i],i);
+      if(d==null){ pen=false; continue; }
+      const px=x(rows[i][0]), py=y(d);
+      pen?g.lineTo(px,py):g.moveTo(px,py); pen=true;
+    }
+    g.stroke();
+  }
+
+  // 트래커가 다른 차로 갈아탄 지점. 평활이 이걸 뭉개면 없는 연속성을 만들어내므로 남겨둔다.
+  g.fillStyle=css('--bad');
+  for(const i of SMOOTHED.cuts){
+    if(DS[i]==null) continue;
+    g.beginPath(); g.arc(x(rows[i][0]), y(DS[i]), 2.6, 0, 7); g.fill();
+  }
+
+  // 재생 위치
+  const px=Math.round(x(vt))+.5;
+  g.fillStyle=css('--bg'); g.globalAlpha=.55; g.fillRect(L,T,Math.max(0,px-L),B-T); g.globalAlpha=1;
+  g.strokeStyle=css('--radar'); g.lineWidth=2;
+  g.beginPath(); g.moveTo(px,T-6); g.lineTo(px,B+6); g.stroke();
+  const ri=idxAt(vt), r=SEG.rows[ri];
+  if(r && (r[6]&F_LEAD)){
+    for(const [d,color] of [[DS[ri],'#F5B942'],[wantDist(r[7],r[3]),'#5AC8FA']]){
+      if(d==null) continue;
+      g.beginPath(); g.arc(px,y(d),4,0,7); g.fillStyle=color; g.fill();
+      g.strokeStyle=css('--card'); g.lineWidth=1.8; g.stroke();
+    }
+  }
+  g.textAlign='center'; g.fillStyle=css('--dim'); g.font='10px '+css('--m');
+  const step = dur>45?10:5;
+  for(let t=0;t<=dur;t+=step) g.fillText(`${t}`,x(t),B+18);
+}
+
+function readout(){
+  const r=SEG.rows[idxAt(vt)]; if(!r) return;
+  const [,aAct,aPlan,vEgo,vPlan,dRel,flags,gap]=r, d=aPlan-aAct;
+  const cells=[
+    ['시각', `${vt.toFixed(1)}<small>s</small>`],
+    ['순정 실제', `${accS(aAct)}<small>mph/s</small>`],
+    ['openpilot 계획', `${accS(aPlan)}<small>mph/s</small>`],
+    ['격차', `<span style="color:${d<-META.disagreeMs2?css('--bad'):'inherit'}">${accS(d)}<small>mph/s</small></span>`],
+    ['속도', `${(vEgo*MPH).toFixed(0)}<small>mph</small>`],
+    ['계획 속도', `${(vPlan*MPH).toFixed(0)}<small>mph</small>`],
+    ['실제 차간', dRel==null?'—':`${dist(dRel).toFixed(0)}<small>ft</small>`],
+    ['openpilot 목표 차간', (()=>{ const wd=wantDist(gap,vEgo);
+        return (wd==null||!(flags&F_LEAD))?'—':`${dist(wd).toFixed(0)}<small>ft</small>`; })()],
+    ['차간 차이', (()=>{ const wd=wantDist(gap,vEgo);
+        if(wd==null||dRel==null||!(flags&F_LEAD)) return '—';
+        const dd=dRel-wd;
+        return `<span style="color:${dd<0?css('--bad'):'inherit'}">${dd>0?'+':''}${dist(dd).toFixed(0)}<small>ft</small></span>`; })()],
+    ['실제 헤드웨이', (()=>{ if(dRel==null||vEgo<2||!(flags&F_LEAD)) return '—';
+        return `${((dRel-META.stopDistance)/vEgo).toFixed(2)}<small>s</small>`; })()],
+    ['openpilot tFollow', tFollowOf(gap)==null?'—':`${tFollowOf(gap).toFixed(2)}<small>s</small>`],
+    ['갭 노브', gap||'—'],
+    ['상태', [(flags&F_LEAD)?'리드':'',(flags&F_RADAR)?'레이더':'',
+             (flags&F_BRAKE)?`<span style="color:${css('--bad')}">브레이크</span>`:'',
+             (flags&F_GAS)?'가속':''].filter(Boolean).join(' ')||'—'],
+  ];
+  $('read').innerHTML = cells.map(([k,v])=>`<div class="rd"><div class="k">${k}</div><div class="v">${v}</div></div>`).join('');
+
+  // 재생이 멈춘 것처럼 보일 때 어디가 문제인지 바로 드러나도록 상태를 같이 보여준다.
+  const v=video();
+  const st = v ? `${v.paused?'정지':'재생'} ready=${v.readyState}${VOFF?' off='+VOFF.toFixed(0)+'s':''}` : '영상 없음';
+  $('tt').textContent = `${vt.toFixed(2)}s / ${(SEG.info.dur||0).toFixed(0)}s · ${st} · ${ticks}f`;
+}
+
+// 그래프를 누르면 그 지점으로 옮기고 바로 재생한다. 멈춘 채로 옮겨놓고 다시 재생을 눌러야
+// 하면, 관심 있는 순간을 찾을 때마다 조작이 두 번씩 들어간다.
+$('chart').onclick = e=>{
+  if(!SEG) return;
+  const b=e.currentTarget.getBoundingClientRect(), L=46,R=14;
+  seek((e.clientX-b.left-L)/(b.width-L-R)*(SEG.info.dur||0));
+  const v=video();
+  if(v && v.paused) v.play().catch(err=>fail('재생 거부', err));
+};
+addEventListener('resize', draw);
+boot();
+tick();
+</script>
+</body></html>
