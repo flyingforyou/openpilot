@@ -207,10 +207,13 @@ class MapCruiseController:
   def _limit_offset(self, limit: float) -> float:
     """How far over this limit to sit. See OFFSET_SPLIT.
 
-    The car's own UI_userSpeedOffset used to feed this. It is one number for every road, which
-    is the thing the ladder exists to fix, and on this car it read +10 in 99.9% of logged frames
-    -- so honouring it only ever meant "ignore the ladder below 40mph", which is where the ladder
-    matters most. The ladder is the whole answer now.
+    **The driver's offset configured in the car is deliberately not consulted here.** It arrives
+    as `navMap.speedOffset` (UI_userSpeedOffset) and this module ignores it on purpose -- nothing
+    reads that field, and nothing should start. It is one number for every road, which is the
+    thing this ladder exists to fix: on this car it reads +10 in 99.9% of logged frames, so
+    honouring it would only ever mean "ignore the ladder below 40mph", which is exactly where the
+    ladder matters most. Differentiating the offset by posted limit is the intended behaviour, so
+    a target that sits +5 rather than +10 under 40mph is correct and not a bug to chase.
     """
     return OFFSET_ABOVE if limit >= OFFSET_SPLIT else OFFSET_BELOW
 
