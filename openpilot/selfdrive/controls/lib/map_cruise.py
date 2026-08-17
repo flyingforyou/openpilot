@@ -58,7 +58,7 @@ class MapCruiseState(IntEnum):
   mapped = 1     # a posted limit we believe, cross-checked against road class
   ramp = 2       # on a ramp: no posted limit applies, following what the fleet does here
   unmapped = 3   # no limit and no ramp: coasting on the last value under a road-class ceiling
-  curve = 4      # the fleet drives this stretch slower than the limit allows -- capped to it
+  curve = 4      # the model's curvature says this corner needs less than the limit allows
 
 
 # Fastest limit each road class can plausibly post, m/s. Sized from the observed pairings
@@ -121,10 +121,11 @@ MIN_TARGET = 20 * CV.KPH_TO_MS
 # Two steps rather than a fitted curve -- the fleet signal carries traffic and intersections as
 # well as pace, so it reads -7.1 on a congested 30 and +0.4 on a 55, and is not clean enough to
 # justify anything finer.
-# How far ahead the model's curvature is read for the curve cap, seconds. The fleet signal
-# leads a curve by a median 4.0s (158 of 173 segments), so matching it keeps the two inputs
-# talking about the same corner. Shorter and the cap arrives after the car is already in it;
-# longer and a bend well down the road holds the straight before it down.
+# How far ahead the model's curvature is read for the curve cap, seconds. Sized when the fleet
+# signal was the other half of this cap -- it leads a corner by a median 4.0s over 173 segments,
+# and matching it kept the two inputs talking about the same bend. The fleet no longer caps here,
+# but the number stands on its own: shorter and the cap arrives after the car is already in the
+# corner, longer and a bend well down the road holds the straight before it down.
 CURVE_LOOKAHEAD_T = 4.0
 
 OFFSET_SPLIT = 40 * CV.MPH_TO_MS
@@ -319,38 +320,29 @@ class MapCruiseController:
 
     # Curve deceleration, from what the fleet actually drives here.
     #
-    # A ramp already takes its target from the fleet outright, above; this is the same signal
-    # applied to every other road, and only ever downward. It has to be a cap rather than a
-    # setpoint because fleetSplineSpeed answers "how fast do people go here", which is bent by
-    # traffic and intersections as well as by geometry -- measured against the model's own
-    # curvature demand across 173 segments it correlates 0.66, good enough to slow for but not
-    # to steer by, and on straights it frequently reads *above* the posted limit.
+    # Curve deceleration, from the model's own curvature. This is the only geometry cap: it is
+    # read at a point rather than averaged over a segment, so it lets go the moment the road
+    # straightens. Across 10.3k on-ramp frames its median is 113mph and it binds 5.1% of the
+    # time -- but on the 14.2% of those frames that are genuinely tight it says 27.3mph against
+    # a fleet reading 38.6 and a car actually driven through at 27.8. That is the loop at the
+    # start of an on-ramp, and leaving it to the driver's brake pedal is not a merge protection,
+    # just a gap. It runs everywhere, ramps included.
     #
-    # It leads the curve rather than reporting it: cross-correlating the two over those segments
-    # puts the best fit at a median 4.0s ahead (p25 3.0, p75 4.5), leading in 158 of 173. The
-    # lead is in time rather than distance -- 3.5s/63m at 40mph against 4.0s/100m at 56mph --
-    # so it does not shrink at speed, and 4s covers even the largest observed deficit (11.1mph)
-    # at a comfortable 1.25 m/s^2. Slewing it is still SLEW_DOWN's job, not this line's.
-    # Two caps, applied separately because they fail differently.
-    #
-    # The curvature limit runs everywhere, ramps included. It is read at a point rather than
-    # averaged over a segment, so it lets go the moment the road straightens: across 10.3k
-    # on-ramp frames its median is 113mph and it binds 5.1% of the time -- but on the 14.2% of
-    # those frames that are genuinely tight it says 27.3mph against a fleet reading 38.6 and a
-    # car actually driven through at 27.8. That is the loop at the start of an on-ramp, and
-    # leaving it to the driver's brake pedal is not a merge protection, just a gap.
+    # The fleet used to cap here too, on every non-ramp road, on the theory that it stands in for
+    # the bends the point curvature misses. It does not: measured over 183k engaged non-ramp
+    # frames from four drives, the correlation between lateral acceleration and
+    # (fleetSplineSpeed - posted limit) is **+0.043** -- no relationship, and the wrong sign for
+    # a curve signal. The fleet reads 3.4-6.2mph *above* the posted limit in every lateral-accel
+    # band including the tightest, and the share of frames where it falls below the limit goes
+    # *down* as the road tightens (22% under 0.25 m/s^2, 0% over 2.0). What it actually tracks is
+    # traffic, lights and intersections, which the lead-following MPC already handles from the
+    # radar. Applied as a cap it bound 93-97% of straight-road frames and cost a median 3.3mph on
+    # free-flowing freeway, 11.7mph on a congested arterial -- there dragging the target below the
+    # posted limit outright. So the fleet stays what it is good for: the ramp branch's own target,
+    # where no posted limit applies and the segment average is the only signal there is.
     v_curve = self._curve_speed(curvature) if self.use_curve else 0.0
     if 0.0 < v_curve < target:
       target = v_curve
-      self.state = MapCruiseState.curve
-      self.source = 'curve'
-
-    # The fleet carries traffic, lights and everything else the map cannot see, but it is a
-    # segment average and flattens the tightest point of a bend. On a ramp it is already the
-    # branch above's own target -- complete with the merge guard that keeps its average from
-    # holding back an acceleration lane -- so it only caps elsewhere.
-    if self.use_curve and ramp not in (RAMP_ON, RAMP_OFF) and 0.0 < fleet < target:
-      target = fleet
       self.state = MapCruiseState.curve
       self.source = 'curve'
 
