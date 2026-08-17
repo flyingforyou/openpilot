@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from functools import cached_property
+from functools import cached_property, partial
 import os
 os.environ['GMMU'] = '0' # for usbgpu fast loading, noop for qcom
 from tinygrad.tensor import Tensor
@@ -26,11 +26,13 @@ from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, should_stop, smooth_value, get_curvature_from_plan
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
-from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, WARP_INPUTS, POLICY_INPUTS
+from openpilot.selfdrive.modeld.compile_modeld import (make_input_queues, make_split_input_queues,
+                                                       WARP_INPUTS, LEGACY_WARP_INPUTS, POLICY_INPUTS)
 from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_driving_model_data, fill_pose_msg, PublishState
 from openpilot.common.file_chunker import open_file_chunked
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, usbgpu_compiled, modeld_pkl_path, get_tg_input_devices, load_oob
+from openpilot.selfdrive.modeld.model_manager import STOCK_MODEL_ID, load_external_artifact, resolve_selected
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.modeld"
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
@@ -39,6 +41,19 @@ LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
 BIG_MODEL_TIMEOUT = 60
+
+# The built-in artifact declares no model_type; the ones that do say which of the two layouts
+# they use. A split artifact runs vision and one or more policies as separate graphs and
+# publishes a metadata block per graph, so its outputs arrive as several tensors.
+BUILTIN_MODEL_TYPE = 'supercombo'
+SPLIT_MODEL_TYPES = ('vision_policy', 'vision_multi_policy')
+SUPPORTED_MODEL_TYPES = (BUILTIN_MODEL_TYPE,) + SPLIT_MODEL_TYPES
+SUPPORTED_ARTIFACT_FORMAT = 1
+# Inputs modeld owns rather than reads off the artifact's declaration.
+DERIVED_NPY_INPUTS = ('desire', 'prev_feat', 'tfm', 'big_tfm')
+# Everything else an artifact may ask for. A policy wanting something not on this list is one
+# modeld cannot feed, which has to be a load failure rather than a KeyError mid-drive.
+SUPPLIED_NPY_INPUTS = ('traffic_convention', 'action_t', 'prev_action')
 
 
 def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
@@ -137,23 +152,76 @@ class FrameMeta:
 class ModelState:
   prev_desire: np.ndarray  # for tracking the rising edge of the pulse
 
-  def __init__(self, cam_w: int, cam_h: int, usbgpu: bool):
+  def __init__(self, cam_w: int, cam_h: int, usbgpu: bool, model_id: str = STOCK_MODEL_ID):
     input_devices = get_tg_input_devices(PROCESS_NAME, usbgpu)
     self.WARP_DEV, self.QUEUE_DEV = input_devices['WARP_DEV'], input_devices['QUEUE_DEV']
-    jits = load_oob(open_file_chunked(modeld_pkl_path(usbgpu)))
-    metadata = jits['metadata']
-    self.input_shapes = metadata['input_shapes']
-    self.vision_input_names = [k for k in self.input_shapes if 'img' in k]
-    self.output_slices = metadata['output_slices']
+    self.model_id = model_id
+    self.external = model_id != STOCK_MODEL_ID
+    if self.external:
+      # A downloaded artifact is a plain pickle in a directory outside the tree. The built-in
+      # one keeps the path it has always had, including the big/USB GPU variant.
+      jits = load_external_artifact(model_id)
+      if jits.get('format_version') != SUPPORTED_ARTIFACT_FORMAT:
+        raise ValueError(f"unsupported artifact format {jits.get('format_version')!r}")
+    else:
+      jits = load_oob(open_file_chunked(modeld_pkl_path(usbgpu)))
+    self.metadata = metadata = jits['metadata']
+
+    # Which layout this is comes from the artifact, never from which model was picked.
+    self.model_type = jits.get('model_type', BUILTIN_MODEL_TYPE)
+    if self.model_type not in SUPPORTED_MODEL_TYPES:
+      raise ValueError(f"unsupported model_type {self.model_type!r}")
+    self.split = self.model_type in SPLIT_MODEL_TYPES
 
     self.prev_desire = np.zeros(ModelConstants.DESIRE_LEN, dtype=np.float32)
     self.usbgpu = usbgpu
 
-    self.frame_skip = ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ
-    self.input_queues, self.npy = make_input_queues(self.input_shapes, self.frame_skip, device=self.QUEUE_DEV)
+    self.frame_skip = int(jits.get('frame_skip', ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ))
+    self.policy_input_keys = tuple(jits.get('policy_input_keys', POLICY_INPUTS))
+    # Who owns the image history: a policy that takes the raw image queues samples them itself
+    # and the warp just returns warped frames; one that does not gets its images already
+    # sampled by the warp. Artifacts that state it are believed, and the ones that do not are
+    # read off the queues their policy asks for, which says the same thing.
+    pipeline = jits.get('image_history_pipeline')
+    self.image_history_in_policy = (pipeline == 'policy') if pipeline is not None \
+      else ('img_q' in self.policy_input_keys)
+    self.warp_input_keys = tuple(jits.get('warp_input_keys',
+                                          WARP_INPUTS if self.image_history_in_policy else LEGACY_WARP_INPUTS))
+
+    if self.split:
+      self.policy_order = list(jits['policy_order'])
+      # The policy that decides how the car moves. Every policy in the artifact takes the same
+      # inputs, so the queues are sized from this one.
+      self.primary_policy = 'on_policy' if 'on_policy' in self.policy_order else self.policy_order[0]
+      vision_shapes = metadata['vision']['input_shapes']
+      policy_shapes = metadata[self.primary_policy]['input_shapes']
+      self.input_shapes = {**vision_shapes, **policy_shapes}
+      self.output_slices: dict[str, slice] = {}
+      self._make_queues = partial(make_split_input_queues, vision_shapes, policy_shapes, self.frame_skip)
+    else:
+      self.policy_order, self.primary_policy = [], None
+      # An external supercombo artifact nests its single metadata block under 'model'; the
+      # built-in one has always published it flat.
+      model_meta = metadata.get('model', metadata)
+      self.input_shapes = model_meta['input_shapes']
+      self.output_slices = model_meta['output_slices']
+      self._make_queues = partial(make_input_queues, self.input_shapes, self.frame_skip)
+
+    self.vision_input_names = [k for k in self.input_shapes if 'img' in k]
+    self.input_queues, self.npy = self._make_queues(device=self.QUEUE_DEV)
+    # A combined graph hands its feature vector back for modeld to re-feed; a split one keeps
+    # the history inside its own graph and has nowhere to put it.
+    self.feeds_back_features = 'prev_feat' in self.npy and 'hidden_state' in self.output_slices
+    if self.external:
+      unknown = [k for k in self.npy if k not in DERIVED_NPY_INPUTS + SUPPLIED_NPY_INPUTS]
+      if unknown:
+        raise ValueError(f"artifact asks for inputs modeld cannot supply: {unknown}")
     self.full_frames: dict[str, Tensor] = {}
     self._blob_cache: dict[tuple[str, int], Tensor] = {}
     self.parser = Parser()
+    # Each section of a split artifact carries only some of the fields, so its parser has to
+    # accept the ones that are somewhere else.
+    self.split_parser = Parser(ignore_missing=True)
     self.frame_buf_params = {k: get_nv12_info(cam_w, cam_h) for k in ('img', 'big_img')}
     self.run_policy = jits['run_policy']
     self.warp = jits[(cam_w,cam_h)]
@@ -161,6 +229,20 @@ class ModelState:
   def slice_outputs(self, model_outputs: np.ndarray, output_slices: dict[str, slice]) -> dict[str, np.ndarray]:
     parsed_model_outputs = {k: model_outputs[np.newaxis, v] for k,v in output_slices.items()}
     return parsed_model_outputs
+
+  def parse_split_outputs(self, outputs: list[np.ndarray]) -> dict[str, np.ndarray]:
+    """Vision first, then one tensor per entry in policy_order."""
+    vision_output, *policy_outputs = outputs
+    parsed = self.split_parser.parse_split_outputs(
+      self.slice_outputs(vision_output, self.metadata['vision']['output_slices']))
+    results = {k: self.split_parser.parse_split_outputs(self.slice_outputs(o, self.metadata[k]['output_slices']))
+               for k, o in zip(self.policy_order, policy_outputs, strict=True)}
+    # The primary policy is applied last so it wins wherever two policies name the same field.
+    for k in self.policy_order:
+      if k != self.primary_policy:
+        parsed.update(results[k])
+    parsed.update(results[self.primary_policy])
+    return parsed
 
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
           inputs: dict[str, np.ndarray]) -> dict[str, np.ndarray] | None:
@@ -177,23 +259,47 @@ class ModelState:
     inputs['desire_pulse'][0] = 0
     self.npy['desire'][:] = np.where(inputs['desire_pulse'] - self.prev_desire > .99, inputs['desire_pulse'], 0)
     self.prev_desire[:] = inputs['desire_pulse']
-    self.npy['traffic_convention'][:] = inputs['traffic_convention']
-    self.npy['action_t'][:] = inputs['action_t']
+    # traffic_convention and action_t on every model so far, and whatever else an artifact
+    # declared -- prev_action only for a policy that actually asks for it.
+    for k, buf in self.npy.items():
+      if k not in DERIVED_NPY_INPUTS:
+        buf[:] = inputs[k]
     self.npy['tfm'][:,:] = transforms['img'][:,:]
     self.npy['big_tfm'][:,:] = transforms['big_img'][:,:]
 
-    warped = self.warp(**{k: self.input_queues[k] for k in WARP_INPUTS}, frame=self.full_frames['img'], big_frame=self.full_frames['big_img'])
+    warp_out = self.warp(**{k: self.input_queues[k] for k in self.warp_input_keys},
+                         frame=self.full_frames['img'], big_frame=self.full_frames['big_img'])
 
-    outs, = self.run_policy(
-      **{k: self.input_queues[k] for k in POLICY_INPUTS if k in self.input_queues}, warped=warped
-    )
-    model_output = outs.numpy()[0]
-    if self.usbgpu and not np.all(np.isfinite(model_output)):
+    policy_queues = {k: self.input_queues[k] for k in self.policy_input_keys if k in self.input_queues}
+    if self.image_history_in_policy:
+      outs = self.run_policy(**policy_queues, warped=warp_out)
+    else:
+      img, big_img = warp_out
+      outs = self.run_policy(**policy_queues, img=img, big_img=big_img)
+
+    if self.split:
+      outputs = [o.numpy().flatten() for o in outs]
+      if not all(np.all(np.isfinite(o)) for o in outputs):
+        cloudlog.error("model output not finite, dropping frame")
+        return None
+      outputs_dict = self.parse_split_outputs(outputs)
+      if SEND_RAW_PRED:
+        outputs_dict['raw_pred'] = np.concatenate(outputs)
+      return outputs_dict
+
+    out, = outs
+    model_output = out.numpy()[0]
+    if (self.usbgpu or self.external) and not np.all(np.isfinite(model_output)):
       # TODO remove with prev_feat
       cloudlog.error("model output not finite, dropping frame")
       return None
     outputs_dict = self.parser.parse_outputs(self.slice_outputs(model_output, self.output_slices))
-    self.npy['prev_feat'][:] = model_output[self.output_slices['hidden_state']]
+    if self.external:
+      # A combined artifact may also predict the action directly. A no-op for one that does
+      # not -- the built-in model never comes through here.
+      self.split_parser.parse_action_outputs(outputs_dict)
+    if self.feeds_back_features:
+      self.npy['prev_feat'][:] = model_output[self.output_slices['hidden_state']]
 
     if SEND_RAW_PRED:
       outputs_dict['raw_pred'] = model_output.copy()
@@ -202,9 +308,19 @@ class ModelState:
   def warmup(self) -> None:
     dummy_frames = {k: np.zeros(self.frame_buf_params[k][3], dtype=np.uint8) for k in self.vision_input_names}
     eye = np.eye(3, dtype=np.float32)
-    dims = {'desire_pulse': ModelConstants.DESIRE_LEN, 'traffic_convention': 2, 'action_t': 2}
-    self.run(dummy_frames, dict.fromkeys(self.vision_input_names, eye), {k: np.zeros(v, dtype=np.float32) for k, v in dims.items()})
-    self.input_queues, self.npy = make_input_queues(self.input_shapes, self.frame_skip, device=self.QUEUE_DEV)
+    dims: dict[str, tuple[int, ...] | int] = {'desire_pulse': ModelConstants.DESIRE_LEN}
+    dims.update({k: v.shape for k, v in self.npy.items() if k not in DERIVED_NPY_INPUTS})
+    out = self.run(dummy_frames, dict.fromkeys(self.vision_input_names, eye),
+                   {k: np.zeros(v, dtype=np.float32) for k, v in dims.items()})
+    # Warmup is also where an external artifact gets checked: an inference that produces
+    # nothing usable, or output the controller cannot act on, has to fail the load here rather
+    # than mid-drive. The built-in model does not go through this path.
+    if self.external:
+      if out is None:
+        raise RuntimeError("no usable output from warmup inference")
+      if 'action' not in out and 'plan' not in out:
+        raise RuntimeError(f"model output has neither 'action' nor 'plan': {sorted(out)}")
+    self.input_queues, self.npy = self._make_queues(device=self.QUEUE_DEV)
     self.prev_desire[:] = 0
     self.full_frames.clear()
     self._blob_cache.clear()
@@ -264,11 +380,32 @@ def main(demo=False):
     model = big_model
     params.put_bool("UsbGpuActive", model is not None)
 
-  small_model = ModelState(vipc_client_main.width, vipc_client_main.height, False) if model is None or USBGPU else None
+  # The selection only ever applies to the small model that runs on the device's own compute.
+  # The big/USB GPU path above is untouched by it and always loads the built-in big artifact.
+  small_model = None
+  if model is None or USBGPU:
+    selected_model = resolve_selected(params)
+    if selected_model != STOCK_MODEL_ID:
+      try:
+        small_model = ModelState(vipc_client_main.width, vipc_client_main.height, False, model_id=selected_model)
+        small_model.warmup()
+      except Exception as e:
+        small_model = None
+        cloudlog.exception(f"External driving model {selected_model} failed to load: {e}")
+        cloudlog.error("Falling back to stock driving model")
+    if small_model is None:
+      small_model = ModelState(vipc_client_main.width, vipc_client_main.height, False)
   if model is None:
     model = small_model
   params.put_bool("UsbGpuLoading", False)
-  cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting")
+  # What is actually running, as opposed to what was asked for. Written only once the model is
+  # loaded and, for an external one, has produced an output. Reporting it must never be what
+  # stops the car from driving, hence the guard.
+  try:
+    params.put("RunningDrivingModel", model.model_id)
+  except Exception:
+    cloudlog.exception("could not report the running driving model")
+  cloudlog.warning(f"models loaded in {time.monotonic() - st:.1f}s, modeld starting on {model.model_id}")
 
   # messaging
   pub_socks = ["modelV2", "drivingModelData", "cameraOdometry"] + (["chestnutState"] if USBGPU else [])
@@ -382,6 +519,10 @@ def main(demo=False):
       'traffic_convention': traffic_convention,
       'action_t': np.array([lat_action_t, long_action_t], dtype=np.float32),
     }
+    # Only for a policy whose artifact declares it as an input -- most do not.
+    if 'prev_action' in model.npy:
+      inputs['prev_action'] = np.array([prev_action.desiredCurvature * max(1.0, v_ego) ** 2,
+                                        prev_action.desiredAcceleration], dtype=np.float32)
 
     mt1 = time.perf_counter()
     try:

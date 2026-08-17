@@ -36,6 +36,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DoReboot", {CLEAR_ON_MANAGER_START, BOOL}},
     {"DoShutdown", {CLEAR_ON_MANAGER_START, BOOL}},
     {"DoUninstall", {CLEAR_ON_MANAGER_START, BOOL}},
+    // Which driving model the WebUI selector asked for. It is a request for the next modeld
+    // start, not a statement about now, so what actually got loaded is reported separately --
+    // an external artifact that fails to load leaves this alone and runs stock.
+    {"DrivingModel", {PERSISTENT, STRING, "stock"}},
+    {"RunningDrivingModel", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"DriverTooDistracted", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL}},
     {"DriverLockoutCount", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, INT, "0"}},
     {"AlphaLongitudinalEnabled", {PERSISTENT | DEVELOPMENT_ONLY, BOOL}},

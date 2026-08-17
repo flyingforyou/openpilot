@@ -40,6 +40,7 @@ from openpilot.selfdrive.debug.can_source import CanSource, list_routes
 from openpilot.selfdrive.debug import shadow_replay
 from openpilot.selfdrive.debug.intervention_log import (InterventionLog, list_events,
                                                         locate_segment, read_event)
+from openpilot.selfdrive.modeld.model_manager import ModelManager
 
 # Options rather than free-form numbers: a typo in a text box goes straight into the braking
 # path, and named choices are also what makes an A/B run reproducible afterwards.
@@ -464,6 +465,7 @@ class Handler(BaseHTTPRequestHandler):
   params: Params
   can: 'CanSource'
   videos: 'video_source.Mp4Cache'
+  models: 'ModelManager'
 
   def log_message(self, *a):
     pass  # don't spam the console on every poll
@@ -524,6 +526,9 @@ class Handler(BaseHTTPRequestHandler):
 
     if self.path.startswith('/api/state'):
       return self._send(200, json.dumps({**self.state.get(), 'commit': GIT_COMMIT}))
+
+    if self.path.startswith('/api/models'):
+      return self._send(200, json.dumps(self.models.snapshot(self._onroad())))
 
     if self.path.startswith('/api/routes'):
       return self._send(200, json.dumps({'routes': list_routes(), **self.can.state()}))
@@ -646,7 +651,35 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, PAGE_SHADOW, 'text/html; charset=utf-8')
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
 
+  def _onroad(self) -> bool:
+    return bool(self.state.get().get('onroad'))
+
+  def _read_json(self):
+    n = int(self.headers.get('Content-Length', 0))
+    return json.loads(self.rfile.read(n) or b'{}')
+
   def do_POST(self):
+    if self.path.startswith('/api/models/'):
+      try:
+        req = self._read_json()
+      except json.JSONDecodeError:
+        return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
+      # Checked here rather than only in the page: a stale tab, a second phone or a curl would
+      # otherwise be able to swap the model out from under a car that is driving.
+      if self._onroad():
+        return self._send(409, json.dumps({'error': '주행 중에는 모델을 변경할 수 없습니다'}))
+      action = self.path.split('?')[0].rsplit('/', 1)[-1]
+      model_id = str(req.get('id') or '')
+      if action == 'download':
+        code, out = self.models.download(model_id)
+      elif action == 'select':
+        code, out = self.models.select(model_id)
+      elif action == 'delete':
+        code, out = self.models.delete(model_id, self._onroad())
+      else:
+        code, out = 404, {'error': f'알 수 없는 요청: {action}'}
+      return self._send(code, json.dumps(out))
+
     if self.path.startswith('/api/shadow/scan'):
       n = int(self.headers.get('Content-Length', 0))
       try:
@@ -880,6 +913,22 @@ button.apply{flex:1;background:var(--ok);color:#04140c;border:0;border-radius:10
 padding:13px;font-size:14.5px;font-weight:600;cursor:pointer;font-family:inherit}
 button.apply[disabled]{background:var(--line);color:var(--dim);cursor:default}
 .dirtynote{font-size:12px;color:var(--mut)}
+.mrow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 0;
+border-bottom:1px solid var(--line)}.mrow:last-child{border-bottom:0}
+.mrow .dot{font-family:var(--m);color:var(--dim);margin-right:7px}
+.mrow.on .dot{color:var(--ok)}
+.mrow .nm{font-size:14px}
+.mrow .st{font-family:var(--m);font-size:11px;color:var(--mut);margin-top:3px}
+.mrow .st.bad{color:var(--bad)}
+.mbtns{display:flex;gap:7px;flex-shrink:0}
+button.mb{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:8px;
+padding:8px 12px;font-size:12.5px;font-family:inherit;cursor:pointer}
+button.mb:hover:not([disabled]){border-color:var(--radar)}
+button.mb.pri{border-color:var(--ok);color:var(--ok)}
+button.mb.del{border-color:var(--line);color:var(--dim)}
+button.mb[disabled]{opacity:.4;cursor:default}
+.bar{height:3px;background:var(--line);border-radius:2px;margin-top:6px;overflow:hidden}
+.bar i{display:block;height:100%;background:var(--radar);transition:width .3s}
 #msg{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom));
 background:var(--card);border:1px solid var(--line);border-radius:10px;padding:11px 14px;
 font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none}
@@ -921,6 +970,11 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
     <div><div class="k">램프</div><div class="v" style="font-size:13px"><span id="mramp" class="pill">–</span></div></div>
     <div><div class="k">위치신뢰</div><div class="v"><span id="mconf">–</span><small>%</small></div></div>
   </div>
+</div>
+
+<div class="card"><div class="h">Driving Model <span id="mdlState" class="hlp"></span></div>
+  <div id="models"></div>
+  <div class="hlp" id="mdlNote" style="margin-top:10px"></div>
 </div>
 
 <div class="card"><div class="h">지도 자동 크루즈 설정</div><div id="mapSettings"></div></div>
@@ -994,6 +1048,89 @@ async function poll(){
   }catch(e){$('conn').textContent='디바이스에 연결할 수 없습니다';}
 }
 
+// Driving model selection. Applied at the next modeld start rather than swapped under a
+// running model, so the card always shows both what is loaded and what was asked for.
+let mdl={models:[],running:null,selected:'stock',onroad:false}, mdlBusy=false;
+
+function modelName(id){
+  const m=(mdl.models||[]).find(x=>x.id===id);
+  return m?m.name:'–';
+}
+
+// Failure text comes from an exception -- a URL or a checksum, but not something to hand to
+// innerHTML unescaped.
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+
+function renderModels(){
+  $('mdlState').textContent=`· 현재 실행 중 ${mdl.running?modelName(mdl.running):'보고 없음'}`
+    +` · 다음 실행 ${modelName(mdl.selected)}`;
+  $('mdlNote').textContent=mdl.onroad
+    ? '주행 중에는 모델을 변경할 수 없습니다 · 정차 후 offroad에서 변경하세요'
+    : '선택은 다음 modeld 시작(다음 주행)부터 적용됩니다.';
+  const box=$('models');box.innerHTML='';
+  for(const m of mdl.models||[]){
+    const sel=m.id===mdl.selected, dl=!!m.downloading;
+    const row=document.createElement('div');
+    row.className='mrow'+(sel?' on':'');
+    const verifying=dl&&m.stage==='verify';
+    let st;
+    if(m.builtin) st='Built in';
+    else if(verifying) st='Verifying · 이 빌드에서 로드되는지 확인 중';
+    else if(dl) st=`Downloading ${m.progress||0}%`;
+    else st=m.installed?'Installed':'Not installed';
+    if(sel) st+=' · Selected';
+    // Invalid outranks the rest: the file is there and intact, but this build cannot load it.
+    // A warning is the weaker case -- the check could not run, so modeld's fallback decides.
+    const bad=m.invalid||(!dl&&m.error);
+    const txt=bad?('Invalid · '+esc(m.error||'')):(m.warn?(st+' · 확인 못함 · '+esc(m.warn)):st);
+    const left=document.createElement('div');
+    left.innerHTML=`<div class="nm"><span class="dot">${sel?'●':'○'}</span>${m.name}</div>`
+      +`<div class="st${bad?' bad':''}">${txt}</div>`
+      +(dl&&!verifying?`<div class="bar"><i style="width:${m.progress||0}%"></i></div>`:'');
+    row.appendChild(left);
+    const btns=document.createElement('div');btns.className='mbtns';
+    const add=(label,cls,act,off)=>{
+      const b=document.createElement('button');
+      b.className='mb '+cls;b.textContent=label;
+      b.disabled=!!(off||mdl.onroad||mdlBusy||dl);
+      b.onclick=()=>modelAction(act,m.id);
+      btns.appendChild(b);
+    };
+    if(m.installed) add('Select','pri','select',sel||m.invalid);
+    if(!m.builtin && !m.installed) add('Download','pri','download');
+    if(!m.builtin && m.installed) add('Delete','del','delete');
+    row.appendChild(btns);
+    box.appendChild(row);
+  }
+}
+
+async function modelAction(action,id){
+  mdlBusy=true;renderModels();
+  try{
+    const r=await fetch('/api/models/'+action,{method:'POST',
+      headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+    const d=await r.json();
+    if(!r.ok) toast(d.error||'요청에 실패했습니다',1);
+    else if(action==='select') toast(`${modelName(id)} 선택됨 · 다음 주행부터 적용`);
+    else if(action==='download') toast(`${modelName(id)} 내려받는 중`);
+    else toast(`${modelName(id)} 삭제됨`);
+  }catch(e){toast('디바이스에 연결할 수 없습니다',1);}
+  mdlBusy=false;
+  await loadModels();
+}
+
+async function loadModels(){
+  try{ mdl=await(await fetch('/api/models')).json(); }catch(e){}
+  renderModels();
+}
+
+// One timer chain, rescheduled from itself -- a refresh triggered by a button press must not
+// start a second one. Faster only while something is actually downloading.
+function scheduleModels(){
+  const busy=(mdl.models||[]).some(m=>m.downloading);
+  setTimeout(async()=>{await loadModels();scheduleModels();}, busy?700:3000);
+}
+
 let cfg={}, mapCfg={}, carrotCfg={}, staged={}, carrotActive=false, livePlanner=null;
 
 function renderSettings(){
@@ -1064,7 +1201,7 @@ $('apply').onclick=async()=>{
   toast(d.engaged?'저장됨 · 다음 engage부터 적용됩니다':'저장됨 · 약 0.5초 내 반영');
 };
 
-loadSettings();poll();setInterval(poll,300);
+loadSettings();loadModels().then(scheduleModels);poll();setInterval(poll,300);
 </script></body></html>"""
 
 
@@ -2146,6 +2283,7 @@ def main():
   Handler.videos = video_source.Mp4Cache()
   Handler.shadow = shadow_replay.ShadowReplay(lambda: bool(Handler.state.get().get('engaged')))
   Handler.shadow_scan = shadow_replay.ShadowScan(lambda: bool(Handler.state.get().get('engaged')))
+  Handler.models = ModelManager(Handler.params)
 
   srv = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
   print(f"serving on http://0.0.0.0:{args.port}  (commit {GIT_COMMIT})")

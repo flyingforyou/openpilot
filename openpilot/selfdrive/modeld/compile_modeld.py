@@ -39,6 +39,10 @@ from tinygrad.engine.jit import TinyJit
 NV12Frame = namedtuple("NV12Frame", ['width', 'height', 'stride', 'y_height', 'uv_height', 'size'])
 WARP_INPUTS = ['tfm', 'big_tfm']
 POLICY_INPUTS = ['img_q', 'big_img_q', 'feat_q', 'desire_q', 'packed_npy_inputs']
+# External artifacts may put the image history on the warp side instead, in which case the warp
+# takes the image queues and hands back already-sampled frames. Nothing built here does that --
+# this is only the shape modeld has to feed such an artifact.
+LEGACY_WARP_INPUTS = ['img_q', 'big_img_q', 'tfm', 'big_tfm']
 
 UV_SCALE_MATRIX = np.array([[0.5, 0, 0], [0, 0.5, 0], [0, 0, 1]], dtype=np.float32)
 UV_SCALE_MATRIX_INV = np.linalg.inv(UV_SCALE_MATRIX)
@@ -157,6 +161,41 @@ def make_input_queues(input_shapes, frame_skip, device):
   npy.update({k: v.reshape(s) for (k, s), v in zip(shapes.items(), np.split(packed_npy_inputs, np.cumsum(sizes[:-1])), strict=True)})
   input_queues.update({
     'feat_q': Tensor(np.zeros((frame_skip * fb[1], fb[0], fb[2]), dtype=np.float32), device=device).contiguous().realize(),
+    'desire_q': Tensor(np.zeros((frame_skip * dp[1], dp[0], dp[2]), dtype=np.float32), device=device).contiguous().realize(),
+    'packed_npy_inputs': Tensor(packed_npy_inputs, device='NPY').realize(),
+  })
+  return input_queues, npy
+
+
+def get_split_policy_npy_shapes(policy_input_shapes):
+  """Same packing as get_policy_npy_shapes, minus prev_feat.
+
+  A split artifact keeps the feature history inside its own graph -- the vision half writes the
+  new feature straight into feat_q -- so there is nothing for modeld to hand back. Everything
+  else the policy declares is packed in the order the artifact declares it, which is what makes
+  an input like prev_action work without modeld knowing the name.
+  """
+  desire_key = next(k for k in policy_input_shapes if k.startswith('desire'))
+  shapes = {'desire': (policy_input_shapes[desire_key][2],)}
+  for k, s in policy_input_shapes.items():
+    if k == desire_key or k == 'features_buffer' or 'img' in k:
+      continue
+    shapes[k] = tuple(s)
+  return shapes, [math.prod(s) for s in shapes.values()]
+
+
+def make_split_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device):
+  input_queues, npy = make_warp_input_queues(vision_input_shapes, frame_skip, device)
+
+  fb = policy_input_shapes['features_buffer']  # (1, 25, 512), the current frame's feature included
+  desire_key = next(k for k in policy_input_shapes if k.startswith('desire'))
+  dp = policy_input_shapes[desire_key]
+
+  shapes, sizes = get_split_policy_npy_shapes(policy_input_shapes)
+  packed_npy_inputs = np.zeros(sum(sizes), dtype=np.float32)
+  npy.update({k: v.reshape(s) for (k, s), v in zip(shapes.items(), np.split(packed_npy_inputs, np.cumsum(sizes[:-1])), strict=True)})
+  input_queues.update({
+    'feat_q': Tensor(np.zeros((frame_skip * (fb[1] - 1) + 1, fb[0], fb[2]), dtype=np.float32), device=device).contiguous().realize(),
     'desire_q': Tensor(np.zeros((frame_skip * dp[1], dp[0], dp[2]), dtype=np.float32), device=device).contiguous().realize(),
     'packed_npy_inputs': Tensor(packed_npy_inputs, device='NPY').realize(),
   })

@@ -114,6 +114,23 @@ class Parser:
     self.parse_categorical_crossentropy('desire_state', outs, out_shape=(ModelConstants.DESIRE_PRED_WIDTH,))
     return outs
 
+  def parse_action_outputs(self, outs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    # A policy that predicts the action directly rather than a plan to differentiate. Two values
+    # -- curvature*v^2 and acceleration -- each with a std, so the same MDN parse as the rest.
+    self.parse_mdn('action', outs, in_N=0, out_N=0, out_shape=(ModelConstants.ACTION_WIDTH,))
+    return outs
+
+  def parse_split_outputs(self, outs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """One section of a split artifact, whose fields are whatever that section declares.
+
+    Which of vision / plan / action a section carries is the artifact's own contract, so this
+    parses what is present instead of assuming a fixed division. Needs ignore_missing.
+    """
+    self.parse_vision_outputs(outs)
+    self.parse_policy_outputs(outs)
+    self.parse_action_outputs(outs)
+    return outs
+
   def parse_outputs(self, outs: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     outs = self.parse_vision_outputs(outs)
     outs = self.parse_policy_outputs(outs)
