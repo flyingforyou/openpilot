@@ -61,8 +61,10 @@ class LongControl:
   def __init__(self, CP):
     self.CP = CP
     self.long_control_state = LongCtrlState.off
-    self.pid = PIDController((CP.longitudinalTuning.kpBP, CP.longitudinalTuning.kpV),
-                             (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV),
+    # 0.11.2 deprecated the longitudinal kp table -- kpBP/kpV moved into the schema's deprecated
+    # group and no port fills them any more, so the proportional term starts at zero the way
+    # upstream leaves it. CarrotPilot still sets one below when its own tuning is enabled.
+    self.pid = PIDController(0.0, (CP.longitudinalTuning.kiBP, CP.longitudinalTuning.kiV),
                              rate=1 / DT_CTRL)
     self.last_output_accel = 0.0
     # 1.0 keeps a_target going through untouched, which is what this tree did before.
@@ -79,11 +81,12 @@ class LongControl:
     self.pid.pos_limit = accel_limits[1]
 
     # CarrotPilot exposes the longitudinal PID. Only meaningful where the port gives a single
-    # gain point, as this car does (kpV and kiV are both [0.], so the loop is feedforward-only
-    # until something sets them); ports with speed-dependent tables keep their own.
-    if gains is not None and len(self.CP.longitudinalTuning.kpBP) == 1 and len(self.CP.longitudinalTuning.kiBP) == 1:
+    # gain point, as this car does (kiV is [0.], so the loop is feedforward-only until something
+    # sets it); ports with speed-dependent tables keep their own. kp is speed-independent here
+    # because the table it used to ride on is gone from the schema.
+    if gains is not None and len(self.CP.longitudinalTuning.kiBP) == 1:
       kp, ki, self._k_f = gains
-      self.pid._k_p = (self.CP.longitudinalTuning.kpBP, [kp])
+      self.pid._k_p = ([0], [kp])
       self.pid._k_i = (self.CP.longitudinalTuning.kiBP, [ki])
 
     self.long_control_state = long_control_state_trans(self.CP, active, self.long_control_state, CS.vEgo,
