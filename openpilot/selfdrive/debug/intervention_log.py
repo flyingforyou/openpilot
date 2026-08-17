@@ -85,10 +85,10 @@ class InterventionLog:
       'aEgo': round(cs.aEgo, 3),
       'vEgo': round(cs.vEgo, 2),
       # who could see a lead, and whether it was a physical return or a model guess
-      'leadStatus': bool(lead.status),
+      'leadStatus': bool(lead.present),
       'leadRadar': bool(lead.radar),
-      'leadDRel': round(lead.dRel, 1) if lead.status else None,
-      'leadVRel': round(lead.vRel, 1) if lead.status else None,
+      'leadDRel': round(lead.dRel, 1) if lead.present else None,
+      'leadVRel': round(lead.vRel, 1) if lead.present else None,
       'steeringAngle': round(cs.steeringAngleDeg, 1),
       'engaged': bool(ss.enabled),
       'brake': bool(cs.brakePressed),

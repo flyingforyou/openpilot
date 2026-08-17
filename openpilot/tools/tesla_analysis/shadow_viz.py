@@ -175,13 +175,13 @@ def extract_segment(path: str) -> dict:
       seen_plan = True
     elif w == 'radarState':
       lead = evt.radarState.leadOne
-      cur['lead'] = bool(lead.status)
+      cur['lead'] = bool(lead.present)
       cur['leadRadar'] = bool(lead.radar)
-      cur['dRel'] = round(lead.dRel, 1) if lead.status else None
+      cur['dRel'] = round(lead.dRel, 1) if lead.present else None
       # Closing speed separates "settled behind a lead" from "still catching up". Without it a
       # median over every lead frame counts the approach, which has nothing to do with how
       # close the controller actually sits.
-      cur['vRel'] = round(lead.vRel, 2) if lead.status else None
+      cur['vRel'] = round(lead.vRel, 2) if lead.present else None
     elif w == 'selfdriveState':
       cur['eng'] = bool(evt.selfdriveState.enabled)
 

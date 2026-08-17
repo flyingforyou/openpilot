@@ -9,7 +9,7 @@ republish_route.py then plays that small file back with almost no memory of its 
 
   PYTHONPATH=. python3 tools/replay/extract_ui_window.py <rlog.zst> <out.pkl> [duration_s] [start_s]
 
-Picks a window where openpilot is engaged and radarState.leadOne.status is true. Both matter:
+Picks a window where openpilot is engaged and radarState.leadOne.present is true. Both matter:
 the mici renderer hides the lane lines, the path and the lead chevron entirely while
 disengaged, so a disengaged window replays as a blank screen.
 
@@ -43,7 +43,7 @@ def main(rlog_path: str, out_path: str, duration_s: float, start_s: float | None
       which = msg.which()
       if which == 'selfdriveState':
         engaged = msg.selfdriveState.enabled
-      elif which == 'radarState' and engaged and msg.radarState.leadOne.status:
+      elif which == 'radarState' and engaged and msg.radarState.leadOne.present:
         lead_start = msg.logMonoTime
         break
 

@@ -80,9 +80,9 @@ def main(paths):
         cur['enabled'] = bool(evt.selfdriveState.enabled)
       elif w == 'radarState':
         lead = evt.radarState.leadOne
-        cur['lead'] = bool(lead.status)
+        cur['lead'] = bool(lead.present)
         cur['leadRadar'] = bool(lead.radar)
-        cur['dRel'] = round(lead.dRel, 1) if lead.status else None
+        cur['dRel'] = round(lead.dRel, 1) if lead.present else None
       elif w == 'carState':
         cs = evt.carState
         cur['aEgo'], cur['vEgo'] = cs.aEgo, cs.vEgo

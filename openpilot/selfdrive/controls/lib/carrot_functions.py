@@ -418,7 +418,7 @@ class CarrotPlanner:
       self.jerk_factor_apply = self.jerk_factor * dynamicTFollowLC
 
     # 일반 lead follow: lead.jLead 기반 동적 조절
-    elif lead.status and self.dynamicTFollow > 0.0:
+    elif lead.present and self.dynamicTFollow > 0.0:
       # lead.jLead < 0 : 앞차가 감속 방향으로 변함 -> 차간거리 증가
       # lead.jLead > 0 : 앞차가 가속 방향으로 변함 -> 차간거리 감소
       t_follow += np.interp(lead.jLead, [-3.0, -0.5, 0.5, 2.0], [1.0, 0.0, 0.0, -1.0]) * self.dynamicTFollow
@@ -583,7 +583,7 @@ class CarrotPlanner:
     v = model.velocity.x
 
     self.fakeCruiseDistance = 0.0
-    lead_detected = radarstate.leadOne.status # & radarstate.leadOne.radar
+    lead_detected = radarstate.leadOne.present # & radarstate.leadOne.radar
 
     self.xStop = self.update_stop_dist(x[31])
     stop_model_x_raw = self.xStop
@@ -758,7 +758,7 @@ class DrivingModeDetector:
       lead_speed = 0
       lead_accel = 0
       distance = 200
-      if leadOne.status:
+      if leadOne.present:
         lead_speed = leadOne.vLead * CV.MS_TO_KPH
         lead_accel = leadOne.aLead
         distance = leadOne.dRel

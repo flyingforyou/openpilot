@@ -320,7 +320,7 @@ class LongitudinalMpc:
 
   def apply_predicted_danger_a_change_cost(self, lead, base_a_change_cost, lead_obstacle, t_follow, comfort_brake, stop_distance):
     self.predicted_danger_margin = 1e3
-    if not lead.status:
+    if not lead.present:
       target_a_change_cost = base_a_change_cost
     else:
       safe_distance = get_safe_obstacle_distance(self.x_sol[:,1], t_follow, comfort_brake, stop_distance)
@@ -358,7 +358,7 @@ class LongitudinalMpc:
   
   def process_lead(self, lead, j_lead):
     v_ego = self.x0[1]
-    if lead is not None and lead.status:
+    if lead is not None and lead.present:
       x_lead = lead.dRel
       v_lead = lead.vLead
       a_lead = lead.aLeadK
@@ -395,9 +395,9 @@ class LongitudinalMpc:
     v_ego = self.x0[1]
     a_ego = self.x0[2]
     t_follow = carrot.get_T_FOLLOW(personality, v_ego, a_ego)
-    self.status = radarstate.leadOne.status or radarstate.leadTwo.status
+    self.status = radarstate.leadOne.present or radarstate.leadTwo.present
 
-    if radarstate.leadOne.status:
+    if radarstate.leadOne.present:
       j_lead = radarstate.leadOne.jLead
       self.j_lead = j_lead * 0.1 + self.j_lead * 0.9
     else:
@@ -459,7 +459,7 @@ class LongitudinalMpc:
       # These are not used in ACC mode
       x[:], v[:], a[:], j[:] = 0.0, 0.0, 0.0, 0.0
 
-      if radarstate.leadOne.status:
+      if radarstate.leadOne.present:
         base_a_change_cost = float(np.interp(abs(self.j_lead), [0.3, 2.0], [A_CHANGE_COST, 20]))
       else:
         base_a_change_cost = A_CHANGE_COST

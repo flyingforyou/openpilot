@@ -110,7 +110,7 @@ def scan_segment(seg_dir):
         fault_active = False
 
     if w == 'radarState':
-      lead_status = bool(evt.radarState.leadOne.status)
+      lead_status = bool(evt.radarState.leadOne.present)
       lead_drel = float(evt.radarState.leadOne.dRel)
 
     if w == 'longitudinalPlan':

@@ -19,7 +19,7 @@ CLIP_MARGIN = 500
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
 
-# radarState.leadOne/leadTwo.status flickers false for single frames on a real lead -- checked
+# radarState.leadOne/leadTwo.present flickers false for single frames on a real lead -- checked
 # against today's actual driving data (route 00000003) and found 56 drop/recover episodes in
 # just the first 10 minutes while engaged, almost all under 1s and clustered on leads 100m+ out
 # where the return is weakest. The chevron used to reset every one of those to nothing; holding
@@ -199,7 +199,7 @@ class ModelRenderer(Widget):
     now = time.monotonic()
 
     for i, lead_data in enumerate(leads):
-      if lead_data and lead_data.status:
+      if lead_data and lead_data.present:
         d_rel, y_rel, v_rel = lead_data.dRel, lead_data.yRel, lead_data.vRel
         idx = self._get_path_length_idx(path_x_array, d_rel)
 
@@ -237,7 +237,7 @@ class ModelRenderer(Widget):
       road_edge.projected_points = self._map_line_to_polygon(road_edge.raw_points, line_width_factor, 0.0, max_idx)
 
     # Update path using raw points
-    if lead and lead.status:
+    if lead and lead.present:
       lead_d = lead.dRel * 2.0
       max_distance = np.clip(lead_d - min(lead_d * 0.35, 10.0), 0.0, max_distance)
 

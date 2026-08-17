@@ -275,7 +275,7 @@ class HudRenderer(Widget):
       self._gap_adjust = 0
 
     lead_one = sm['radarState'].leadOne if sm.valid['radarState'] else None
-    self._lead_d_rel = lead_one.dRel if (lead_one and lead_one.status) else None
+    self._lead_d_rel = lead_one.dRel if (lead_one and lead_one.present) else None
 
     # Only the carrot planner fills these; the stock one leaves them zero, which reads as
     # "no traffic light seen" and draws nothing.

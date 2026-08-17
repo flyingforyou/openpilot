@@ -134,7 +134,7 @@ class Controls:
                      _p("LongTuningKiV", 0) * 0.001,
                      _p("LongTuningKf", 100) * 0.01)
     lead = self.sm['radarState'].leadOne
-    lead_d_rel = float(lead.dRel) if lead.status else None
+    lead_d_rel = float(lead.dRel) if lead.present else None
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop,
                                             pid_accel_limits, self._stopping_accel, lead_d_rel,
                                             self._gains))

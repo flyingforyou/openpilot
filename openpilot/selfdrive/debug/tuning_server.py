@@ -495,8 +495,8 @@ class State:
           'planner': (str(sm['longitudinalPlan'].plannerSource)
                       if sm.seen['longitudinalPlan'] else None),
           'lead': {
-            'status': bool(lead.status),
-            'source': ('R' if lead.radar else 'V') if lead.status else None,
+            'status': bool(lead.present),
+            'source': ('R' if lead.radar else 'V') if lead.present else None,
             'trackId': int(lead.radarTrackId),
             'dRel': round(lead.dRel, 1),
             'vLead': round(lead.vLead, 1),

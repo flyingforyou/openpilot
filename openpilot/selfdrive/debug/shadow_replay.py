@@ -241,7 +241,7 @@ def _radarstate(ld):
     o.vLead, o.vLeadK = ld['vLead'], ld['vLeadK']
     o.aLeadK, o.aLeadTau = ld['aLeadK'], ld['aLeadTau']
     o.modelProb = ld['modelProb']
-  rs.leadTwo.status = False
+  rs.leadTwo.present = False
   return rs
 
 
