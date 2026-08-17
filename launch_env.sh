@@ -20,3 +20,12 @@ if [ -z "$AGNOS_VERSION" ]; then
 fi
 
 export STAGING_ROOT="/data/safe_staging"
+
+# 0.11.2 takes acados, json11 and the rest from PyPI instead of vendoring them under third_party,
+# and the AGNOS system venv predates that -- so on a device the launcher would otherwise start
+# manager with an interpreter that cannot import capnp. Prefer the project venv when `uv sync` has
+# made one; DIR is set by launch_chffrplus.sh before this file is sourced.
+if [ -n "$DIR" ] && [ -x "$DIR/.venv/bin/python3" ]; then
+  export PATH="$DIR/.venv/bin:$PATH"
+  export VIRTUAL_ENV="$DIR/.venv"
+fi
