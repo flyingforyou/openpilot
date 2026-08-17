@@ -293,6 +293,7 @@ if arch == "comma_arm64":
 SConscript([
   'openpilot/selfdrive/pandad/SConscript',
   'openpilot/selfdrive/controls/lib/longitudinal_mpc_lib/SConscript',
+  'openpilot/selfdrive/controls/lib/longitudinal_mpc_carrot/SConscript',
   'openpilot/selfdrive/locationd/SConscript',
   'openpilot/selfdrive/modeld/SConscript',
   'openpilot/selfdrive/ui/SConscript',
