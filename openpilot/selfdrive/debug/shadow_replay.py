@@ -194,10 +194,10 @@ def extract(route: str, seg: int) -> list[dict]:
     elif w == 'radarState':
       ld = evt.radarState.leadOne
       cur['lead'] = {
-        'status': bool(ld.status), 'dRel': ld.dRel, 'vRel': ld.vRel,
+        'status': bool(ld.present), 'dRel': ld.dRel, 'vRel': ld.vRel,
         'vLead': ld.vLead, 'vLeadK': ld.vLeadK, 'aLeadK': ld.aLeadK,
         'aLeadTau': ld.aLeadTau, 'modelProb': ld.modelProb, 'radar': bool(ld.radar),
-      } if ld.status else None
+      } if ld.present else None
     elif w == 'selfdriveState':
       cur['eng'] = bool(evt.selfdriveState.enabled)
     elif w == 'modelV2':
