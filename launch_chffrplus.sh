@@ -83,6 +83,17 @@ function launch {
     agnos_init
   fi
 
+  # First boot on a fresh checkout: without the project venv, manager starts under an interpreter
+  # with no capnp and nothing comes up at all -- no UI, no tuning page, no clue why. Run the setup
+  # once to build it. Guarded on .venv being absent, so this costs nothing on every later boot,
+  # and left non-fatal: if it fails the launch continues and fails visibly at manager rather than
+  # here, where the screen is not up yet to show anything.
+  if [ -d /data ] && [ ! -x "$DIR/.venv/bin/python3" ] && [ -x "$DIR/scripts/setup-device.sh" ]; then
+    echo "no project venv -- running scripts/setup-device.sh"
+    "$DIR/scripts/setup-device.sh" || echo "setup-device.sh failed; continuing"
+    source "$DIR/launch_env.sh"   # pick up the venv it just made
+  fi
+
   # write tmux scrollback to a file
   tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
