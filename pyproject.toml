@@ -64,6 +64,11 @@ testing = [
 tools = [
   "matplotlib",
 
+  # The recording browser decodes the segment video to serve frames; 0.11.2 dropped av from the
+  # dependency list, and without it selfdrive/debug/video_source.py cannot be imported at all,
+  # which takes the tuning server down with it.
+  "av",
+
   "comma-deps-imgui",
   "comma-deps-bootstrap-icons",
   "comma-deps-libusb",
