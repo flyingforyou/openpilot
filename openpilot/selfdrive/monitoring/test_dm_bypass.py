@@ -9,8 +9,8 @@ from openpilot.selfdrive.monitoring.test_monitoring import msg_NO_FACE_DETECTED,
 EventName = log.OnroadEvent.EventName
 
 # what the bypass exists to suppress
-DM_EVENTS = {EventName.preDriverDistracted, EventName.promptDriverDistracted, EventName.driverDistracted,
-             EventName.preDriverUnresponsive, EventName.promptDriverUnresponsive, EventName.driverUnresponsive}
+DM_EVENTS = {EventName.driverDistracted1, EventName.driverDistracted2, EventName.driverDistracted3,
+             EventName.driverUnresponsive1, EventName.driverUnresponsive2, EventName.driverUnresponsive3}
 
 SECONDS = 90
 
