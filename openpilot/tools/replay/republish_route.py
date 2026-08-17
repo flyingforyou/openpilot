@@ -22,9 +22,9 @@ import time
 import openpilot.cereal.messaging as messaging
 
 SERVICES = [
-  'carState', 'radarState', 'modelV2', 'liveCalibration', 'selfdriveState',
+  'carState', 'radarState', 'modelV2', 'extrinsicsCalibration', 'selfdriveState',
   'carControl', 'carParams', 'controlsState', 'longitudinalPlan', 'deviceState',
-  'pandaStates', 'onroadEvents', 'driverMonitoringState', 'liveParameters', 'carOutput',
+  'pandaStates', 'onroadEvents', 'driverMonitoringState', 'vehicleParameters', 'carOutput',
   'roadCameraState', 'wideRoadCameraState',
 ]
 

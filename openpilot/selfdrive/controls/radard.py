@@ -589,12 +589,12 @@ class RadarD:
         self.tracks.pop(ids, None)
 
     # Turning makes a stationary object appear to slide sideways, so the forward projection
-    # needs to know how fast we are turning. livePose is the calibrated estimate; the model's
+    # needs to know how fast we are turning. deviceMotion is the calibrated estimate; the model's
     # own orientation rate stands in when it is not trustworthy yet.
     yaw_rate = 0.0
-    live_pose = sm['livePose'] if 'livePose' in sm.data else None
-    if live_pose is not None and live_pose.angularVelocityDevice.valid and live_pose.inputsOK and live_pose.sensorsOK:
-      yaw_rate = float(live_pose.angularVelocityDevice.z)
+    device_motion = sm['deviceMotion'] if 'deviceMotion' in sm.data else None
+    if device_motion is not None and device_motion.angularVelocityDevice.valid and device_motion.inputsOK and device_motion.sensorsOK:
+      yaw_rate = float(device_motion.angularVelocityDevice.z)
     elif len(sm['modelV2'].orientationRate.z):
       yaw_rate = float(sm['modelV2'].orientationRate.z[0])
     yaw_rate = float(self.yaw_rate_filter.update(yaw_rate))
@@ -661,7 +661,7 @@ def main() -> None:
   cloudlog.info("radard got CarParams")
 
   # *** setup messaging
-  sm = messaging.SubMaster(['modelV2', 'carState', 'liveTracks', 'selfdriveState', 'livePose'], poll='modelV2')
+  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks', 'selfdriveState', 'deviceMotion'], poll='modelV2')
   pm = messaging.PubMaster(['radarState'])
 
   RD = RadarD(CP.radarDelay)
@@ -669,7 +669,7 @@ def main() -> None:
   while 1:
     sm.update()
 
-    RD.update(sm, sm['liveTracks'])
+    RD.update(sm, sm['radarTracks'])
     RD.publish(pm)
 
 

@@ -22,9 +22,9 @@ import sys
 from tools.lib.logreader import LogReader
 
 SERVICES = [
-  'carState', 'radarState', 'modelV2', 'liveCalibration', 'selfdriveState',
+  'carState', 'radarState', 'modelV2', 'extrinsicsCalibration', 'selfdriveState',
   'carControl', 'carParams', 'controlsState', 'longitudinalPlan', 'deviceState',
-  'pandaStates', 'onroadEvents', 'driverMonitoringState', 'liveParameters', 'carOutput',
+  'pandaStates', 'onroadEvents', 'driverMonitoringState', 'vehicleParameters', 'carOutput',
   'roadCameraState', 'wideRoadCameraState',
 ]
 

@@ -366,7 +366,7 @@ def resolve_carrot(route: str, seg: int) -> list[dict] | None:
     return None
 
   NEEDED = ('carControl', 'carState', 'controlsState', 'radarState', 'modelV2',
-            'selfdriveState', 'liveParameters')
+            'selfdriveState', 'vehicleParameters')
   CP = None
   planner = None
   sm = _ReplaySM()
