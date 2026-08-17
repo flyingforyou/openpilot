@@ -1282,6 +1282,14 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   desiredDistance @46: Float32;
   myDrivingMode @47: Int32;       # eco / safe / normal / high
   events @48 :List(OnroadEvent);  # carrot raises its own alerts from the planner
+  # Which planner produced this message. Both are in the tree and plannerd picks at startup, so a
+  # log is otherwise ambiguous about which one was driving -- /shadow reads this to say so.
+  plannerSource @50 :PlannerSource;
+
+  enum PlannerSource {
+    stock @0;
+    carrot @1;
+  }
 
 
   solverExecutionTime @35 :Float32;
