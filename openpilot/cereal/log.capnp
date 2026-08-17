@@ -87,6 +87,14 @@ struct OnroadEvent @0xc4fa6047f024e718 {
     lowMemory @51;
     stockAeb @52;
     stockLkas @98;
+
+    # CarrotPilot's traffic-light alerts. capnp enums must be dense, so these take the next free
+    # ordinals here rather than carrot's own 100/101/116 -- the names match, the numbers cannot.
+    # 99 through 103 were taken upstream while this branch was away, so they land at 104.
+    # Only its planner raises them.
+    trafficSignGreen @104;
+    trafficSignChanged @105;
+    trafficStopping @106;
     lateralManeuver @99;
     ldw @53;
     carUnrecognized @54;
@@ -145,6 +153,16 @@ enum LongitudinalPersonality {
   aggressive @0;
   standard @1;
   relaxed @2;
+  # CarrotPilot's fourth level. Appended, so the three existing values keep their numbers and
+  # every log written before this still reads correctly. Only the carrot planner selects it.
+  moreRelaxed @3;
+  # This car's gap stalk has 7 positions, not 4, so the stalk is mapped straight onto personality
+  # instead of a separate axis (matching carrot's own car-button -> personality wiring). These
+  # three fill out the remaining steps between the four above; also append-only for the same
+  # log-compatibility reason.
+  moreAggressive @4;
+  lessAggressive @5;
+  lessRelaxed @6;
 }
 
 struct InitData {
@@ -747,6 +765,19 @@ struct RadarState @0x9a185389d6fdd05f {
     radar @14 :Bool;  # true if lead is radar-matched (vs vision-only)
     radarTrackId @15 :Int32 = -1;  # for debugging
 
+    # Lead jerk, filtered in the radar interface. The longitudinal MPC reads it to tell a lead
+    # easing off its brakes from one still leaning on them, which acceleration alone does not
+    # distinguish. score is the match confidence radard settled on, kept for debugging why a
+    # particular return was chosen.
+    jLead @16 :Float32;
+    score @17 :Float32;
+
+    # Carried straight through from the matched RadarPoint -- see car.capnp for what these mean.
+    # unknown/0/0 for a vision-only lead, or any radar that does not report a class at all.
+    vehicleClass @18 :Car.RadarData.RadarPoint.VehicleClass;
+    classProb @19 :Float32;
+    length @20 :Float32;
+
     deprecated :group {
       aRel @3 :Float32;
       aLead @5 :Float32;
@@ -1235,6 +1266,22 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   shouldStop @37: Bool;
   allowThrottle @38: Bool;
   allowBrake @39: Bool;
+
+  # CarrotPilot's longitudinal planner publishes these; field numbers match its own schema so a
+  # log from either tree reads the same way. Zero on the stock planner, which never sets them.
+  xState @40: Int32;              # lead / cruise / e2eCruise / e2eStop / e2ePrepare / e2eStopped
+  trafficState @41: Int32;        # carrot's own traffic-light state, off without the navi service
+  vTargetNow @42: Float32;
+  cruiseTarget @43: Float32;
+  # The ceiling this road allows, before any slew -- what the cluster's MAX is meant to mean.
+  # cruiseTarget lives underneath it and converges to it; this is the number that answers "how
+  # fast may this car go here", and it only moves when the road does. 0 when nothing decides one.
+  cruiseCeiling @49: Float32;
+  jTargetNow @44: Float32;
+  tFollow @45: Float32;           # the follow time actually solved with, after all adjustments
+  desiredDistance @46: Float32;
+  myDrivingMode @47: Int32;       # eco / safe / normal / high
+  events @48 :List(OnroadEvent);  # carrot raises its own alerts from the planner
 
 
   solverExecutionTime @35 :Float32;
