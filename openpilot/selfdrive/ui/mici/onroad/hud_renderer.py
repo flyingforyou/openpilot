@@ -437,7 +437,8 @@ class HudRenderer(Widget):
 
     # draw drop shadow
     circle_radius = 162 // 2
-    rl.draw_circle_gradient(int(x + circle_radius), int(y + circle_radius), circle_radius,
+    # 0.11.2's raylib takes the centre as a Vector2 here, not as separate x and y.
+    rl.draw_circle_gradient(rl.Vector2(x + circle_radius, y + circle_radius), circle_radius,
                             rl.Color(0, 0, 0, int(255 / 2 * alpha)), rl.BLANK)
 
     set_speed_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
