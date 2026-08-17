@@ -10,12 +10,7 @@
 #      comes back up unable to import capnp and nothing starts. This is why the tuning page went
 #      missing after a restart.
 #
-#   2. eigen. rednose includes <eigen3/Eigen/Dense> and 0.11.2 provides it nowhere -- not
-#      SConstruct, not pyproject, not the lock file. Header-only, so it is unpacked on /data and
-#      reached through an eigen3 link at the repo root, which SConstruct's CPPPATH already covers.
-#      Nothing is written to the read-only system.
-#
-#   3. uv sync --all-extras. comma-deps-ncurses sits in the tools extra and SConstruct imports
+#   2. uv sync --all-extras. comma-deps-ncurses sits in the tools extra and SConstruct imports
 #      ncurses at read time, so a plain sync leaves the build unable to start.
 #
 # After this, scons builds and launch_env.sh finds .venv on its own.
@@ -43,24 +38,6 @@ export UV_PYTHON_PREFERENCE=managed
 # ignores. Clear it so the intent is unambiguous.
 unset VIRTUAL_ENV
 
-echo "=== eigen ==="
-if [ -f /data/eigen/eigen3/Eigen/Dense ]; then
-  echo "  already unpacked"
-else
-  tmp=$(mktemp -d)
-  curl -sL -o "$tmp/eigen.tar.gz" \
-    https://gitlab.com/libeigen/eigen/-/archive/3.4.0/eigen-3.4.0.tar.gz
-  tar xzf "$tmp/eigen.tar.gz" -C "$tmp"
-  mkdir -p /data/eigen/eigen3
-  cp -r "$tmp"/eigen-3.4.0/Eigen /data/eigen/eigen3/
-  cp -r "$tmp"/eigen-3.4.0/unsupported /data/eigen/eigen3/ 2>/dev/null || true
-  rm -rf "$tmp"
-  echo "  unpacked to /data/eigen"
-fi
-ln -sfn /data/eigen/eigen3 eigen3
-echo "  eigen3 -> $(readlink eigen3)"
-
-echo ""
 echo "=== dependencies ==="
 uv sync --all-extras
 echo "  venv: $(readlink -f .venv/bin/python3)"
