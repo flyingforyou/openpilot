@@ -152,51 +152,25 @@ MAP_SETTINGS = {
 }
 
 
+# Sealed, not deleted. These params are still declared in params_keys.h, still read by
+# carrot_functions.py, and whatever is stored on the device still drives the car. Dropping them
+# from this table only takes them off the page and out of `known`, so the write endpoint rejects
+# them too -- the stored values become read-only rather than gone:
+#
+#   TFollowGap1..7   the gap table. Its numbers are not headway seconds on their own: they are the
+#                    *slope* of `k*v**2 + t_follow*v + stop_distance`, so they only mean something
+#                    paired with ComfortBrake (curvature) and StopDistanceCarrot (intercept).
+#                    Tuning one of the three in isolation is what makes this page dangerous, and
+#                    the stalk already picks a position at runtime -- there is nothing to adjust.
+#   CruiseMaxVals0..6  the accel curve. Never moved off its defaults in any recorded drive.
+#   ComfortBrake2    two parameters for the single scalar k. Fixed at its 2.50 default, which is
+#                    also DEFAULT_COMFORT_BRAKE_2 and the MPC's own COMFORT_BRAKE.
+#   MyDrivingMode / MyDrivingModeAuto
+#                    a hidden multiplier layer: mySafeFactor scales t_follow *and* comfort_brake
+#                    (carrot_functions.py:393 and :708), so Eco/Safe quietly bend the same gap
+#                    curve this page tunes explicitly. Sat on Normal for every frame of every
+#                    recorded drive.
 CARROT_SETTINGS = {
-  "MyDrivingMode": {
-    "label": "주행 모드", "type": "int",
-    "help": "가속 곡선과 추종 거리에 한꺼번에 곱해지는 성향입니다. Eco 는 완만하게, "
-            "High 는 20% 더 붙고 세게 갑니다 -- 그리고 위 '신호등 인식 동작' 설정과 무관하게 "
-            "신호등·정지선 인식 자체가 꺼집니다 (캐롯 원본 설명: \"고속(신호무시)\").",
-    "options": [(1, "Eco 절약"), (2, "Safe 안전"), (3, "Normal 표준"), (4, "High 적극 (신호 무시)")],
-  },
-  "MyDrivingModeAuto": {
-    "label": "주행 모드 자동 전환", "type": "int",
-    "help": "앞차 거동을 보고 모드를 스스로 바꿉니다.",
-    "options": [(0, "고정 (기본)"), (1, "자동")],
-  },
-  "TFollowGap1": {
-    "label": "Gap 1 추종 시간", "type": "int",
-    "help": "스토크를 가장 가깝게 뒀을 때입니다. 캐롯은 1.10초 아래로 내려가지 않습니다 -- "
-            "그 아래에서 FCW 가 도심의 평범한 앞차 감속에 반응하기 시작합니다.",
-    "options": [(105, "1.05초"), (110, "1.10초 (기본)"), (115, "1.15초"), (120, "1.20초")],
-  },
-  "TFollowGap2": {
-    "label": "Gap 2 추종 시간", "type": "int", "help": "갭 1과 3 사이입니다.",
-    "options": [(110, "1.10초"), (115, "1.15초 (기본)"), (120, "1.20초"), (125, "1.25초")],
-  },
-  "TFollowGap3": {
-    "label": "Gap 3 추종 시간", "type": "int", "help": "캐롯 원본의 두 번째 앵커입니다.",
-    "options": [(115, "1.15초"), (120, "1.20초 (기본)"), (130, "1.30초"), (140, "1.40초")],
-  },
-  "TFollowGap4": {
-    "label": "Gap 4 추종 시간", "type": "int", "help": "스토크 중앙입니다.",
-    "options": [(120, "1.20초"), (130, "1.30초 (기본)"), (140, "1.40초"), (150, "1.50초")],
-  },
-  "TFollowGap5": {
-    "label": "Gap 5 추종 시간", "type": "int", "help": "캐롯 원본의 세 번째 앵커입니다.",
-    "options": [(130, "1.30초"), (140, "1.40초 (기본)"), (150, "1.50초"), (160, "1.60초")],
-  },
-  "TFollowGap6": {
-    "label": "Gap 6 추종 시간", "type": "int", "help": "갭 5와 7 사이입니다.",
-    "options": [(140, "1.40초"), (150, "1.50초 (기본)"), (160, "1.60초"), (170, "1.70초")],
-  },
-  "TFollowGap7": {
-    "label": "Gap 7 추종 시간", "type": "int",
-    "help": "가장 멀리 둔 위치입니다. 이 값이 아래 모든 조정의 상한도 겸합니다 -- "
-            "캐롯은 최종 tFollow 를 갭 1~7 의 최소~최대 범위로 자릅니다.",
-    "options": [(150, "1.50초"), (160, "1.60초 (기본)"), (175, "1.75초"), (190, "1.90초")],
-  },
   "DynamicTFollow": {
     "label": "앞차 거동 따라 간격 조정", "type": "int",
     "help": "앞차가 감속하면 간격을 벌리고 멀어지면 좁힙니다. 0 이면 사용 안 함.",
@@ -217,10 +191,10 @@ CARROT_SETTINGS = {
             "<br><br><b>고속에는 영향이 없습니다</b> — 100km/h(62mph) 이상에서 배율이 정확히 1.0 "
             "이라 저속 구간만 좁힙니다."
             "<br><br><b>⚠ 금방 포화합니다.</b> 줄어든 t_follow 는 <code>_clip_t_follow</code> 에서 "
-            "<b>min(TFollowGap1~7) = TFollowGap1</b> 로 하한이 걸립니다. 기본 1.10 기준으로 "
-            "25 만 넣어도 이미 40mph 이하가 전부 하한에 닿아, 50 으로 올려도 30mph 목표거리는 "
-            "21.2m → 20.8m 로 0.4m 밖에 안 줄어듭니다. 더 좁히려면 <b>TFollowGap1 을 내려</b> "
-            "하한 자체를 낮춰야 합니다 (단 그 값은 갭 1단의 값이기도 합니다).",
+            "갭 표의 최솟값으로 하한이 걸립니다. 25 만 넣어도 저속 구간이 대부분 하한에 닿아, "
+            "50 으로 올려도 30mph 목표거리는 0.4m 남짓밖에 안 줄어듭니다. 하한을 더 내리려면 "
+            "갭 표 자체를 낮춰야 하는데 <b>그 표는 봉인되어 있으므로</b>, 이 설정으로 얻을 수 있는 "
+            "폭은 여기까지가 전부입니다.",
     "options": [(-3, "0/50/100/150 단계"), (-2, "0/40/80/120 단계"), (-1, "0/30/60/90 단계"),
                 (0, "사용 안 함 (기본)"), (10, "저속 10% 감소"), (25, "저속 25% 감소"),
                 (50, "저속 최대 50% 감소")],
@@ -232,34 +206,24 @@ CARROT_SETTINGS = {
   },
   "ComfortBrake": {
     "label": "편안한 제동 가정", "type": "int",
-    "help": "플래너가 <b>내가 편안하게 낼 수 있다고 가정하는 감속도</b>입니다. 추종 목표거리를 "
-            "정하는 데 쓰입니다:<br><code>목표 = 내속도²/(2×이값) − 앞차속도²/(2×2.5) + 추종시간×내속도 + 정지간격</code>"
-            "<br><br><b>⚠ 앞의 두 항에서 나누는 값이 서로 다릅니다.</b> 뒤쪽 2.5는 MPC에 하드코딩되어 있어 "
-            "이 설정을 따라오지 않습니다. 그래서 <b>2.5를 넘기면</b> 두 항이 상쇄되지 않고 "
-            "<code>−속도²×(1/(2×이값) − 1/5)</code> 만큼 목표거리가 <b>깎입니다</b>. "
-            "속도의 제곱으로 커지기 때문에 고속에서 치명적입니다 — 3.2에서 40mph면 −14m, "
-            "<b>74mph면 −48m라 목표 간격이 6m가 됩니다.</b>"
+    "help": "플래너가 <b>내가 편안하게 낼 수 있다고 가정하는 감속도</b>입니다. 목표거리 곡선의 "
+            "<b>곡률</b>을 정합니다:"
+            "<br><code>목표 = k×속도² + 추종시간×속도 + 정지간격</code>, "
+            "<code>k = 1/(2×이값) − 1/5</code>"
+            "<br><br>뒤의 1/5 은 앞차분 계수(ComfortBrake2)로, <b>2.50 에 봉인되어 있습니다</b> — "
+            "MPC 의 COMFORT_BRAKE 와 같은 값입니다. 이 값은 항상 2.50 이하로 자동 제한되므로 "
+            "k ≥ 0 이 보장됩니다. 넘어가면 목표거리가 속도의 제곱으로 <i>줄어들어</i> "
+            "2026-08-14 에 74mph 에서 앞차와 12m 까지 붙은 것이 정확히 그 경우입니다."
             "<br><br>실측(연속 추적된 리드만, 정속 추종 중앙값): "
-            "2.4 → <b>1.72초</b>, 2.8 → 1.12초, 3.2 → <b>0.87초</b>. "
-            "2026-08-14 주행에서 3.2로 74mph에서 12m까지 붙었습니다."
-            "<br><br>그래서 <b>2.5로 상한을 걸어두었습니다.</b> 이 값은 앞차가 급정거할 때의 과잉 제동을 "
-            "줄이는 용도로는 쓸 수 없습니다 — 줄어드는 제동량이 곧 줄어드는 차간거리입니다.",
+            "2.4 → <b>1.72초</b>, 2.8 → 1.12초, 3.2 → <b>0.87초</b>."
+            "<br><br><b>⚠ 이제 이 페이지에서 유일하게 남은 거리 곡선 손잡이입니다.</b> 기울기(갭 1~7단)와 "
+            "가속 곡선은 봉인되어 있으므로, 이 값을 움직이면 상쇄할 수단이 없습니다. 2.16 → 2.50 은 "
+            "45mph 기준 목표거리를 약 13m 줄입니다 — 현재 갭 표는 2.16 에 맞춰 0.64초 낮춰둔 값이라 "
+            "<b>둘은 한 세트입니다.</b>"
+            "<br><br>앞차가 급정거할 때의 과잉 제동을 줄이는 용도로는 쓸 수 없습니다 — "
+            "줄어드는 제동량이 곧 줄어드는 차간거리입니다.",
     "options": [(200, "2.0 곡률 크게"), (208, "2.08"), (216, "2.16 (권장)"), (225, "2.25"),
                 (240, "2.4"), (250, "2.5 = 평평 (upstream)")],
-  },
-  "ComfortBrake2": {
-    "label": "편안한 제동 가정 · 앞차분", "type": "int",
-    "help": "위 값이 <code>내속도²</code>를 나눈다면 이 값은 <code>앞차속도²</code>를 나눕니다. "
-            "둘의 차이가 목표거리 곡선의 <b>곡률</b>이 됩니다:"
-            "<br><code>목표 = k×속도² + 추종시간×속도 + 정지간격</code>, "
-            "<code>k = 1/(2×앞항) − 1/(2×이값)</code>"
-            "<br><br>세 항이 독립이라 <b>곡률(이 쌍) · 기울기(갭 1~7단) · 절편(정지간격)</b>으로 "
-            "속도대별 거리를 따로 잡을 수 있습니다. k가 클수록 고속에서만 거리가 벌어지고 "
-            "저속은 그대로라, 저속을 좁히면서 고속을 지키는 조합이 가능합니다."
-            "<br><br><b>앞의 값은 항상 이 값 이하로 자동 제한됩니다</b> (k ≥ 0). 넘어가면 목표거리가 "
-            "속도의 제곱으로 <i>줄어들어</i> 고속에서 위험해집니다 — 2026-08-14 에 74mph 에서 "
-            "앞차와 12m 까지 붙은 원인이 정확히 그것입니다.",
-    "options": [(250, "2.5 (기본)"), (280, "2.8"), (300, "3.0"), (350, "3.5 곡률 크게")],
   },
   "StopDistanceCarrot": {
     "label": "정지 시 앞차 간격", "type": "int",
@@ -336,36 +300,6 @@ CARROT_SETTINGS = {
     "label": "정지선 앞 여유", "type": "int",
     "help": "정지선에서 얼마나 앞뒤로 멈출지 조정합니다. 음수면 더 앞에 섭니다.",
     "options": [(-250, "2.5m 앞"), (-150, "1.5m 앞 (기본)"), (0, "정지선"), (150, "1.5m 뒤")],
-  },
-  "CruiseMaxVals0": {
-    "label": "가속 상한 · 정지~", "type": "int",
-    "help": "속도 구간별 가속 상한입니다. 여기부터 6개가 캐롯의 가속 곡선을 이룹니다. "
-            "정지 상태에서의 값입니다.",
-    "options": [(120, "1.2"), (160, "1.6 (기본)"), (200, "2.0"), (240, "2.4")],
-  },
-  "CruiseMaxVals1": {
-    "label": "가속 상한 · 10km/h", "type": "int", "help": "10km/h 지점의 가속 상한입니다.",
-    "options": [(150, "1.5"), (200, "2.0 (기본)"), (240, "2.4")],
-  },
-  "CruiseMaxVals2": {
-    "label": "가속 상한 · 40km/h", "type": "int", "help": "40km/h 지점의 가속 상한입니다.",
-    "options": [(120, "1.2"), (160, "1.6 (기본)"), (200, "2.0")],
-  },
-  "CruiseMaxVals3": {
-    "label": "가속 상한 · 60km/h", "type": "int", "help": "60km/h 지점의 가속 상한입니다.",
-    "options": [(100, "1.0"), (130, "1.3 (기본)"), (160, "1.6")],
-  },
-  "CruiseMaxVals4": {
-    "label": "가속 상한 · 80km/h", "type": "int", "help": "80km/h 지점의 가속 상한입니다.",
-    "options": [(90, "0.9"), (110, "1.1 (기본)"), (140, "1.4")],
-  },
-  "CruiseMaxVals5": {
-    "label": "가속 상한 · 110km/h", "type": "int", "help": "110km/h 지점의 가속 상한입니다.",
-    "options": [(75, "0.75"), (95, "0.95 (기본)"), (120, "1.2")],
-  },
-  "CruiseMaxVals6": {
-    "label": "가속 상한 · 140km/h", "type": "int", "help": "140km/h 지점의 가속 상한입니다.",
-    "options": [(60, "0.6"), (80, "0.8 (기본)"), (100, "1.0")],
   },
   "RadarLeadHoldCm": {
     "label": "근거리 레이더 유지", "type": "int",
