@@ -33,6 +33,16 @@ export UV_PYTHON_INSTALL_DIR=/data/uv-python
 export UV_CACHE_DIR=/data/uv-cache
 export UV_PROJECT_ENVIRONMENT="$DIR/.venv"
 
+# AGNOS puts UV_PYTHON_PREFERENCE=only-system in the boot environment so uv uses its own venv.
+# That makes uv refuse to fetch or even use a managed interpreter, and 0.11.2 wants 3.12.13, which
+# AGNOS does not have -- so at boot the sync failed with "No interpreter found" while the same
+# command over ssh worked, because an ssh session does not inherit that variable. Overriding the
+# install dir alone was not enough; the preference has to go with it.
+export UV_PYTHON_PREFERENCE=managed
+# The boot environment also points VIRTUAL_ENV at the AGNOS venv, which uv warns about and
+# ignores. Clear it so the intent is unambiguous.
+unset VIRTUAL_ENV
+
 echo "=== eigen ==="
 if [ -f /data/eigen/eigen3/Eigen/Dense ]; then
   echo "  already unpacked"
