@@ -13,7 +13,7 @@ from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 from openpilot.selfdrive.controls.lib.carrot_functions import XState
 
 if __name__ == '__main__':  # generating code
-  from openpilot.third_party.acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+  from acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 else:
   # This model has 8 runtime parameters against the stock model's 6, so it cannot share the
   # stock solver's generated code -- the shared library is compiled for a fixed parameter
