@@ -240,7 +240,7 @@ class Track:
       "vLeadK": float(self.vLeadK),
       "aLeadK": float(self.aLeadK),
       "aLeadTau": float(self.aLeadTau.x),
-      "status": True,
+      "present": True,
       "fcw": self.is_potential_fcw(model_prob),
       "modelProb": model_prob,
       "radar": True,
@@ -303,7 +303,7 @@ class RadarLeadHold:
 
   def observe(self, lead: dict[str, Any]) -> None:
     """Bookkeeping against the lead that was actually published."""
-    if lead.get('status') and lead.get('radar'):
+    if lead.get('present') and lead.get('radar'):
       if self.used and lead.get('radarTrackId', -1) == self.track_id:
         self.frames += 1      # still bridging the same dropout, burn budget
       else:
@@ -474,7 +474,7 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
     "aLeadTau": 0.3,
     "fcw": False,
     "modelProb": float(lead_msg.prob),
-    "status": True,
+    "present": True,
     "radar": False,
     "radarTrackId": -1,
     # Vision has no jerk estimate and no radar track to place in a lane; leave them at zero
@@ -496,7 +496,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
   else:
     track = None
 
-  lead_dict = {'status': False}
+  lead_dict = {'present': False}
   if track is not None:
     lead_dict = track.get_RadarState(lead_msg.prob)
   elif (track is None) and ready and (lead_msg.prob > .5):
@@ -504,7 +504,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
 
   # Vision either lost the lead outright or fell back to its own distance estimate, which at close
   # range reads systematically long. Prefer the radar track we were already following.
-  if hold is not None and not (lead_dict['status'] and lead_dict.get('radar')):
+  if hold is not None and not (lead_dict['present'] and lead_dict.get('radar')):
     held = hold.candidate(tracks)
     if held is not None:
       lead_dict = held.get_RadarState(lead_msg.prob)
@@ -516,7 +516,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
       closest_track = min(low_speed_tracks, key=lambda c: c.dRel)
 
       # Only choose new track if it is actually closer than the previous one
-      if (not lead_dict['status']) or (closest_track.dRel < lead_dict['dRel']):
+      if (not lead_dict['present']) or (closest_track.dRel < lead_dict['dRel']):
         lead_dict = closest_track.get_RadarState()
 
   return lead_dict

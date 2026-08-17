@@ -10,35 +10,31 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 LongCtrlState = car.CarControl.Actuators.LongControlState
 
 
-def long_control_state_trans(CP, active, long_control_state, v_ego,
+# 0.11.2 retired startingState, vEgoStarting, startAccel and stoppingDecelRate into car.capnp's
+# deprecated group, and no port fills them any more. That makes LongCtrlState.starting
+# unreachable -- it was only ever entered behind CP.startingState -- so the branches that led
+# into it are gone. What stays is CarrotPilot's own contribution: the gate on when the stopping
+# ramp is allowed to take the stop away from the PID.
+def long_control_state_trans(CP, active, long_control_state,
                              should_stop, brake_pressed, cruise_standstill,
                              a_ego=0.0, stopping_accel=0.0, lead_d_rel=None):
   stopping_condition = should_stop
   starting_condition = (not should_stop and
                         not cruise_standstill and
                         not brake_pressed)
-  started_condition = v_ego > CP.vEgoStarting
 
   if not active:
     long_control_state = LongCtrlState.off
 
   else:
     if long_control_state == LongCtrlState.off:
-      if not starting_condition:
-        long_control_state = LongCtrlState.stopping
-      else:
-        if starting_condition and CP.startingState:
-          long_control_state = LongCtrlState.starting
-        else:
-          long_control_state = LongCtrlState.pid
+      long_control_state = LongCtrlState.pid if starting_condition else LongCtrlState.stopping
 
     elif long_control_state == LongCtrlState.stopping:
-      if starting_condition and CP.startingState:
-        long_control_state = LongCtrlState.starting
-      elif starting_condition:
+      if starting_condition:
         long_control_state = LongCtrlState.pid
 
-    elif long_control_state in [LongCtrlState.starting, LongCtrlState.pid]:
+    elif long_control_state == LongCtrlState.pid:
       if stopping_condition:
         if stopping_accel < 0.0:
           # CarrotPilot: hand over to the stopping ramp only while braking is still gentler than
@@ -49,12 +45,8 @@ def long_control_state_trans(CP, active, long_control_state, v_ego,
           fcw_stop = lead_d_rel is not None and lead_d_rel < 4.0
           if a_ego > stopping_accel or fcw_stop:
             long_control_state = LongCtrlState.stopping
-          if long_control_state == LongCtrlState.starting:
-            long_control_state = LongCtrlState.stopping
         else:
           long_control_state = LongCtrlState.stopping
-      elif started_condition:
-        long_control_state = LongCtrlState.pid
   return long_control_state
 
 class LongControl:
@@ -89,7 +81,7 @@ class LongControl:
       self.pid._k_p = ([0], [kp])
       self.pid._k_i = (self.CP.longitudinalTuning.kiBP, [ki])
 
-    self.long_control_state = long_control_state_trans(self.CP, active, self.long_control_state, CS.vEgo,
+    self.long_control_state = long_control_state_trans(self.CP, active, self.long_control_state,
                                                        should_stop, CS.brakePressed,
                                                        CS.cruiseState.standstill,
                                                        CS.aEgo, stopping_accel, lead_d_rel)
@@ -103,11 +95,8 @@ class LongControl:
       stop_accel = stopping_accel if stopping_accel < 0.0 else self.CP.stopAccel
       if output_accel > stop_accel:
         output_accel = min(output_accel, 0.0)
-        output_accel -= self.CP.stoppingDecelRate * DT_CTRL
-      self.reset()
-
-    elif self.long_control_state == LongCtrlState.starting:
-      output_accel = self.CP.startAccel
+        # stoppingDecelRate is retired on 0.11.2, so this is upstream's fixed 1.0 m/s^2/s.
+        output_accel -= 1.0 * DT_CTRL
       self.reset()
 
     else:  # LongCtrlState.pid
