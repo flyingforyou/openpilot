@@ -460,6 +460,43 @@ def _update_match_counters(tracks: dict[int, Track], selected: Track, enabled: b
       t.is_stopped_car_count = max(0, t.is_stopped_car_count - 1)
 
 
+# An adjacent lane sits between half a lane and two lanes out; lanes measure ~3.27 m on this
+# car's roads. yRel is left-positive, the same convention LeadData documents.
+SIDE_LANE_LO = 1.8
+SIDE_LANE_HI = 5.4
+# Inside 20 m, roughly three in five adjacent-lane radar points on this car are stationary --
+# guardrail, signs, parked cars. Requiring real motion is what makes the side lead mean
+# "a vehicle" rather than "the roadside".
+SIDE_MIN_VLEAD = 2.0
+# Half the close-range points are extrapolated rather than fresh returns, so a track has to have
+# been seen a few times before it gets to block a lane change.
+SIDE_MIN_CNT = 3
+
+
+def get_side_leads(tracks: dict[int, Track]) -> tuple[dict, dict]:
+  """Nearest moving vehicle in each adjacent lane.
+
+  Forward-only by construction: the radar returns nothing behind the car, so an empty side lead
+  means "nothing ahead-and-beside", never "that lane is clear".
+  """
+  left: list[Track] = []
+  right: list[Track] = []
+  for track in tracks.values():
+    if track.cnt <= SIDE_MIN_CNT or track.vLead < SIDE_MIN_VLEAD:
+      continue
+    offset = abs(track.yRel)
+    if not SIDE_LANE_LO <= offset < SIDE_LANE_HI:
+      continue
+    (left if track.yRel > 0 else right).append(track)
+
+  def nearest(candidates: list[Track]) -> dict:
+    if not candidates:
+      return {'present': False}
+    return min(candidates, key=lambda t: t.dRel).get_RadarState()
+
+  return nearest(left), nearest(right)
+
+
 def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float):
   lead_v_rel_pred = lead_msg.v[0] - model_v_ego
   return {
@@ -636,6 +673,11 @@ class RadarD:
       self.radar_state.leadOne = lead_one
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, low_speed_override=False,
                                                  update_counters=False)
+
+    # Adjacent-lane leads. Independent of the vision lead match above -- nothing else consumes
+    # them, and the lane change gate wants the nearest vehicle over there whether or not the
+    # model has an opinion about it.
+    self.radar_state.leadLeft, self.radar_state.leadRight = get_side_leads(self.tracks)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None

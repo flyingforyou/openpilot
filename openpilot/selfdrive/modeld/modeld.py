@@ -84,6 +84,31 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                 shouldStop=bool(stop))
 
 
+def side_evidence(model_v2, radar_state, car_state):
+  """(outer_line_prob, road_edge_distance), nearest lead for the side the blinker points at.
+
+  Returns (None, None) when no single blinker is on, which is also what the gates read as
+  "nothing to say" -- there is no side to judge until the driver has picked one.
+  """
+  left, right = bool(car_state.leftBlinker), bool(car_state.rightBlinker)
+  if left == right:
+    return None, None
+  try:
+    probs = model_v2.laneLineProbs
+    edges = model_v2.roadEdges
+    if len(probs) < 4 or len(edges) < 2:
+      return None, None
+    if left:
+      # y is right-positive, so the left edge sits at negative y and its distance is the negation
+      lane_side = (float(probs[0]), -float(edges[0].y[0]))
+    else:
+      lane_side = (float(probs[3]), float(edges[1].y[0]))
+  except (AttributeError, IndexError, TypeError, ValueError):
+    lane_side = None
+  side_lead = radar_state.leadLeft if left else radar_state.leadRight
+  return lane_side, side_lead
+
+
 class ChestnutState:
   # only modeld can access chestnut
   def __init__(self, pm: PubMaster, big: bool):
@@ -410,7 +435,10 @@ def main(demo=False):
   # messaging
   pub_socks = ["modelV2", "drivingModelData", "cameraOdometry"] + (["chestnutState"] if USBGPU else [])
   pm = PubMaster(pub_socks)
-  sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState", "carControl", "lateralDelay"])
+  # radarState is here only for the lane change gate's adjacent-lane leads. sm.update(0) is
+  # non-blocking, so a service that never appears costs nothing but an empty message.
+  sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState", "carControl",
+                  "lateralDelay", "radarState"])
 
   publish_state = PublishState()
   params = Params()
@@ -557,7 +585,11 @@ def main(demo=False):
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
       r_lane_change_prob = desire_state[log.Desire.laneChangeRight]
       lane_change_prob = l_lane_change_prob + r_lane_change_prob
-      DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob)
+      # What the car can see about the side the blinker points at. Looked up here because this
+      # is where left and right are already known; DesireHelper only learns the direction from
+      # the blinker it is handed.
+      lane_side, side_lead = side_evidence(modelv2_send.modelV2, sm['radarState'], sm['carState'])
+      DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, lane_side, side_lead)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
 

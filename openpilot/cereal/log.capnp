@@ -752,6 +752,13 @@ struct RadarState @0x9a185389d6fdd05f {
   leadOne @3 :LeadData;
   leadTwo @4 :LeadData;
 
+  # Nearest moving thing in each adjacent lane, for deciding whether a lane change may start.
+  # Forward-only, like the radar: these say what is ahead-and-beside, never what is coming up
+  # from behind. Stationary returns are filtered out -- at close range roughly three in five
+  # adjacent-lane points on this car are guardrail.
+  leadLeft @14 :LeadData;
+  leadRight @15 :LeadData;
+
   struct LeadData {
     dRel @0 :Float32;  # m from the front bumper of the car
     yRel @1 :Float32;  # m in car frame, left positive
