@@ -153,6 +153,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Trims how far off the lane centre the model is allowed to sit. Off by default: it
     // changes steering, so it is opted into rather than inherited. Fractions are integers
     // here like the rest of this block -- authority is a percent, offset is centimetres.
+    // Tenths of a second the blinker must be held before a lane change starts without the
+    // driver's nudge. 0 keeps stock behaviour, where only the nudge starts it.
+    {"AutoLaneChange", {PERSISTENT, INT, "0"}},
     {"LaneCentering", {PERSISTENT, BOOL, "0"}},
     {"LaneCenteringPauseOnSignal", {PERSISTENT, BOOL, "1"}},
     // 0 corrects every deviation, 100 leaves the big confident ones to the model. StarPilot
