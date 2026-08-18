@@ -66,7 +66,8 @@ class CarController(CarControllerBase):
 
     One step per press, largest step that does not overshoot, and a wait afterwards long enough
     for the DI to act and report back -- it took about 0.2s in the logs. Steps are +/-1 and +/-5,
-    so anything within a mile an hour is left alone rather than hunted.
+    and both numbers live on the cluster's own whole-unit grid, so the loop finishes on an exact
+    match rather than settling for close.
     """
     # The ceiling for this road, not the moment's target. MAX answers "how fast may this car go
     # here" -- a ramp, a school zone, a hairpin -- and the driver reads it as the bound cruise
@@ -76,8 +77,17 @@ class CarController(CarControllerBase):
     #
     # Zero means the map has no opinion here: leave the stalk alone rather than drive it to a
     # number nothing decided.
-    target = CC.hudControl.cruiseCeiling * CV.MS_TO_MPH
-    current = CS.out.cruiseState.speed * CV.MS_TO_MPH
+    # Compare on the grid the cluster actually shows. Both numbers are whole units there and the
+    # stalk only moves in whole steps, but the ceiling reaches here as a Float32 that has been
+    # through m/s -> km/h -> m/s: a 40 mph limit arrives as 40.0000025. Against float thresholds
+    # that lands on the wrong side of both of them -- `error <= -5.0` misses by 2.5e-6 so the
+    # 5-step never fires, and then `abs(error) < 1.0` is satisfied one short of the target, so
+    # MAX parks one unit high and stays there. Measured on a 35 mph road: 55 crawled down to 41
+    # a unit at a time and sat there for 16 s. Rounding first makes the error an exact integer
+    # and both questions unambiguous.
+    to_display = CV.MS_TO_KPH if CS.speed_units == "KPH" else CV.MS_TO_MPH
+    target = round(CC.hudControl.cruiseCeiling * to_display)
+    current = round(CS.out.cruiseState.speed * to_display)
     if target <= 0 or current <= 0:
       return []
 
@@ -93,14 +103,14 @@ class CarController(CarControllerBase):
       return []
 
     error = target - current
-    if abs(error) < 1.0:
+    if error == 0:
       return []
 
-    if error >= 5.0:
+    if error >= 5:
       self.stalk_lever = StalkLever.UP_5
     elif error > 0:
       self.stalk_lever = StalkLever.UP_1
-    elif error <= -5.0:
+    elif error <= -5:
       self.stalk_lever = StalkLever.DOWN_5
     else:
       self.stalk_lever = StalkLever.DOWN_1

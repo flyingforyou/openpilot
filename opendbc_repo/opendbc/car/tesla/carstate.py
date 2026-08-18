@@ -233,6 +233,9 @@ class CarState(CarStateBase):
     # stalk's own state -- goes back out as the SCCM had it rather than as something we invented.
     self.stw_actn: dict[str, float] | None = None
     self.cruise_gap = 0
+    # Which unit the cluster is showing. The MAX sync steps the stalk on the grid the driver
+    # sees, so it has to know which one that is rather than assuming mph.
+    self.speed_units: str | None = None
     # Raven's party DBC carries none of the map messages, so it gets no decoder at all rather
     # than one that would fault the first time it looked a message up.
     self.nav_map = None if CP.carFingerprint == CAR.TESLA_MODEL_S_HW3 else NavMapDecoder()
@@ -295,6 +298,7 @@ class CarState(CarStateBase):
     # Cruise state
     cruise_state = self.can_define.dv["DI_state"]["DI_cruiseState"].get(int(cp_party.vl["DI_state"]["DI_cruiseState"]), None)
     speed_units = self.can_define.dv["DI_state"]["DI_speedUnits"].get(int(cp_party.vl["DI_state"]["DI_speedUnits"]), None)
+    self.speed_units = speed_units
 
     autopark_state = self.can_define.dv["DI_state"]["DI_autoparkState"].get(int(cp_party.vl["DI_state"]["DI_autoparkState"]), None)
     cruise_enabled = cruise_state in ("ENABLED", "STANDSTILL", "OVERRIDE", "PRE_FAULT", "PRE_CANCEL")
@@ -419,6 +423,7 @@ class CarState(CarStateBase):
     # Cruise state
     cruise_state = self.can_defines["DI_state"]["DI_cruiseState"].get(int(cp_chassis.vl["DI_state"]["DI_cruiseState"]), None)
     speed_units = self.can_defines["DI_state"]["DI_speedUnits"].get(int(cp_chassis.vl["DI_state"]["DI_speedUnits"]), None)
+    self.speed_units = speed_units
 
     cruise_enabled = cruise_state in ("ENABLED", "STANDSTILL", "OVERRIDE", "PRE_FAULT", "PRE_CANCEL")
     self.update_autopark_state(autopark_offered)
