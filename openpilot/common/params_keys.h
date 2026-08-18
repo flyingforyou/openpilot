@@ -150,6 +150,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Defaults on (2026-08): the old plain-openpilot planner is retired -- CarrotPilot and the
     // car's stock ACC (TeslaStockLong) are the only two paths anyone runs going forward.
     {"CarrotLongEnabled", {PERSISTENT, BOOL, "1"}},
+    // Trims how far off the lane centre the model is allowed to sit. Off by default: it
+    // changes steering, so it is opted into rather than inherited. Fractions are integers
+    // here like the rest of this block -- authority is a percent, offset is centimetres.
+    {"LaneCentering", {PERSISTENT, BOOL, "0"}},
+    {"LaneCenteringPauseOnSignal", {PERSISTENT, BOOL, "1"}},
+    // 0 corrects every deviation, 100 leaves the big confident ones to the model. StarPilot
+    // ships 100; half is the point where a wide line through a bend still gets pulled in.
+    {"LaneCenteringE2EAuthority", {PERSISTENT, INT, "50"}},
+    {"LaneCenterOffset", {PERSISTENT, INT, "0"}},
     // These two carrot reads from params where this tree takes them from the car port. The
     // defaults are the port's values for this car, not carrot's generic 20/50: vEgoStopping is
     // set to 0.1 in the Tesla interface specifically, and 0.5 would have the car decide it has

@@ -13,6 +13,7 @@ from openpilot.common.swaglog import cloudlog
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
+from openpilot.selfdrive.controls.lib.lane_centering import LaneCenteringController
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
@@ -55,6 +56,14 @@ class Controls:
     self._param_frame = 0
     self.curvature = 0.0
     self.desired_curvature = 0.0
+
+    # Lane centring trim. Its settings are re-read on the same slow cadence as the longitudinal
+    # ones below, so a change from the page lands without a restart.
+    self.lane_centering = LaneCenteringController()
+    self._lane_centering = False
+    self._lane_centering_pause_on_signal = True
+    self._lane_center_offset = 0.0
+    self._lane_centering_e2e_authority = 0.5
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -120,6 +129,7 @@ class Controls:
 
     if not CC.latActive:
       self.LaC.reset()
+      self.lane_centering.reset()
     if not CC.longActive:
       self.LoC.reset()
 
@@ -127,15 +137,21 @@ class Controls:
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
     # Params.get hits disk, so not every frame.
     self._param_frame += 1
-    if self._carrot_long and self._param_frame % 50 == 0:
+    if self._param_frame % 50 == 0:
       def _p(key, default):
         v = self.params.get(key, return_default=True)
         return int(v) if v is not None else default
-      self._stopping_accel = _p("StoppingAccel", 0) * 0.01
-      # carrot's own scaling: Kp and Kf in hundredths, Ki in thousandths.
-      self._gains = (_p("LongTuningKpV", 100) * 0.01,
-                     _p("LongTuningKiV", 0) * 0.001,
-                     _p("LongTuningKf", 100) * 0.01)
+      self._lane_centering = self.params.get_bool("LaneCentering")
+      self._lane_centering_pause_on_signal = self.params.get_bool("LaneCenteringPauseOnSignal")
+      # percent of the model's intent to honour, and centimetres of deliberate offset
+      self._lane_centering_e2e_authority = _p("LaneCenteringE2EAuthority", 50) * 0.01
+      self._lane_center_offset = _p("LaneCenterOffset", 0) * 0.01
+      if self._carrot_long:
+        self._stopping_accel = _p("StoppingAccel", 0) * 0.01
+        # carrot's own scaling: Kp and Kf in hundredths, Ki in thousandths.
+        self._gains = (_p("LongTuningKpV", 100) * 0.01,
+                       _p("LongTuningKiV", 0) * 0.001,
+                       _p("LongTuningKf", 100) * 0.01)
     lead = self.sm['radarState'].leadOne
     lead_d_rel = float(lead.dRel) if lead.present else None
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop,
@@ -148,6 +164,16 @@ class Controls:
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+      # Only the model's own path is trimmed. A scripted manoeuvre is the thing being measured,
+      # so pulling it toward the lane centre would be corrupting the test rather than helping.
+      # This sits above clip_curvature, so the ISO jerk and lateral limits still have the last
+      # word on anything it asks for.
+      new_desired_curvature = self.lane_centering.update(
+        new_desired_curvature, model_v2, CS.vEgo,
+        self._lane_centering, self._lane_center_offset, self._lane_centering_e2e_authority,
+        CC.latActive, self.sm.all_checks(['modelV2']),
+        self._lane_centering_pause_on_signal,
+        bool(CS.leftBlinker or CS.rightBlinker))
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
