@@ -239,11 +239,13 @@ class HudRenderer(Widget):
     self._nav_limit = float(nav.baseSpeedLimit) if nav.baseSpeedLimit > 0 else float(nav.mapSpeedLimit)
     self._nav_fleet_median = float(nav.fleetMedianSpeed)
 
-    # carrot's own target (eco control, the Tesla map auto-speed override, ...) takes priority
-    # over the car's reported cluster value, the same way controlsd now feeds it to the car's
-    # own dash -- so an auto speed change pops this box exactly like a lever change does,
-    # instead of only being visible on the physical cluster.
-    if sm.valid['longitudinalPlan'] and plan.cruiseTarget > 0:
+    # This box is MAX: how fast the car may go here, which is the ceiling the map settled on and
+    # the same number the physical cluster is being driven to. Not cruiseTarget -- that is the
+    # setpoint on its way there, and showing it made the box count upward on every limit change
+    # as though the limit itself were rising slowly.
+    if sm.valid['longitudinalPlan'] and plan.cruiseCeiling > 0:
+      set_speed = plan.cruiseCeiling
+    elif sm.valid['longitudinalPlan'] and plan.cruiseTarget > 0:
       set_speed = plan.cruiseTarget
     else:
       v_cruise_cluster = car_state.vCruiseCluster

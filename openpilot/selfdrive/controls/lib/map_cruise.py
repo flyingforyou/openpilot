@@ -75,18 +75,7 @@ CLASS_CEILING = {
 RAMP_ON = 1
 RAMP_OFF = 2
 
-# Setpoint slew, m/s^2. Asymmetric on purpose: dropping the target is a safety action and should
-# land inside a few seconds, raising it is a comfort action and should feel like a decision rather
-# than a twitch. 1.0 takes 65 -> 40 mph in 11s, close to the 0.8 the driver used down that ramp.
-# 0.5 takes 40 -> 65 mph in 22s, well inside what the MPC will actually deliver.
-SLEW_DOWN = 1.0
-SLEW_UP = 0.5
-# Merging is the exception. An on-ramp's fleet profile climbs faster than any comfort rate for a
-# setpoint -- 21 to 73 mph over the observed ramp -- and a setpoint that lags it is a setpoint
-# below the car's own speed, which reads as a brake request in the middle of a merge.
-SLEW_UP_MERGE = 1.5
-
-# A higher target has to hold this long before the setpoint starts climbing. Covers the case
+# A higher target has to hold this long before the setpoint takes it. Covers the case
 # where the map hands over to the next road a beat before the car is on it -- entering that
 # freeway, the posted limit went 25 -> 65 mph while the car was still at 18 mph on the on-ramp.
 RAISE_DWELL = 3.0
@@ -132,21 +121,6 @@ OFFSET_SPLIT = 40 * CV.MPH_TO_MS
 OFFSET_BELOW = 5 * CV.MPH_TO_MS
 OFFSET_ABOVE = 10 * CV.MPH_TO_MS
 
-# How far above the car's own speed the setpoint may always sit, m/s, regardless of slew in
-# either direction. Both limits need it and they need to agree on it. Raising: a setpoint the
-# slew has left below the car's actual speed is a brake request, which is what a rate limit on
-# the way up buys if it is applied in absolute terms -- pulling away from a light onto a 40 mph
-# road, 0.5 m/s^2 on the setpoint is slower than the launch. Lowering: a setpoint loitering far
-# above a car that has already slowed keeps a stale target alive for no reason. Four and a half
-# mph of headroom is not an acceleration request in either direction, and the MPC's own accel
-# limits still decide what the car actually does with it.
-TRACK_MARGIN = 2.0
-# Rate the setpoint closes on that band, m/s^2. Faster than either ordinary slew, because inside
-# the band the setpoint is not asking the car for anything -- but not instant: a setpoint that
-# teleports five mph releases a decel request in a single frame, and the MPC should be smoothing
-# a ramp, not a step.
-SLEW_CATCHUP = 3.0
-
 
 class MapCruiseController:
   def __init__(self):
@@ -159,9 +133,9 @@ class MapCruiseController:
 
     self.state = MapCruiseState.off
     self.source = 'off'
-    self.v_target = 0.0     # what the map says, before slew
+    self.v_target = 0.0     # what the map says, before the caps below it
     self.v_ceiling = 0.0    # v_target after every cap: the number a cluster should show as MAX
-    self.v_output = 0.0     # what is handed to the planner, after slew
+    self.v_output = 0.0     # what is handed to the planner
     self.raise_timer = 0.0
     self.loss_timer = 0.0
     self.last_posted = 0.0
@@ -377,31 +351,27 @@ class MapCruiseController:
     if self.v_output <= 0.0:
       self.v_output = max(min(v_cruise_driver, self.v_target), v_ego)
 
-    v_prev = self.v_output
+    # The setpoint is the answer, not the route to it. How fast the car closes on a new limit is
+    # the planner's decision -- it has acceleration and jerk limits tuned for this car, and a
+    # rate limit here only ever competes with them. It used to lose that competition badly:
+    # SLEW_UP was 0.5 m/s^2 against CruiseMaxVals of 1.3-2.0, so a 45->55 change measured 11 s
+    # to arrive while the cluster had shown the new number within half a second.
+    #
+    # What is still worth holding is the decision itself. A limit that rises has to stay risen
+    # before it is believed, or the setpoint chases every flicker in the map; a limit that drops
+    # is taken at once, because that one is not a suggestion. An off-ramp never gets the raise:
+    # the limit of the road being left does not apply to the ramp. Merging is the opposite and
+    # skips the wait, since reaching the speed of the road being joined is the whole point.
     if self.v_target < self.v_output:
       self.raise_timer = 0.0
-      self.v_output = max(self.v_target, self.v_output - SLEW_DOWN * DT_MDL)
-      # Never leave the setpoint loitering above a speed the car is nowhere near; without this
-      # the slew keeps a stale high target alive for seconds after the car has already slowed.
-      band = max(self.v_target, v_ego + TRACK_MARGIN)
-      self.v_output = min(self.v_output, max(band, v_prev - SLEW_CATCHUP * DT_MDL))
+      self.v_output = self.v_target
     elif self.v_target > self.v_output:
-      # Raising takes a settled target, and on an off-ramp it never comes: the limit of the road
-      # being left is not a limit that applies. Merging is the opposite case and gets no dwell at
-      # all, because the whole point of an on-ramp is to reach the speed of the road being joined.
-      merging = ramp == RAMP_ON
       if ramp == RAMP_OFF:
         self.raise_timer = 0.0
       else:
-        self.raise_timer = RAISE_DWELL if merging else self.raise_timer + DT_MDL
+        self.raise_timer = RAISE_DWELL if ramp == RAMP_ON else self.raise_timer + DT_MDL
       if self.raise_timer >= RAISE_DWELL:
-        slew = SLEW_UP_MERGE if merging else SLEW_UP
-        self.v_output = min(self.v_target, self.v_output + slew * DT_MDL)
-      # The slew governs the headroom above the car, never the car itself. Whatever it has
-      # reached, the setpoint may always close on TRACK_MARGIN over the current speed -- the
-      # dwell still applies, since that band moves only as fast as the car does.
-      band = min(self.v_target, v_ego + TRACK_MARGIN)
-      self.v_output = max(self.v_output, min(band, v_prev + SLEW_CATCHUP * DT_MDL))
+        self.v_output = self.v_target
     else:
       self.raise_timer = 0.0
 

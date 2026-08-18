@@ -216,3 +216,61 @@ class TestCurveLatAccelCap:
     for _ in range(40):
       c.update(cs, 40 * MPH, 70 * MPH, 1.0 / 31)
     assert c.v_ceiling / MPH < 30.0
+
+
+class TestSetpointFollowsTheRoad:
+  """The setpoint is the answer, not the route to it.
+
+  There used to be a rate limit here, and at 0.5 m/s^2 up it was three to four times tighter
+  than the planner's own acceleration limits -- a measured 45 -> 55 change took 11 s to reach
+  the setpoint while the cluster had shown the new number within half a second. How fast the car
+  closes the gap is the planner's decision now; what survives is the wait before a *higher*
+  limit is believed at all.
+  """
+  DT = 0.05
+
+  @staticmethod
+  def _drive(c, limit_mph, frames, v_ego_mph=40, ramp=0):
+    nav = FakeNav(limit_mph, road_class_for(limit_mph))
+    nav.rampType = ramp
+    cs = FakeCS(nav)
+    out = []
+    for _ in range(frames):
+      out.append(c.update(cs, v_ego_mph * MPH, 70 * MPH) / MPH)
+    return out
+
+  def test_lower_limit_is_taken_at_once(self):
+    c = make()
+    self._drive(c, 65, 100)
+    first = self._drive(c, 35, 1)[0]
+    assert first == pytest.approx(40, abs=1.0), "a lower limit is not a suggestion"
+
+  def test_higher_limit_waits_then_arrives_whole(self):
+    c = make()
+    self._drive(c, 35, 100)
+    during = self._drive(c, 65, int(2.0 / self.DT))
+    assert during[-1] == pytest.approx(40, abs=1.0), "the wait has to hold the old number"
+    after = self._drive(c, 65, int(1.5 / self.DT))
+    assert after[-1] == pytest.approx(75, abs=1.0), "and then hand over all of it, not a ramp"
+
+  def test_no_intermediate_values_on_the_way_up(self):
+    """The point of the change: one step, not a staircase."""
+    c = make()
+    self._drive(c, 35, 100)
+    seen = self._drive(c, 65, int(6.0 / self.DT))
+    between = [v for v in seen if 41 < v < 74]
+    assert not between, f"setpoint passed through {sorted({round(v) for v in between})}"
+
+  def test_merging_skips_the_wait(self):
+    c = make()
+    self._drive(c, 35, 100)
+    first = self._drive(c, 65, 1, ramp=1)[0]
+    assert first > 41, "an on-ramp cannot afford to wait to be believed"
+
+  def test_ceiling_is_the_road_not_the_setpoint(self):
+    """What a cluster shows tracks the road immediately, even inside the wait."""
+    c = make()
+    self._drive(c, 35, 100)
+    self._drive(c, 65, 1)
+    assert c.v_ceiling / MPH == pytest.approx(75, abs=1.0)
+    assert c.v_output / MPH == pytest.approx(40, abs=1.0)
