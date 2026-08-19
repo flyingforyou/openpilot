@@ -42,6 +42,12 @@ ROAD_SIGN_MUX_FLEET_SPEED = 4
 # 2Hz, 0x2F8 at 1Hz. carState runs at 100Hz, so this is three seconds without a map message.
 NAV_MAP_STALE_FRAMES = 300
 
+# 0x2C8 runs at 10Hz on its own, so it does not need the slack the multiplexed messages above do.
+# It gets a separate counter because it drives a speed cap: CANParser holds the last decoded
+# value forever once a message stops, and a frozen cubic that says "sharp bend" would hold the
+# car down indefinitely. Half a second of silence is enough to stop believing it.
+CURVATURE_STALE_FRAMES = 50
+
 
 def decode_tesla_gap(raw_gap: int) -> int:
   """Convert Tesla legacy DTR_Dist_Rq raw value to a gap level.
@@ -105,6 +111,8 @@ class NavMapDecoder:
     self.ramp_type = 0
     self.last_map_nanos = 0
     self.stale_frames = NAV_MAP_STALE_FRAMES
+    self.last_curv_nanos = 0
+    self.curv_stale_frames = CURVATURE_STALE_FRAMES
 
   def update(self, ret: structs.CarState, cp_party, cp_ap_party) -> None:
     road_sign = cp_party.vl["UI_driverAssistRoadSign"]
@@ -162,6 +170,23 @@ class NavMapDecoder:
     nav.gpsRoadMatch = bool(map_data["UI_gpsRoadMatch"])
     nav.navRouteActive = bool(map_data["UI_navRouteActive"])
     nav.speedOffset = float(gps["UI_userSpeedOffset"]) * (CV.KPH_TO_MS if offset_kph else CV.MPH_TO_MS)
+
+    # The road-ahead cubic, on its own message and its own staleness counter. Health is reported
+    # as the gateway gives it and the range is passed through untouched -- deciding how far of it
+    # to believe is the consumer's job, not this decoder's.
+    curv = cp_party.vl["UI_roadCurvature"]
+    curv_nanos = cp_party.ts_nanos["UI_roadCurvature"]["UI_roadCurvC2"]
+    if curv_nanos != self.last_curv_nanos:
+      self.last_curv_nanos = curv_nanos
+      self.curv_stale_frames = 0
+    else:
+      self.curv_stale_frames = min(self.curv_stale_frames + 1, CURVATURE_STALE_FRAMES)
+
+    fresh = curv_nanos != 0 and self.curv_stale_frames < CURVATURE_STALE_FRAMES
+    nav.curvC2 = float(curv["UI_roadCurvC2"]) if fresh else 0.0
+    nav.curvC3 = float(curv["UI_roadCurvC3"]) if fresh else 0.0
+    nav.curvRange = float(curv["UI_roadCurvRange"]) if fresh else 0.0
+    nav.curvHealth = int(curv["UI_roadCurvHealth"]) if fresh else 0
 
 
 class LegacySteerState(NamedTuple):
