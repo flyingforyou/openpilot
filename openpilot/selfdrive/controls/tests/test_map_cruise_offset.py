@@ -274,3 +274,64 @@ class TestSetpointFollowsTheRoad:
     self._drive(c, 65, 1)
     assert c.v_ceiling / MPH == pytest.approx(75, abs=1.0)
     assert c.v_output / MPH == pytest.approx(40, abs=1.0)
+
+
+class TestBaseLimitOutvoted:
+  """base leads the other sources, but a lone low reading is a bad map match, not early news.
+
+  Measured over three drives: base agrees with the posted band 91.6% of the time, and on 0.44%
+  of frames it read 15+ mph below every other source while those agreed -- a class-4 road
+  posting 65 with base claiming 40 or 20. Believing it put the car at 25 there.
+  """
+
+  @staticmethod
+  def _nav(base, others, road_class=4, ramp=0):
+    nav = FakeNav(others, road_class)
+    nav.baseSpeedLimit = base * MPH
+    nav.rampType = ramp
+    return nav
+
+  def test_lone_low_base_is_outvoted(self):
+    c = make(v_max_mph=90)
+    got = settle(c, 65, 70, nav=self._nav(20, 65, road_class=1))
+    assert got == pytest.approx(75, abs=1.0), "three sources saying 65 should beat one saying 20"
+
+  def test_the_other_observed_case(self):
+    c = make(v_max_mph=90)
+    got = settle(c, 65, 70, nav=self._nav(40, 65, road_class=1))
+    assert got == pytest.approx(75, abs=1.0)
+
+  def test_ordinary_disagreement_still_prefers_base(self):
+    """base leading the posted band by a few mph is the normal, useful case."""
+    c = make()
+    got = settle(c, 45, 70, nav=self._nav(40, 45, road_class=4))
+    assert got == pytest.approx(50, abs=1.0), "a 5 mph lead is base doing its job"
+
+  def test_base_higher_than_the_others_is_untouched(self):
+    """The rule is one-directional: it only fires when base is the slow outlier."""
+    c = make()
+    got = settle(c, 35, 70, nav=self._nav(45, 35, road_class=4))
+    assert got == pytest.approx(55, abs=1.0), "base still leads upward"
+
+  def test_never_on_a_ramp(self):
+    """Off-ramp: base dropping first is the early warning, not a bad match. 539 of the observed
+    frames were here, and overriding base would hold the freeway limit down the exit."""
+    c = make(v_max_mph=90)
+    got = settle(c, 65, 70, nav=self._nav(20, 65, road_class=1, ramp=2))
+    assert got == pytest.approx(25, abs=1.0), "base has to keep its say on a ramp"
+
+  def test_dropped_not_replaced(self):
+    """The others are not thereby right: a 65 on a class-4 road is still refused, and the car
+    falls back to the class ceiling rather than to either bad number."""
+    c = make()
+    got = settle(c, 65, 70, nav=self._nav(20, 65, road_class=4))
+    assert got > 30, f"should not still be crawling at 25, got {got:.0f}"
+    assert got <= 61, f"and should not have believed the 65 either, got {got:.0f}"
+
+  def test_needs_two_agreeing_sources(self):
+    c = make()
+    nav = self._nav(20, 65, road_class=1)
+    nav.mppSpeedLimit = 0.0
+    nav.fusedSpeedLimit = 0.0
+    got = settle(c, 65, 70, nav=nav)
+    assert got == pytest.approx(25, abs=1.0), "one dissenter is not a vote"

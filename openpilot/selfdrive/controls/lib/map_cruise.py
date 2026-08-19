@@ -90,6 +90,13 @@ LOSS_DEBOUNCE = 1.0
 # limit read against the wrong road is exactly the failure worth refusing.
 MIN_CONFIDENCE = 60
 
+# How far below the other sources baseSpeedLimit has to sit before it is treated as a bad match
+# rather than as early news. The observed failures were 25 and 45 mph below; ordinary source
+# disagreement is under 10.
+OUTVOTED_MARGIN = 15 * CV.MPH_TO_MS
+# ...and how closely those other sources have to agree with each other for their vote to count.
+SOURCE_AGREEMENT = 5 * CV.MPH_TO_MS
+
 # Slowest the map is ever allowed to ask for. Below this it is the planner's stopping logic, the
 # lead car or the curve controller doing the work -- not a speed limit.
 MIN_TARGET = 20 * CV.KPH_TO_MS
@@ -173,7 +180,29 @@ class MapCruiseController:
     """
     if nav.splineConfidence < MIN_CONFIDENCE or not nav.gpsRoadMatch:
       return 0.0, 'none'
-    for value, name in ((nav.baseSpeedLimit, 'base'), (nav.mapSpeedLimit, 'map'),
+
+    # Being first is not the same as being right. Over three drives base agrees with the posted
+    # band 91.6% of the time, but on 0.44% of frames it reads 15+ mph below every other source
+    # while those agree with each other -- a class-4 road posting 65 with base claiming 40 or 20.
+    # Believing it there put the car at 25 mph with the traffic around it doing far more.
+    #
+    # Dropped rather than replaced: the other sources are not thereby right either. A 65 on a
+    # class-4 road is still refused by the cross-check below, and what the car falls back to is
+    # the held target under that class's own ceiling -- which is the honest answer when no source
+    # is trustworthy, and is not 25.
+    #
+    # Never on a ramp. Base dropping ahead of the others is exactly the early warning this module
+    # was built around, and 539 of the observed frames were on off-ramps: overriding base there
+    # would hold a freeway limit down an exit, which is the failure the whole file exists to
+    # avoid.
+    base = float(nav.baseSpeedLimit)
+    others = [float(v) for v in (nav.mapSpeedLimit, nav.mppSpeedLimit, nav.fusedSpeedLimit) if v > 0.0]
+    if (base > 0.0 and not nav.rampType and len(others) >= 2
+        and min(others) - base > OUTVOTED_MARGIN
+        and max(others) - min(others) <= SOURCE_AGREEMENT):
+      base = 0.0
+
+    for value, name in ((base, 'base'), (nav.mapSpeedLimit, 'map'),
                         (nav.mppSpeedLimit, 'mpp'), (nav.fusedSpeedLimit, 'fused')):
       if value > 0.0:
         return float(value), name
