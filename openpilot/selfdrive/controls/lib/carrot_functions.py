@@ -9,6 +9,7 @@ from openpilot.common.filter_simple import MyMovingAverage
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_t_follow import ramp_t_follow
+from openpilot.selfdrive.controls.lib.lane_change_guards import side_lead_unsafe
 from openpilot.selfdrive.controls.lib.map_cruise import CURVE_LOOKAHEAD_T, MapCruiseController
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.selfdrived.events import Events
@@ -210,6 +211,7 @@ class CarrotPlanner:
 
     self.desireState = 0.0
     self.desireStateCount = 0
+    self.laneChangeSideBlocked = False
     self.jerk_factor = 1.0
     self.jerk_factor_apply = 1.0
 
@@ -403,16 +405,26 @@ class CarrotPlanner:
     if meta.laneChangeState == LaneChangeState.laneChangeStarting:
       self.desireState = meta.desireState[3] if carState.leftBlinker else meta.desireState[4]
       self.desireStateCount += 1
+      # Whether the lane being moved into has something in it. The aggression below closes the
+      # gap to the car *ahead in the current lane*; it has never had an opinion about the one
+      # being merged in front of. Measured over the 2026-08-19 drive, 72% of lane-change frames
+      # had a vehicle in the target lane at a median 27 m and a minimum of 7 m, and the plan was
+      # still asking for +0.43 m/s^2 on the 401 of them where that car was inside 40 m.
+      radar = sm['radarState']
+      side = radar.leadLeft if carState.leftBlinker else radar.leadRight
+      self.laneChangeSideBlocked = side_lead_unsafe(side, carState.vEgo)
     else:
       self.desireState = 0.0
       self.desireStateCount = 0
+      self.laneChangeSideBlocked = False
 
 
   def dynamic_t_follow(self, t_follow, lead, desired_follow_distance, prev_a):
     self.jerk_factor_apply = self.jerk_factor
 
-    # 차선변경 시작 후 1.5초 동안은 공격적으로
-    if self.desireState > 0.9 and self.desireStateCount < int(1.5 / DT_MDL):
+    # 차선변경 시작 후 1.5초 동안은 공격적으로 -- 단, 들어갈 차선이 비어 있을 때만.
+    if (self.desireState > 0.9 and self.desireStateCount < int(1.5 / DT_MDL)
+        and not self.laneChangeSideBlocked):
       dynamicTFollowLC = max(0.2, self.dynamicTFollowLC)
       t_follow *= dynamicTFollowLC
       self.jerk_factor_apply = self.jerk_factor * dynamicTFollowLC
