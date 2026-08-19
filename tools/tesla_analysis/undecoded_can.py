@@ -94,11 +94,9 @@ def main(paths):
 
   rows.sort(reverse=True)
   print("\n-- unknown ids, most 'busy slow, quiet fast' first --")
-  print(f"  {'addr':>7} {'bus':>4} {'len':>4} {'frames':>8} {'bytes mv slow':>14} "
-        f"{'fast':>6} {'std slow':>9} {'fast':>7} {'delta':>7}")
+  print(f"  {'addr':>7} {'bus':>4} {'len':>4} {'frames':>8} {'bytes mv slow':>14} {'fast':>6} {'std slow':>9} {'fast':>7} {'delta':>7}")
   for score, (addr, bus), d, ms, mf, ss, sf in rows[:20]:
-    print(f"  {hex(addr):>7} {bus:>4} {d['len']:>4} {d['n']:>8} {ms:>14} {mf:>6} "
-          f"{ss:>9.1f} {sf:>7.1f} {score:>+7.1f}")
+    print(f"  {hex(addr):>7} {bus:>4} {d['len']:>4} {d['n']:>8} {ms:>14} {mf:>6} {ss:>9.1f} {sf:>7.1f} {score:>+7.1f}")
 
   if not rows:
     print("  (none had enough samples in both speed bands)")

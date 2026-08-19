@@ -70,8 +70,7 @@ def main(paths):
                 break
 
   print("-- PARK_status2 (0x30E), the only park message the DBC decodes --")
-  print(f"  {'speed (mph)':>12} {'frames':>8}  {'sdiActive':>22} {'sdiNoise':>16} "
-        f"{'blindSpot L / R':>22}")
+  print(f"  {'speed (mph)':>12} {'frames':>8}  {'sdiActive':>22} {'sdiNoise':>16} {'blindSpot L / R':>22}")
   for lo, hi in SPEED_BINS:
     b = park_by_bin.get((lo, hi))
     if not b:
@@ -79,9 +78,8 @@ def main(paths):
     a = np.array(b['active'])
     n = np.array(b['noise'])
     left, right = np.array(b['bs_left']), np.array(b['bs_right'])
-    print(f"  {f'{lo}-{hi}':>12} {len(a):>8}  {f'{100*a.mean():.0f}% set':>22} "
-          f"{f'vals {sorted(set(n.tolist()))}':>16} "
-          f"{f'{sorted(set(left.tolist()))} / {sorted(set(right.tolist()))}':>22}")
+    sides = f"{sorted(set(left.tolist()))} / {sorted(set(right.tolist()))}"
+    print(f"  {f'{lo}-{hi}':>12} {len(a):>8}  {f'{100*a.mean():.0f}% set':>22} {f'vals {sorted(set(n.tolist()))}':>16} {sides:>22}")
 
   print("\n-- every id on the bus: which ones are alive and changing above 20 mph --")
   rows = []
@@ -95,8 +93,7 @@ def main(paths):
     print(f"  {hex(addr):>8} {bus:>4} {ln:>4} {n:>8} {mv:>8} {nv:>26}")
 
   static_ids = [hex(a) for nv, a, b, n, mv, ln in rows if nv <= 1]
-  print(f"\n  ids that never change while moving ({len(static_ids)}): {" ".join(static_ids[:24])}"
-        f"{' ...' if len(static_ids) > 24 else ''}")
+  print(f"\n  ids that never change while moving ({len(static_ids)}): {" ".join(static_ids[:24])}{' ...' if len(static_ids) > 24 else ''}")
 
 
 if __name__ == '__main__':

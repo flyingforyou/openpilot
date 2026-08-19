@@ -110,8 +110,7 @@ def main(paths):
 
   print(f"route          {paths[0].rstrip('/').rsplit('--',1)[0].split('/')[-1]}  ({len(paths)} segments)")
   print(f"driving model  {model_id or 'not in log'}")
-  print(f"model frames   {frames}  |  engaged {engaged_frames} ({100*engaged_frames/max(frames,1):.0f}%)"
-          f"  |  {engaged_frames/20/60:.1f} min engaged")
+  print(f"model frames   {frames}  |  engaged {engaged_frames} ({100*engaged_frames/max(frames,1):.0f}%)  |  {engaged_frames/20/60:.1f} min engaged")
   print(f"speed          median {np.median(v)*2.23694:.0f} mph, max {v.max()*2.23694:.0f} mph")
 
   print("\n-- trim --")
@@ -137,20 +136,18 @@ def main(paths):
       print(f"  {label:24} (only {sel.sum()} frames)")
       continue
     o = offset[sel]
-    print(f"  {label:24} n={sel.sum():6}  mean {o.mean():+.3f}  |mean| {np.abs(o).mean():.3f}  "
-          f"p90 {np.percentile(np.abs(o),90):.3f}  max {np.abs(o).max():.3f} m")
+    tail = f"p90 {np.percentile(np.abs(o),90):.3f}  max {np.abs(o).max():.3f} m"
+    print(f"  {label:24} n={sel.sum():6}  mean {o.mean():+.3f}  |mean| {np.abs(o).mean():.3f}  {tail}")
 
   print("\n-- does the trim push the way the offset needs? --")
   sel = usable & act
   if sel.sum() > 20:
     agree = np.mean(np.sign(trim[sel]) == -np.sign(offset[sel]))
     print(f"  trim opposes the car's offset on {100*agree:.0f}% of applied frames")
-    print(f"  (offset and trim correlation r = {np.corrcoef(offset[sel], trim[sel])[0,1]:+.2f}, "
-          f"negative is correct)")
+    print(f"  (offset and trim correlation r = {np.corrcoef(offset[sel], trim[sel])[0,1]:+.2f}, negative is correct)")
 
   print("\n-- lane width seen --")
-  print(f"  median {np.median(width[usable]):.2f} m  p10 {np.percentile(width[usable],10):.2f}  "
-        f"p90 {np.percentile(width[usable],90):.2f}")
+  print(f"  median {np.median(width[usable]):.2f} m  p10 {np.percentile(width[usable],10):.2f}  p90 {np.percentile(width[usable],90):.2f}")
 
 
 if __name__ == '__main__':

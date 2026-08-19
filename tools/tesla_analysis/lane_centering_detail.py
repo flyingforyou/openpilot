@@ -81,28 +81,23 @@ def main(paths):
 
   print("-- what the trim measures vs what you feel --")
   s = ok
-  print(f"  car's own offset from centre    |mean| {np.abs(car_off[s]).mean():.3f} m  "
-        f"p90 {np.percentile(np.abs(car_off[s]),90):.3f}")
-  print(f"  model path error at lookahead   |mean| {np.abs(path_err[s]).mean():.3f} m  "
-        f"p90 {np.percentile(np.abs(path_err[s]),90):.3f}   <- this is the input")
-  print(f"  after the {LC.CENTER_ERROR_DEADBAND} m deadband        |mean| "
-        f"{np.maximum(np.abs(path_err[s])-LC.CENTER_ERROR_DEADBAND,0).mean():.3f} m")
+  print(f"  car's own offset from centre    |mean| {np.abs(car_off[s]).mean():.3f} m  p90 {np.percentile(np.abs(car_off[s]),90):.3f}")
+  print(f"  model path error at lookahead   |mean| {np.abs(path_err[s]).mean():.3f} m  p90 {np.percentile(np.abs(path_err[s]),90):.3f}   <- this is the input")
+  print(f"  after the {LC.CENTER_ERROR_DEADBAND} m deadband        |mean| {np.maximum(np.abs(path_err[s])-LC.CENTER_ERROR_DEADBAND,0).mean():.3f} m")
   print(f"  correlation car offset vs path error  r = {np.corrcoef(car_off[s], path_err[s])[0,1]:+.2f}")
-  print(f"  frames where the path is already centred (<{LC.CENTER_ERROR_DEADBAND} m): "
-        f"{100*np.mean(np.abs(path_err[s]) < LC.CENTER_ERROR_DEADBAND):.0f}%")
+  print(f"  frames where the path is already centred (<{LC.CENTER_ERROR_DEADBAND} m): {100*np.mean(np.abs(path_err[s]) < LC.CENTER_ERROR_DEADBAND):.0f}%")
 
   print("\n-- authority, replayed over the same drive --")
   for name, t in (("0   (correct everything)", t0), ("50  (as driven)", t50), ("100 (defer to model)", t100)):
     a = np.abs(t[ok])
     on = a > 1e-9
-    print(f"  {name:26} applied {100*on.mean():5.1f}%   median {np.median(a[on]) if on.any() else 0:.6f}   "
-          f"p90 {np.percentile(a[on],90) if on.any() else 0:.6f}   max {a.max():.6f}")
+    med = np.median(a[on]) if on.any() else 0
+    p90 = np.percentile(a[on], 90) if on.any() else 0
+    print(f"  {name:26} applied {100*on.mean():5.1f}%   median {med:.6f}   p90 {p90:.6f}   max {a.max():.6f}")
   give = np.abs(t0[ok]) - np.abs(t50[ok])
-  print(f"  authority 50 gives up  median {np.median(give):.6f}  p90 {np.percentile(give,90):.6f} 1/m "
-        f"vs correcting everything")
+  print(f"  authority 50 gives up  median {np.median(give):.6f}  p90 {np.percentile(give,90):.6f} 1/m vs correcting everything")
   big = ok & (np.abs(path_err) > LC.E2E_BREAK_IN_START)
-  print(f"  frames past the 0.15 m break-in (where authority even applies): "
-        f"{100*big.mean():.1f}% of usable")
+  print(f"  frames past the 0.15 m break-in (where authority even applies): {100*big.mean():.1f}% of usable")
 
   print("\n-- curvature bins (|model curvature|) --")
   for lo, hi, label in ((0.0, 0.002, 'straight'), (0.002, 0.005, 'gentle curve'),
@@ -111,16 +106,16 @@ def main(paths):
     if sel.sum() < 30:
       print(f"  {label:14} n={sel.sum():6}  (too few)")
       continue
-    print(f"  {label:14} n={sel.sum():6}  car offset |mean| {np.abs(car_off[sel]).mean():.3f}  "
-          f"p90 {np.percentile(np.abs(car_off[sel]),90):.3f}   trim median "
-          f"{np.median(np.abs(t50[sel])):.6f}  at auth0 {np.median(np.abs(t0[sel])):.6f}")
+    off = f"|mean| {np.abs(car_off[sel]).mean():.3f}  p90 {np.percentile(np.abs(car_off[sel]),90):.3f}"
+    trim = f"median {np.median(np.abs(t50[sel])):.6f}  at auth0 {np.median(np.abs(t0[sel])):.6f}"
+    print(f"  {label:14} n={sel.sum():6}  car offset {off}   trim {trim}")
 
   print("\n-- steadiness (is the trim fighting itself?) --")
   d = np.diff(t50[ok])
   flips = np.mean(np.sign(t50[ok][1:]) * np.sign(t50[ok][:-1]) < 0)
   print(f"  sign flips between frames  {100*flips:.2f}%  (20 Hz frames)")
-  print(f"  frame-to-frame change      p99 {np.percentile(np.abs(d),99):.7f} 1/m "
-        f"(cap on a step from smoothing is ~{0.0012*(1-np.exp(-0.05/LC.SMOOTH_TAU)):.7f})")
+  cap = 0.0012 * (1 - np.exp(-0.05 / LC.SMOOTH_TAU))
+  print(f"  frame-to-frame change      p99 {np.percentile(np.abs(d),99):.7f} 1/m (cap on a step from smoothing is ~{cap:.7f})")
 
   print("\n-- why lines were rejected --")
   tot = len(rows)

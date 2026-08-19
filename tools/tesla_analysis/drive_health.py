@@ -30,7 +30,7 @@ def main(paths):
   exec_t, drops, big = [], [], 0
   a_ego, v_ego, engaged_s = [], [], 0
   brake_events, in_event = [], None
-  lat_sat = long_sat = lat_frames = 0
+  lat_sat = lat_frames = 0
   events = Counter()
   temps, cpu, mem, free_gb = [], [], [], []
   panda_faults = Counter()
@@ -47,7 +47,7 @@ def main(paths):
       if w == 'logMessage':
         s = str(msg.logMessage)
         if model_id is None and 'modeld starting on' in s:
-          model_id = s.split('modeld starting on')[-1].split('"')[0].strip()
+          model_id = s.split('modeld starting on', 1)[-1].split('"', 1)[0].strip()
         if 'Falling back to stock' in s or 'failed to load' in s:
           errors.append(('model fallback', s[:120]))
       elif w == 'errorLogMessage':
@@ -127,8 +127,8 @@ def main(paths):
   print(f"  loaded            {model_id or '(no log line captured)'}")
   if exec_t:
     e = np.array(exec_t)
-    print(f"  execution time    median {np.median(e)*1e3:.1f} ms  p99 {np.percentile(e,99)*1e3:.1f} ms  "
-          f"max {e.max()*1e3:.1f} ms   over {MODEL_BUDGET*1e3:.0f}ms budget: {big} frames ({100*big/len(e):.2f}%)")
+    over = f"over {MODEL_BUDGET*1e3:.0f}ms budget: {big} frames ({100*big/len(e):.2f}%)"
+    print(f"  execution time    median {np.median(e)*1e3:.1f} ms  p99 {np.percentile(e,99)*1e3:.1f} ms  max {e.max()*1e3:.1f} ms   {over}")
     d = np.array(drops)
     print(f"  frame drop        median {np.median(d):.2f}%  max {d.max():.2f}%")
 
@@ -146,8 +146,7 @@ def main(paths):
     a = np.array(a_ego)
     print(f"  measured aEgo     p1 {np.percentile(a,1):.2f}  p99 {np.percentile(a,99):.2f} m/s^2")
   if desired_tot:
-    print(f"  desiredDistance<0 {100*desired_neg/desired_tot:.0f}% of plan frames "
-          f"(known: faked v_lead when no lead is tracked)")
+    print(f"  desiredDistance<0 {100*desired_neg/desired_tot:.0f}% of plan frames (known: faked v_lead when no lead is tracked)")
   if lead_tot:
     print(f"  lead present      {100*lead_present/lead_tot:.0f}% of radar frames")
 

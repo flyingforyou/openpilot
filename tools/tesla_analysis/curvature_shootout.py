@@ -88,8 +88,8 @@ def main(paths):
   print(f"samples {len(samples)}, ground-truth frames {len(truth)}")
   print("ground truth = controlsState.curvature (steering angle through the vehicle model)\n")
 
-  print(f"  {'lookahead':>10} {'n':>6} {'map err':>10} {'model err':>11} {'winner':>9}"
-        f"   {'map err':>9} {'model err':>11} {'winner':>9}")
+  head = f"  {'lookahead':>10} {'n':>6}"
+  print(f"{head} {'map err':>10} {'model err':>11} {'winner':>9}   {'map err':>9} {'model err':>11} {'winner':>9}")
   print(f"  {'':>10} {'':>6} {'--- all road ---':^32}   {'--- bends only ---':^32}")
 
   for d in LOOKAHEADS:
@@ -114,14 +114,13 @@ def main(paths):
     e_map = np.abs(a[:, 0] - a[:, 2])
     e_mod = np.abs(a[:, 1] - a[:, 2])
     bend = a[:, 2] > BEND
-    def fmt(e, sel):
-      return np.median(e[sel]) if sel.any() else float('nan')
-    all_sel = np.ones(len(a), bool)
-    w_all = 'map' if fmt(e_map, all_sel) < fmt(e_mod, all_sel) else 'model'
-    w_bend = 'map' if fmt(e_map, bend) < fmt(e_mod, bend) else 'model'
-    print(f"  {d:9.0f}m {len(a):>6} {fmt(e_map, all_sel):10.5f} {fmt(e_mod, all_sel):11.5f} {w_all:>9}"
-          f"   {fmt(e_map, bend):9.5f} {fmt(e_mod, bend):11.5f} {w_bend:>9}"
-          f"   (bends {bend.sum()})")
+    m_all, d_all = np.median(e_map), np.median(e_mod)
+    m_bend = np.median(e_map[bend]) if bend.any() else float('nan')
+    d_bend = np.median(e_mod[bend]) if bend.any() else float('nan')
+    w_all = 'map' if m_all < d_all else 'model'
+    w_bend = 'map' if m_bend < d_bend else 'model'
+    left = f"  {d:9.0f}m {len(a):>6} {m_all:10.5f} {d_all:11.5f} {w_all:>9}"
+    print(f"{left}   {m_bend:9.5f} {d_bend:11.5f} {w_bend:>9}   (bends {bend.sum()})")
 
   print("\n-- do they at least agree on *when* a bend is coming? --")
   for d in (60.0, 100.0):
@@ -139,8 +138,7 @@ def main(paths):
       hit_map += abs(2 * c2 + 6 * c3 * d) > BEND
       hit_mod += abs(float(np.interp(d, mx, mk))) > BEND
     if tot:
-      print(f"  {d:.0f}m ahead, {tot} real bends: map called {100*hit_map/tot:.0f}%, "
-            f"model called {100*hit_mod/tot:.0f}%")
+      print(f"  {d:.0f}m ahead, {tot} real bends: map called {100*hit_map/tot:.0f}%, model called {100*hit_mod/tot:.0f}%")
 
 
 if __name__ == '__main__':

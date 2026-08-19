@@ -73,7 +73,7 @@ def main(paths):
       continue
     tw, cw, gw, mw, vw = t[win], ceil[win], tgt[win], mx[win], v[win]
 
-    def reach(series, goal, up):
+    def reach(series, goal, up, tw=tw, et=et):
       hit = np.where(series >= goal - 1.0 if up else series <= goal + 1.0)[0]
       return tw[hit[0]] - et if len(hit) else None
 
@@ -81,8 +81,7 @@ def main(paths):
     r_max = reach(mw, after, rising)
     r_tgt = reach(gw, after, rising)
     aw = a_ego[win]
-    print(f"\n  t+{et/60:5.1f} min   {before:.0f} -> {after:.0f} mph  ({'up' if rising else 'down'})"
-          f"   car was doing {vw[0]:.0f} mph")
+    print(f"\n  t+{et/60:5.1f} min   {before:.0f} -> {after:.0f} mph  ({'up' if rising else 'down'})   car was doing {vw[0]:.0f} mph")
     for label, val in (("ceiling (road)", r_ceil), ("cluster MAX (stalk)", r_max),
                        ("setpoint (slew)", r_tgt)):
       print(f"      {label:22} {'never in 45 s' if val is None else f'{val:5.1f} s'}")

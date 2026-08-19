@@ -44,15 +44,13 @@ def main(paths):
   print(f"radar frames {frames}, points {len(d)}  ({len(d)/max(frames,1):.1f} per frame)")
 
   print("\n-- longitudinal reach --")
-  print(f"  dRel  min {d.min():.1f}  p1 {np.percentile(d,1):.1f}  median {np.median(d):.1f}  "
-        f"max {d.max():.1f} m")
+  print(f"  dRel  min {d.min():.1f}  p1 {np.percentile(d,1):.1f}  median {np.median(d):.1f}  max {d.max():.1f} m")
   print(f"  points behind the car (dRel < 0): {(d < 0).sum()}")
   for lim in (5, 10, 15, 20, 30):
     print(f"  closer than {lim:2} m: {(d < lim).sum():6}  ({100*(d < lim).mean():.2f}% of points)")
 
   print("\n-- lateral reach --")
-  print(f"  yRel  min {y.min():+.1f}  p1 {np.percentile(y,1):+.1f}  median {np.median(y):+.1f}  "
-        f"p99 {np.percentile(y,99):+.1f}  max {y.max():+.1f} m")
+  print(f"  yRel  min {y.min():+.1f}  p1 {np.percentile(y,1):+.1f}  median {np.median(y):+.1f}  p99 {np.percentile(y,99):+.1f}  max {y.max():+.1f} m")
   ay = np.abs(y)
   for lo, hi, label in ((0, 1.8, 'my lane'), (1.8, 5.4, 'adjacent lane'), (5.4, 99, 'two lanes out')):
     s = (ay >= lo) & (ay < hi)
@@ -63,8 +61,7 @@ def main(paths):
   print("\n-- the lane-change question: anything alongside, in the next lane? --")
   adj = (ay >= ADJACENT_LO) & (ay < ADJACENT_HI)
   beside = adj & (d < BESIDE_M)
-  print(f"  adjacent-lane points within {BESIDE_M:.0f} m longitudinally: {beside.sum()}"
-        f"  ({100*beside.mean():.3f}% of all points)")
+  print(f"  adjacent-lane points within {BESIDE_M:.0f} m longitudinally: {beside.sum()}  ({100*beside.mean():.3f}% of all points)")
   if beside.any():
     print(f"    dRel {d[beside].min():.1f}..{d[beside].max():.1f} m")
   for lim in (15, 20, 30, 50):
@@ -78,8 +75,7 @@ def main(paths):
     if s.sum() < 10:
       print(f"  {f'{lo}-{hi} m':>14} {s.sum():>8}   (too few)")
       continue
-    print(f"  {f'{lo}-{hi} m':>14} {s.sum():>8} {np.percentile(ay[s],50):>11.1f} "
-          f"{np.percentile(ay[s],95):>11.1f} {ay[s].max():>7.1f}")
+    print(f"  {f'{lo}-{hi} m':>14} {s.sum():>8} {np.percentile(ay[s],50):>11.1f} {np.percentile(ay[s],95):>11.1f} {ay[s].max():>7.1f}")
 
 
 if __name__ == '__main__':

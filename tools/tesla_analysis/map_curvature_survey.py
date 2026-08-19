@@ -78,8 +78,7 @@ def main(paths):
 
   print(f"frames {len(k_map)} above 5 m/s")
   print(f"  health      {dict(zip(*np.unique(health, return_counts=True), strict=True))}")
-  print(f"  range (m)   median {np.median(rng):.0f}  p10 {np.percentile(rng, 10):.0f}  "
-        f"max {rng.max():.0f}   zero on {100*np.mean(rng == 0):.0f}% of frames")
+  print(f"  range (m)   median {np.median(rng):.0f}  p10 {np.percentile(rng, 10):.0f}  max {rng.max():.0f}   zero on {100*np.mean(rng == 0):.0f}% of frames")
 
   ok = (health > 0) & (rng > 0)
   print(f"  usable      {100*ok.mean():.0f}% of frames")
@@ -104,8 +103,7 @@ def main(paths):
       back = idx - int(lead_s * 10)      # 0x2C8 arrives near 10 Hz
       back = back[back >= 0]
       if back.size:
-        print(f"    {lead_s}s before those frames, map |k| median {np.median(km[back]):.5f}"
-              f"   (model then {np.median(kd[back]):.5f})")
+        print(f"    {lead_s}s before those frames, map |k| median {np.median(km[back]):.5f}   (model then {np.median(kd[back]):.5f})")
 
   print("\n-- speed each would allow at 3.0 m/s^2 lateral --")
   for label, arr in (('map', km), ('model', kd)):

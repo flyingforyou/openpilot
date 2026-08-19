@@ -94,9 +94,8 @@ def main(paths):
     a = np.array(tf_by_gap[g])
     src = src_by_gap[g]
     lead_share = 100 * (src.get('lead0', 0) + src.get('lead1', 0)) / max(sum(src.values()), 1)
-    print(f"    gap {g}:  n={len(a):6}  tFollow median {np.median(a):.3f}  "
-          f"p10 {np.percentile(a,10):.3f}  p90 {np.percentile(a,90):.3f}   "
-          f"lead-limited {lead_share:.0f}% of frames")
+    spread = f"p10 {np.percentile(a,10):.3f}  p90 {np.percentile(a,90):.3f}"
+    print(f"    gap {g}:  n={len(a):6}  tFollow median {np.median(a):.3f}  {spread}   lead-limited {lead_share:.0f}% of frames")
 
   if not samples:
     print("\nno clean steady-following samples")
@@ -110,10 +109,10 @@ def main(paths):
     if s.sum() < 30:
       print(f"    {gg:3}  {s.sum():5}   (too few)")
       continue
-    print(f"    {gg:3}  {s.sum():5}   {np.median(v[s])*2.23694:5.1f}   "
-          f"{np.median(d[s]):5.1f} (p25 {np.percentile(d[s],25):4.1f} p75 {np.percentile(d[s],75):4.1f})   "
-          f"{np.median(hw[s]):5.2f} (p25 {np.percentile(hw[s],25):4.2f} p75 {np.percentile(hw[s],75):4.2f})   "
-          f"tF {np.median(tf[s]):.2f}  want {np.median(des[s]):5.1f}m")
+    d_col = f"{np.median(d[s]):5.1f} (p25 {np.percentile(d[s],25):4.1f} p75 {np.percentile(d[s],75):4.1f})"
+    hw_col = f"{np.median(hw[s]):5.2f} (p25 {np.percentile(hw[s],25):4.2f} p75 {np.percentile(hw[s],75):4.2f})"
+    cmd = f"tF {np.median(tf[s]):.2f}  want {np.median(des[s]):5.1f}m"
+    print(f"    {gg:3}  {s.sum():5}   {np.median(v[s])*2.23694:5.1f}   {d_col}   {hw_col}   {cmd}")
 
   # speed-matched, so a gap that only ever ran on the freeway is not compared to town
   print("\n-- speed-matched headway (only speeds where 2+ gap settings have data) --")
@@ -126,8 +125,7 @@ def main(paths):
     print(f"    {lo*2.23694:.0f}-{hi*2.23694:.0f} mph:")
     for gg in present:
       s = sel & (g == gg)
-      print(f"        gap {gg}  n={s.sum():5}  dRel {np.median(d[s]):5.1f} m   "
-            f"headway {np.median(hw[s]):.2f} s   tFollow {np.median(tf[s]):.2f}")
+      print(f"        gap {gg}  n={s.sum():5}  dRel {np.median(d[s]):5.1f} m   headway {np.median(hw[s]):.2f} s   tFollow {np.median(tf[s]):.2f}")
 
 
 if __name__ == '__main__':
