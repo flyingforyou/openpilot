@@ -22,6 +22,7 @@ from openpilot.tools.lib.logreader import LogReader
 
 ROAD_CURVATURE = 712        # 0x2C8
 LOOKAHEADS = (30.0, 60.0, 100.0, 150.0)
+MAP_CURVE_NEAR = 60.0       # where map_cruise.py hands the far field to the map
 MIN_SPEED = 8.0
 BEND = 0.003                # 1/m; below this the road is straight and everyone is trivially right
 
@@ -122,9 +123,12 @@ def main(paths):
     left = f"  {d:9.0f}m {len(a):>6} {m_all:10.5f} {d_all:11.5f} {w_all:>9}"
     print(f"{left}   {m_bend:9.5f} {d_bend:11.5f} {w_bend:>9}   (bends {bend.sum()})")
 
-  print("\n-- do they at least agree on *when* a bend is coming? --")
+  print("\n-- calling a bend: does it find them, and does it invent them? --")
+  print("   recall = of real bends, how many were called. false alarm = of real straights, how")
+  print("   many were called anyway -- the number that decides whether this can drive a cap.")
   for d in (60.0, 100.0):
-    hit_map = hit_mod = tot = 0
+    hits = {'map': [0, 0], 'model': [0, 0]}     # [called on a bend, called on a straight]
+    n_bend = n_straight = 0
     for (ts, v, mx, mk, c2, c3, rng, health) in samples:
       if health <= 0 or rng < d or d > mx[-1]:
         continue
@@ -132,13 +136,65 @@ def main(paths):
       j = np.searchsorted(t_truth, t_then)
       if j <= 0 or j >= truth.size:
         continue
-      if abs(float(truth[j])) <= BEND:
+      real = abs(float(truth[j])) > BEND
+      n_bend += real
+      n_straight += not real
+      for src, k in (('map', abs(2 * c2 + 6 * c3 * d)), ('model', abs(float(np.interp(d, mx, mk))))):
+        if k > BEND:
+          hits[src][0 if real else 1] += 1
+    if not (n_bend and n_straight):
+      continue
+    print(f"\n  {d:.0f}m ahead   ({n_bend} real bends, {n_straight} real straights)")
+    for src in ('map', 'model'):
+      called_bend, called_straight = hits[src]
+      prec = 100 * called_bend / max(called_bend + called_straight, 1)
+      fa = f"false alarm {100*called_straight/n_straight:5.1f}%"
+      print(f"    {src:6} recall {100*called_bend/n_bend:5.0f}%   {fa}   of its calls {prec:.0f}% were real")
+
+  print("\n-- if a cap were driven off each, how slow would it get on a real straight? --")
+  for d in (100.0,):
+    slow = {'map': [], 'model': []}
+    for (ts, v, mx, mk, c2, c3, rng, health) in samples:
+      if health <= 0 or rng < d or d > mx[-1]:
         continue
-      tot += 1
-      hit_map += abs(2 * c2 + 6 * c3 * d) > BEND
-      hit_mod += abs(float(np.interp(d, mx, mk))) > BEND
-    if tot:
-      print(f"  {d:.0f}m ahead, {tot} real bends: map called {100*hit_map/tot:.0f}%, model called {100*hit_mod/tot:.0f}%")
+      t_then = ts + d / max(v, 1.0)
+      j = np.searchsorted(t_truth, t_then)
+      if j <= 0 or j >= truth.size or abs(float(truth[j])) > BEND:
+        continue
+      for src, k in (('map', abs(2 * c2 + 6 * c3 * d)), ('model', abs(float(np.interp(d, mx, mk))))):
+        slow[src].append(np.sqrt(2.4 / max(k, 1e-9)) * 2.23694)   # 2.4 m/s^2 lateral
+    for src in ('map', 'model'):
+      a = np.array(slow[src])
+      if a.size:
+        pct = f"p1 {np.percentile(a, 1):5.0f} mph   p5 {np.percentile(a, 5):5.0f} mph   p10 {np.percentile(a, 10):5.0f} mph"
+        print(f"  {src:6} {pct}   (below 45 on {100*np.mean(a < 45):.2f}% of straights)")
+
+  print("\n-- what the split would actually have done on this drive --")
+  print("   model inside 60m, map from there to the 4s horizon, tighter of the two wins.")
+  for lat in (3.0, 2.5):
+    binds, costs, ego = 0, [], []
+    for (_, v, mx, mk, c2, c3, rng, health) in samples:
+      near = float(np.max(np.abs(mk[mx <= min(MAP_CURVE_NEAR, mx[-1])]))) if mx[0] <= MAP_CURVE_NEAR else 0.0
+      far = min(v * 4.0, rng)
+      k_map = 0.0
+      if health > 0 and rng > 0 and far > MAP_CURVE_NEAR:
+        k_map = max(abs(2 * c2 + 6 * c3 * MAP_CURVE_NEAR), abs(2 * c2 + 6 * c3 * far))
+      if k_map <= near:
+        continue                                  # the model was already the tighter one
+      v_was = np.sqrt(lat / near) if near > 1e-5 else 1e3
+      v_now = np.sqrt(lat / k_map) if k_map > 1e-5 else 1e3
+      if v_now >= v_was or v_now >= v:            # only counts if it binds below what was driven
+        continue
+      binds += 1
+      costs.append((min(v_was, v) - v_now) * 2.23694)
+      ego.append(v * 2.23694)
+    if not costs:
+      print(f"  lat {lat}: never binds")
+      continue
+    c = np.array(costs)
+    cost = f"cost median {np.median(c):.1f} mph  p90 {np.percentile(c, 90):.1f}  max {c.max():.1f}"
+    where = f"(car was doing median {np.median(ego):.0f} mph there)"
+    print(f"  lat {lat}:  binds on {100*binds/len(samples):.1f}% of frames   {cost}   {where}")
 
 
 if __name__ == '__main__':

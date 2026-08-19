@@ -290,11 +290,12 @@ class CarrotPlanner:
       self.mapAutoSpeedMax = self.params.get_float("TeslaMapAutoSpeedMax")
       self.mapAutoSpeedCurve = self.params.get_bool("TeslaMapAutoSpeedCurve")
       self.mapCurveLatAccel = self.params.get_float("TeslaMapCurveLatAccel") / 100.
+      self.mapCurveUseMap = self.params.get_bool("TeslaMapCurveUseMap")
       self.syncClusterSpeed = self.params.get_bool("TeslaSyncClusterSpeed")
       self.map_cruise.set_config(self.mapAutoSpeed, self.mapAutoSpeedRatio,
                                  self.mapAutoSpeedMax * CV.KPH_TO_MS,
                                  self.mapAutoSpeedCurve, self.syncClusterSpeed,
-                                 self.mapCurveLatAccel)
+                                 self.mapCurveLatAccel, self.mapCurveUseMap)
     elif self.params_count >= 100:
 
       self.params_count = 0

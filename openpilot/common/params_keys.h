@@ -246,6 +246,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // median 4s, so it arrives in time to be braked for. Only ever lowers the target.
     {"TeslaMapAutoSpeedCurve", {PERSISTENT, BOOL, "1"}},
     {"TeslaMapCurveLatAccel", {PERSISTENT, INT, "300"}},
+    // Let the gateway's own road-ahead cubic (UI_roadCurvature) cap the curve speed past 60m,
+    // where the model has stopped seeing bends -- at 100m it calls 15% of the real ones against
+    // the map's 72%. Tighter of the two wins, so this can only ever slow the car down.
+    {"TeslaMapCurveUseMap", {PERSISTENT, BOOL, "1"}},
     {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "150"}},
     {"TeslaCoopMaxTorqueCNm", {PERSISTENT, INT, "250"}},
     // Drive the cluster's MAX number to match what openpilot is actually targeting, by

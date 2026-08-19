@@ -137,6 +137,29 @@ MIN_TARGET = 20 * CV.KPH_TO_MS
 # corner, longer and a bend well down the road holds the straight before it down.
 CURVE_LOOKAHEAD_T = 4.0
 
+# Where the map's own road-ahead cubic takes over from the model, metres.
+#
+# Both were scored the same way over route 00000073: what each predicted for a point d metres
+# ahead, against the curvature the car was actually steering once it had driven those d metres
+# (controlsState.curvature, which comes from the steering angle, so it is neither's own output).
+# Under 60m the model is the more accurate of the two and should be -- it is pointed at the road.
+# At 100m it has effectively stopped seeing bends: of 835 real ones it called 15%, against the
+# map's 72%, and on the ones it did call its error was 78% higher. 60m is where they cross.
+#
+# The ordering holds on the other two routes measured (0000006e, 0000007d): the map wins at 100m
+# on all three, and the model's recall there collapses everywhere -- 15%, 6%, 0%.
+#
+# The map earns the cap rather than just winning the comparison: at 100m its false-alarm rate on
+# genuinely straight road is 1.1% at worst across the three, and the speed a cap driven off it
+# would allow there is 58mph even at the 1st percentile -- below 45 on 0.07% of straights. It
+# cannot make the car crawl, which is the only way a map source touching a speed cap goes wrong.
+#
+# What it is not, yet, is load-bearing. Replayed over all three routes at the default 3.0 m/s^2
+# it binds below the speed actually driven on ~0% of frames; at 2.5 it binds on 0.2-0.3%, costing
+# a median 3.5-5.4mph at around 75mph. None of those drives contains a highway bend tight enough
+# to need it. This is a protection that did not have to fire, not one measured saving time.
+MAP_CURVE_NEAR = 60.0
+
 OFFSET_SPLIT = 40 * CV.MPH_TO_MS
 OFFSET_BELOW = 5 * CV.MPH_TO_MS
 OFFSET_ABOVE = 10 * CV.MPH_TO_MS
@@ -147,6 +170,7 @@ class MapCruiseController:
     self.enabled = False
     self.offset_ratio = 1.0
     self.use_curve = True
+    self.use_map_curve = True
     self.sync_cluster = False
     self.curve_lat_accel = 0.0
     self.v_max = 129 * CV.KPH_TO_MS
@@ -159,11 +183,12 @@ class MapCruiseController:
     self.raise_timer = 0.0
     self.loss_timer = 0.0
     self.last_posted = 0.0
+    self.curve_from_map = False   # which of the two saw the bend that is capping
 
 
   def set_config(self, enabled: bool, offset_ratio: float,
                  v_max: float, use_curve: bool = True, sync_cluster: bool = False,
-                 curve_lat_accel: float = 0.0) -> None:
+                 curve_lat_accel: float = 0.0, use_map_curve: bool = True) -> None:
     if not enabled and self.enabled:
       self.reset()
     self.enabled = enabled
@@ -171,6 +196,7 @@ class MapCruiseController:
     self.use_curve = use_curve
     self.sync_cluster = sync_cluster
     self.curve_lat_accel = curve_lat_accel
+    self.use_map_curve = use_map_curve
     self.v_max = v_max
 
   def reset(self) -> None:
@@ -182,6 +208,7 @@ class MapCruiseController:
     self.raise_timer = 0.0
     self.loss_timer = 0.0
     self.last_posted = 0.0
+    self.curve_from_map = False
 
   def _posted_limit(self, nav) -> tuple[float, str]:
     """Best posted limit available, and where it came from. 0.0 if none is trustworthy.
@@ -270,6 +297,27 @@ class MapCruiseController:
       return 0.0
     return float(np.sqrt(self.curve_lat_accel / curvature))
 
+  def _map_curvature(self, nav, v_ego: float) -> float:
+    """Tightest curvature the map's cubic puts past MAP_CURVE_NEAR, 1/m. 0.0 if it cannot say.
+
+    The window starts where the model stops being the better source and ends at the same 4s
+    horizon the model is read over, so both are describing the same stretch of road and the far
+    edge stays a function of speed. Below about 33mph that horizon is inside MAP_CURVE_NEAR and
+    the map contributes nothing, which is the intended answer rather than a gap: at town speed
+    the model can see the whole distance that matters.
+
+    The cubic's curvature, 2 c2 + 6 c3 x, is linear in x, so its extreme over the window is at
+    one end or the other and two evaluations find it exactly.
+    """
+    if not self.use_map_curve or nav.curvHealth <= 0 or nav.curvRange <= 0.0:
+      return 0.0
+    # Never read past what the message says it describes; beyond that the cubic is extrapolation.
+    far = min(v_ego * CURVE_LOOKAHEAD_T, float(nav.curvRange))
+    if far <= MAP_CURVE_NEAR:
+      return 0.0
+    c2, c3 = float(nav.curvC2), float(nav.curvC3)
+    return max(abs(2.0 * c2 + 6.0 * c3 * MAP_CURVE_NEAR), abs(2.0 * c2 + 6.0 * c3 * far))
+
   def update(self, CS, v_ego: float, v_cruise_driver: float, curvature: float = 0.0) -> float:
     """Returns the cruise target in m/s, or 0.0 when the map has nothing to say.
 
@@ -356,11 +404,23 @@ class MapCruiseController:
     # free-flowing freeway, 11.7mph on a congested arterial -- there dragging the target below the
     # posted limit outright. So the fleet stays what it is good for: the ramp branch's own target,
     # where no posted limit applies and the segment average is the only signal there is.
+    #
+    # The map's own cubic joins the model here rather than replacing it, split by distance: the
+    # model owns everything inside MAP_CURVE_NEAR, the map everything past it, and the cap takes
+    # whichever of the two is tighter. Tighter is the safe direction -- curve speed falls as
+    # curvature rises, so max() over the sources is min() over the speeds they would allow, and
+    # a source that has nothing to say returns 0 and cannot raise the cap.
+    map_curvature = self._map_curvature(nav, v_ego)
+    self.curve_from_map = map_curvature > curvature
+    curvature = max(curvature, map_curvature)
+
     v_curve = self._curve_speed(curvature) if self.use_curve else 0.0
     if 0.0 < v_curve < target:
       target = v_curve
       self.state = MapCruiseState.curve
       self.source = 'curve'
+    else:
+      self.curve_from_map = False
 
     # The configured ceiling is the only thing standing between the map and the throttle, so it
     # is applied to the target itself rather than anywhere further down, where a later rule could

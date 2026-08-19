@@ -150,6 +150,38 @@ MAP_SETTINGS = {
     "options": [(0, "사용 안 함 (커브 감속 없음)"), (250, "2.5 일찍 감속"),
                 (300, "3.0 (기본)"), (350, "3.5 늦게 감속")],
   },
+  "TeslaMapCurveUseMap": {
+    "label": "커브 감속 · 먼 곡률은 지도에서", "type": "bool",
+    "help": "위 '커브 감속'이 읽는 곡률을 <b>60m 안쪽은 모델, 바깥은 차량 지도</b>로 나눠서 "
+            "받습니다. 둘 중 <b>더 조이는 쪽</b>을 쓰므로 속도를 낮추기만 하고 올리지는 "
+            "않습니다. 게이트웨이가 쏘는 <code>UI_roadCurvature</code>(0x2C8)의 3차 곡선이 "
+            "지도 쪽 출처입니다."
+            "<br><br><b>왜 나누는가</b> — 실측입니다. 두 출처가 d미터 앞을 어떻게 예측했는지를, "
+            "차가 실제로 그 d미터를 달렸을 때 <b>정말 돌았던 곡률</b>(조향각 기반 "
+            "<code>controlsState.curvature</code>, 어느 쪽 출력도 아님)과 맞춰봤습니다."
+            "<br><br>60m 안쪽에서는 <b>모델이 더 정확합니다</b> — 카메라가 그 도로를 실제로 보고 "
+            "있으니 당연합니다. 그런데 100m에서는 모델이 사실상 눈을 감습니다: 실제 커브 835개 중 "
+            "<b>15%만</b> 잡았고, 지도는 <b>72%</b>를 잡았습니다. 잡아낸 커브의 오차도 모델이 78% "
+            "더 컸습니다(0.00148 vs 0.00083 1/m). 예측 배열 끝단이라 먼 커브가 직선으로 펴집니다."
+            "<br><br><b>왜 이게 중요한가</b> — 커브 감속은 전방 <b>4초</b>를 봅니다. 시속 60마일에서 "
+            "4초는 <b>107m</b>입니다. 즉 고속 커브에서 이 기능이 물어보는 바로 그 거리가 모델이 못 "
+            "보는 거리였습니다. 시내(30mph)에서는 4초가 54m라 60m 안쪽이고, 그때는 지도가 아무것도 "
+            "보태지 않습니다 — 모델로 충분하기 때문입니다."
+            "<br><br><b>느려지지 않습니다</b> — 지도가 직선을 커브라고 우기는 비율은 100m에서 "
+            "<b>1.1%</b>였고, 직선에서 이 값으로 계산한 한계속도는 하위 1%에서도 58mph였습니다. "
+            "45mph 아래로 내려간 직선은 10,886개 중 <b>8개(0.07%)</b>입니다."
+            "<br><br><b>솔직히, 지금은 거의 발동 안 합니다.</b> 기록된 주행 3개(00000073, "
+            "0000006e, 0000007d)에 그대로 재생해보면 기본값 3.0에서는 실제 주행속도보다 낮게 "
+            "잡히는 프레임이 <b>거의 0%</b>였습니다. 2.5로 낮추면 0.2~0.3% 구간에서 걸리고 "
+            "그때 깎이는 폭이 중앙값 3.5~5.4mph(75mph 부근)입니다. 그 세 주행에 이게 필요할 만큼 "
+            "조인 고속 커브가 없었다는 뜻이지, 안 걸린다는 뜻은 아닙니다. 안 쓰던 안전장치가 "
+            "하나 생긴 것으로 보시면 됩니다."
+            "<br><br>메시지가 <b>0.5초</b>만 끊겨도 즉시 무시합니다. CAN 파서는 송신이 멈춰도 "
+            "마지막 값을 계속 들고 있어서, 굳어버린 '급커브' 값이 차를 영영 붙잡을 수 있습니다. "
+            "게이트웨이가 스스로 붙이는 health 플래그가 0이거나 유효거리가 60m에 못 미쳐도 "
+            "쓰지 않습니다.",
+    "options": [(0, "모델만 사용"), (1, "60m 밖은 지도 (기본)")],
+  },
 }
 
 
@@ -498,6 +530,13 @@ class State:
             'offset': round(cs.navMap.speedOffset, 2),
             'vSet': round(cs.cruiseState.speed, 2),
             'target': round(sm['longitudinalPlan'].cruiseTarget, 1),
+            # The road-ahead cubic, as curvature at 60m and at 150m rather than as coefficients
+            # -- c2 and c3 mean nothing at a glance, and what the cap actually reads is the
+            # curvature across that window. 0 range or 0 health means it is not being used.
+            'curv60': round(2 * cs.navMap.curvC2 + 6 * cs.navMap.curvC3 * 60.0, 5),
+            'curv150': round(2 * cs.navMap.curvC2 + 6 * cs.navMap.curvC3 * 150.0, 5),
+            'curvRange': round(cs.navMap.curvRange, 0),
+            'curvHealth': int(cs.navMap.curvHealth),
           },
         }
 
@@ -1015,6 +1054,8 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
     <div><div class="k">도로등급</div><div class="v" id="mrc">–</div></div>
     <div><div class="k">램프</div><div class="v" style="font-size:13px"><span id="mramp" class="pill">–</span></div></div>
     <div><div class="k">위치신뢰</div><div class="v"><span id="mconf">–</span><small>%</small></div></div>
+    <div style="grid-column:1/-1"><div class="k">지도 곡률 (반경)</div>
+      <div class="v" style="font-size:13px"><span id="mcurv">–</span></div></div>
   </div>
 </div>
 
@@ -1066,6 +1107,13 @@ function updateMap(m){
   const r=$('mramp');
   r.textContent=RAMP_TYPE[m.ramp]??'–';
   r.className='pill '+(m.ramp?'on':'off');
+  // Curvature shown as the radius it means. 1/m is unreadable at a glance; "R120" is a corner.
+  // Anything past a few km of radius is straight road, so it is reported as such rather than
+  // as a number that would only invite reading meaning into noise.
+  const rad=k=>{const a=Math.abs(k||0); return a<3e-4?'직선':'R'+Math.round(1/a);};
+  $('mcurv').textContent = (m.curvHealth>0 && m.curvRange>0)
+    ? `60m ${rad(m.curv60)} · 150m ${rad(m.curv150)} · 유효 ${m.curvRange}m`
+    : '없음 (health 0)';
 }
 
 async function poll(){

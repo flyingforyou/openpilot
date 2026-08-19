@@ -28,6 +28,12 @@ class FakeNav:
     self.fleetSplineSpeed = 0.0
     self.fleetTopQuartileSpeed = 0.0
     self.fleetMedianSpeed = 0.0
+    # The road-ahead cubic, off unless a test asks for it: health 0 is what the gateway sends
+    # where it has no map, and _map_curvature must return nothing for it.
+    self.curvC2 = 0.0
+    self.curvC3 = 0.0
+    self.curvRange = 0.0
+    self.curvHealth = 0
 
 
 class FakeCS:
