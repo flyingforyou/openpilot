@@ -335,3 +335,34 @@ class TestBaseLimitOutvoted:
     nav.fusedSpeedLimit = 0.0
     got = settle(c, 65, 70, nav=nav)
     assert got == pytest.approx(25, abs=1.0), "one dissenter is not a vote"
+
+
+class TestClassCeilingSizing:
+  """The cross-check has to reject a limit from the road behind without rejecting this one.
+
+  Measured over 421k frames: 35 is the most common posted limit on a class-6 road (9725 frames,
+  against 8378 for 30). With the ceiling at 30 it was thrown away as stale on every one of them,
+  and the unmapped fallback then held whatever the target already was -- a measured minute at
+  25 mph on a 35 mph road.
+  """
+
+  @pytest.mark.parametrize("limit,expected", [(25, 30), (30, 35), (35, 40)])
+  def test_class_six_accepts_its_own_limits(self, limit, expected):
+    c = make()
+    assert settle(c, limit, 70, nav=FakeNav(limit, 6)) == pytest.approx(expected, abs=1.0)
+
+  @pytest.mark.parametrize("limit", [45, 65])
+  def test_class_six_still_refuses_a_faster_road(self, limit):
+    """These are the stale-limit case the cross-check exists for. Refusing means the target is
+    held under the class cap rather than the limit's own offset -- not that it drops below the
+    number itself, which the offset ladder was always going to sit above."""
+    c = make()
+    got = settle(c, limit, 70, nav=FakeNav(limit, 6))
+    believed = limit + (10 if limit >= 40 else 5)
+    assert got < believed, f"a {limit} on a residential road was believed, got {got:.0f}"
+    assert got <= 41, f"and should be held at the class cap, got {got:.0f}"
+
+  def test_class_four_still_refuses_a_freeway_limit(self):
+    """5.97% of frames, and the reason the whole cross-check is here."""
+    c = make()
+    assert settle(c, 65, 70, nav=FakeNav(65, 4)) < 65

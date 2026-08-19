@@ -69,7 +69,14 @@ CLASS_CEILING = {
   1: 75 * CV.MPH_TO_MS,  # freeway / controlled access
   4: 50 * CV.MPH_TO_MS,  # arterial
   5: 35 * CV.MPH_TO_MS,  # collector
-  6: 30 * CV.MPH_TO_MS,  # local / residential
+  # 35, not 30. The original sizing had class 6 posting 5/25/30, so 30 looked like the top of
+  # the range; over 421k frames since, **35 is the most common limit on a class-6 road** -- 9725
+  # frames against 8378 for 30. Rejecting it threw away the commonest residential limit as stale,
+  # and the unmapped fallback then held the target wherever it already was: a measured minute at
+  # 25 mph on a 35 mph road. Exactly 35 rather than 35-plus-a-margin, because this number is also
+  # the cap the fallback holds under, and _with_offset crosses from +5 to +10 at 40 -- a ceiling
+  # of 40 would quietly let an unmapped residential street target 50.
+  6: 35 * CV.MPH_TO_MS,  # local / residential
 }
 
 RAMP_ON = 1
@@ -89,6 +96,12 @@ LOSS_DEBOUNCE = 1.0
 # the whole drive and dipped only on genuine re-localisations, so this rejects little, but a
 # limit read against the wrong road is exactly the failure worth refusing.
 MIN_CONFIDENCE = 60
+
+# Slack on the class cross-check. Posted limits arrive as Float32 and the ceilings are computed
+# in float64, so a 35 mph limit reaches us as 15.646400451660156 against a ceiling of
+# 15.646400000000002 -- greater by 4.5e-7, which was enough to throw away every 35 on a
+# residential road. Limits live on a whole-mph grid, so a mile an hour of slack is free.
+CLASS_TOLERANCE = 1 * CV.MPH_TO_MS
 
 # How far below the other sources baseSpeedLimit has to sit before it is treated as a bad match
 # rather than as early news. The observed failures were 25 and 45 mph below; ordinary source
@@ -276,7 +289,7 @@ class MapCruiseController:
 
     # The cross-check. A posted limit above what this class of road can carry is a limit for the
     # road behind us, and holding it is precisely the failure this module exists to avoid.
-    if posted > 0.0 and ceiling > 0.0 and posted > ceiling:
+    if posted > 0.0 and ceiling > 0.0 and posted > ceiling + CLASS_TOLERANCE:
       posted, source = 0.0, 'stale'
 
     # Debounce only a limit that vanishes, never one that appears: coming back is information,
