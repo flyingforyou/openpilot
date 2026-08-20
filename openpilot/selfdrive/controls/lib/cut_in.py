@@ -18,11 +18,12 @@ progress towards* the lane gives a median 2.1 s (p10 1.1, max 7.1).
 Rate alone still cannot tell a merge from a car correcting its own lane position, so a second,
 cumulative gate asks how much ground the track has actually taken -- see MIN_PROGRESS.
 
-The constants below come from sweeping them over three drives rather than from taste. At these
-values it calls 0.24-0.92 times a minute and 89%/80%/63% of those calls are followed by the
-followed gap really collapsing -- the low figure is the freeway drive, where the misses are
-adjacent-lane cars on a multi-lane road that never actually merge. In false calls per minute
-that is 0.04 / 0.05 / 0.28.
+The window it fires in is the factory camera's, not one of ours: the AP module publishes its own
+cut-in determination on DAS_object, and over route 00000087 it never promoted a vehicle wider
+than 2.10 m off our lane centre at any distance. Borrowing that threshold and keeping the motion
+evidence lands within 0.6 s of the factory on four of its five calls, catches one it misses, and
+suppresses one it gets wrong -- the factory declares a cut-in when *we* change lanes, which this
+does not.
 
 The response deliberately lives elsewhere: this module only decides which track is merging. What
 to do about it is radard's business, and what it does is hand the track to the planner as a
@@ -86,10 +87,26 @@ MAX_YAW_RATE = 0.20
 # The three gates that make a merge a merge. Every one is tighter than CarrotPilot's equivalent,
 # because this fires a brake: a miss costs comfort, a false call costs trust.
 MIN_CLOSING = 0.25        # m/s towards the lane centre, sustained over the window
-MAX_LANE_ENTRY_S = 3.0    # ...and on course to reach our lane edge within this
-# One lane over, never two. This is the single most valuable gate: widening it to 2.5 half-widths
-# takes the freeway drive from 24 calls at 54% to 34 at 47%, all of the extra ones spurious.
-OUTER_LANES = 2.0
+
+# How far off our lane centre a vehicle has to have got before it counts as arriving.
+#
+# The first version used the lane line, and that is too generous by a whole vehicle width. A lane
+# line 1.8 m out means the next lane runs from 1.8 to 5.4 m, so a bike riding its far edge and
+# moving to the middle of its own lane crosses 3.2 -> 2.4 m without ever leaving its lane. That
+# is a merge by every motion test and is not a merge at all -- it is what a motorcycle on route
+# 00000087 segment 6 actually did, and this called it.
+#
+# 2.1 m is the factory camera's own threshold, read off its DAS_object CUTIN group: over route
+# 00000087 it never promoted a vehicle at a wider |dy| than 2.10 m, at any distance -- median
+# 1.75 in both the 15-25 m and the 25-35 m band, so it does not scale with range. Subtract half a
+# vehicle and it means the body is about 0.6 m inside our lane, which is the same question as
+# "would this hit me if I went straight".
+#
+# This replaces the window rather than adding to it. There is no lower bound, because the factory
+# has none either: it promotes from 1.05 m as readily as from 2.10. A lower bound at the lane line
+# was the other half of the same mistake -- a track that has already arrived is still worth
+# flagging, since leadOne is vision-matched and does not necessarily have it yet.
+ENTRY_DPATH = 2.1
 
 # Half a second of agreement before it counts, and a second of silence before it stops counting.
 # The hold matters more than it looks: a merging car crossing the lane line is exactly when the
@@ -135,20 +152,27 @@ class CutInDetector:
     if lead_d_rel > 0.0 and track.dRel > lead_d_rel - 1.0:
       return False
 
-    half = max(0.1, track.lane_half_width)
     abs_dp = abs(track.dPath)
-    # Already in the lane is not a merge -- that is a lead, and the lead pipeline has it.
-    if not (half < abs_dp < OUTER_LANES * half):
-      return False
 
+    # History first, and unconditionally: progress is measured across the approach, so the trail
+    # has to span the part of it that happens outside the window below. Gating this on position
+    # was a real bug -- the trail then only ever covered frames already inside 2.1 m, by which
+    # point the car is in the lane and there is no approach left to measure.
     motion = self._motion(track.identifier, t, abs_dp)
     if motion is None:
       return False
-    closing, progress = motion
-    # Coming in, having actually come in, and due to arrive soon. All three, or it is a wobble.
-    if closing <= MIN_CLOSING or progress <= MIN_PROGRESS:
+
+    # Has it actually got far enough in to be our problem? Motion alone says nothing about that,
+    # and this is where the first version went wrong: with the window opening at the lane line,
+    # a motorcycle riding the far edge of the next lane and moving to the middle of its own lane
+    # swept 3.2 -> 2.4 m and was called a merge twice on route 00000087, once in segment 6 and
+    # once in segment 7. It never left its lane.
+    if abs_dp >= ENTRY_DPATH:
       return False
-    return (abs_dp - half) / closing < MAX_LANE_ENTRY_S
+
+    closing, progress = motion
+    # Arrived by moving in, not by having been there. Both, or it is a wobble.
+    return closing > MIN_CLOSING and progress > MIN_PROGRESS
 
   def update(self, tracks: dict, t: float, v_ego: float, lead_d_rel: float = 0.0,
              yaw_rate: float = 0.0, lane_changing: bool = False) -> int:

@@ -13,7 +13,7 @@ from openpilot.selfdrive.controls.lib.cut_in import (
   MAX_DREL,
   MIN_DREL,
   MIN_VLEAD,
-  OUTER_LANES,
+  ENTRY_DPATH,
   RELEASE_FRAMES,
   CutInDetector,
 )
@@ -32,7 +32,7 @@ class FakeTrack:
     self.lane_half_width = half
 
 
-def merge(det, tid=1, *, d_path0=3.2, closing=0.5, frames=60, d_rel=30.0, v_ego=20.0,
+def merge(det, tid=1, *, d_path0=3.0, closing=0.5, frames=60, d_rel=30.0, v_ego=20.0,
           lead_d_rel=0.0, half=HALF, t_start=0.0, d_path_min=0.0, yaw=0.0, changing=False):
   """Walk a track towards the lane centre at `closing` m/s, returning when it was first called.
 
@@ -55,12 +55,14 @@ class TestFires:
   def test_a_steady_merge_is_called(self):
     assert merge(CutInDetector()) is not None
 
-  def test_it_is_called_before_the_car_is_in_the_lane(self):
-    """The whole point. If it only fires once dPath is inside the lane it has warned nobody."""
+  def test_it_is_called_before_the_car_is_centred_on_us(self):
+    """It has to fire on the way in, not once the merge is over. The bar is ENTRY_DPATH, which is
+    where the factory camera draws it -- about 0.6m of the other car's body inside our lane."""
     det = CutInDetector()
-    at = merge(det, d_path0=3.2, closing=0.5)
+    at = merge(det, d_path0=3.0, closing=0.5)
     assert at is not None
-    assert 3.2 - 0.5 * at > HALF      # still outside the lane edge when called
+    dp = 3.0 - 0.5 * at
+    assert 0.0 < dp <= ENTRY_DPATH
 
   def test_confirmation_is_not_instant(self):
     det = CutInDetector()
@@ -74,29 +76,28 @@ class TestFires:
     The exact number of frames it survives is bookkeeping; that it survives a short one is the
     property, so this asks for half a second rather than counting to RELEASE_FRAMES."""
     det = CutInDetector()
-    merge(det, frames=60, d_path_min=2.0)
+    merge(det, frames=60, d_path_min=1.5)
     assert det.track_id == 1
     # still seen, just no longer qualifying: it sits back out and stops closing
     for i in range(10):
-      got = det.update({1: FakeTrack(1, d_path=3.2)}, 3.5 + i * DT, 20.0)
+      got = det.update({1: FakeTrack(1, d_path=3.0)}, 3.5 + i * DT, 20.0)
       assert got == 1, f"dropped the call after {i} frames of wobble"
 
   def test_but_not_held_forever(self):
     """A track that stops merging must eventually stop being treated as one."""
     det = CutInDetector()
-    merge(det, frames=60, d_path_min=2.0)
+    merge(det, frames=60, d_path_min=1.5)
     for i in range(RELEASE_FRAMES * 2):
-      det.update({1: FakeTrack(1, d_path=3.2)}, 3.5 + i * DT, 20.0)
+      det.update({1: FakeTrack(1, d_path=3.0)}, 3.5 + i * DT, 20.0)
     assert det.track_id == -1
 
   def test_the_nearer_of_two_merges_wins(self):
     det = CutInDetector()
-    for i in range(40):
+    got = -1
+    for i in range(80):
       t = i * DT
-      tracks = {
-        1: FakeTrack(1, d_rel=40.0, d_path=max(0.0, 3.2 - 0.5 * t)),
-        2: FakeTrack(2, d_rel=20.0, d_path=max(0.0, 3.2 - 0.5 * t)),
-      }
+      dp = max(1.5, 3.0 - 0.5 * t)
+      tracks = {1: FakeTrack(1, d_rel=40.0, d_path=dp), 2: FakeTrack(2, d_rel=20.0, d_path=dp)}
       got = det.update(tracks, t, 20.0)
     assert got == 2
 
@@ -110,17 +111,24 @@ class TestDoesNotFire:
     det = CutInDetector()
     assert merge(det, closing=-0.5, d_path0=3.2) is None
 
+  def test_movement_that_stays_in_the_next_lane(self):
+    """The one that prompted ENTRY_DPATH. A motorcycle riding the far edge of the next lane and
+    moving to the middle of its own lane travels further than MIN_PROGRESS and never encroaches;
+    on route 00000087 this shape was called a merge twice before the window was fixed."""
+    det = CutInDetector()
+    assert merge(det, d_path0=3.2, closing=0.4, d_path_min=2.4, frames=120) is None
+
   def test_a_car_two_lanes_over(self):
-    """Even closing steadily -- it has a whole lane to cross first."""
+    """Closing steadily but with a whole lane still to cross."""
     det = CutInDetector()
-    assert merge(det, d_path0=OUTER_LANES * HALF + 1.0, closing=0.5, frames=20) is None
+    assert merge(det, d_path0=5.4, closing=0.5, frames=20) is None
 
-  def test_a_car_already_in_our_lane(self):
-    """That is a lead, and the lead pipeline owns it."""
+  def test_a_car_sitting_still_in_our_lane_is_not_a_merge(self):
+    """Being there is not arriving. Without motion evidence this is just a lead."""
     det = CutInDetector()
-    assert merge(det, d_path0=HALF * 0.5, closing=0.2) is None
+    assert merge(det, d_path0=1.0, closing=0.0) is None
 
-  def sway(self, amplitude, frames=200, centre=2.8):
+  def sway(self, amplitude, frames=200, centre=1.9):
     det = CutInDetector()
     for i in range(frames):
       t = i * DT
@@ -150,7 +158,7 @@ class TestDoesNotFire:
     called = None
     for i in range(120):
       t = i * DT
-      dp = max(0.0, 3.4 - 0.4 * t - 0.25 * math.sin(2 * math.pi * t / 2.0))
+      dp = max(0.0, 3.0 - 0.4 * t - 0.25 * math.sin(2 * math.pi * t / 2.0))
       got = det.update({1: FakeTrack(1, d_path=dp)}, t, 20.0)
       if got == 1 and called is None:
         called = t
@@ -159,7 +167,7 @@ class TestDoesNotFire:
   def test_a_slow_drift_that_will_not_arrive(self):
     """Closing, but so gently it is minutes from the lane -- lane-keeping wander, not a merge."""
     det = CutInDetector()
-    assert merge(det, d_path0=3.4, closing=0.05, frames=60) is None
+    assert merge(det, d_path0=2.09, closing=0.02, frames=120) is None
 
   def test_something_stationary(self):
     det = CutInDetector()
