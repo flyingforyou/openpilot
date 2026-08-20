@@ -250,6 +250,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // where the model has stopped seeing bends -- at 100m it calls 15% of the real ones against
     // the map's 72%. Tighter of the two wins, so this can only ever slow the car down.
     {"TeslaMapCurveUseMap", {PERSISTENT, BOOL, "1"}},
+    // Hand a car that is merging in front to the planner as a second obstacle, before the gap
+    // has collapsed. Replayed over three drives it warns a median 2.1s early; a wrong call costs
+    // a little room given to a real car in the next lane.
+    {"TeslaCutInLead", {PERSISTENT, BOOL, "1"}},
     {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "150"}},
     {"TeslaCoopMaxTorqueCNm", {PERSISTENT, INT, "250"}},
     // Drive the cluster's MAX number to match what openpilot is actually targeting, by

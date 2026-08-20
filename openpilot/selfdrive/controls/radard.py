@@ -12,6 +12,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
+from openpilot.selfdrive.controls.lib.cut_in import CutInDetector
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -568,6 +569,8 @@ class RadarD:
 
     self.params = Params()
     self.lead_hold = RadarLeadHold()
+    self.cut_in = CutInDetector()
+    self.cut_in_enabled = True
     # The yaw estimate is noisy frame to frame and it scales a correction applied out to 50m,
     # so it is smoothed before anything is projected with it.
     self.yaw_rate_filter = FirstOrderFilter(0.0, 0.20, DT_MDL)
@@ -598,6 +601,10 @@ class RadarD:
     hold_cm = self.params.get("RadarLeadHoldCm", return_default=True) or 0
     lead_hold_ms = self.params.get("RadarLeadHoldMs", return_default=True) or RADAR_LEAD_HOLD_DEFAULT_MS
     self.lead_hold.configure(hold_cm / 100.0, lead_hold_ms)
+
+    self.cut_in_enabled = bool(self.params.get("TeslaCutInLead", return_default=True))
+    if not self.cut_in_enabled:
+      self.cut_in.reset()
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
@@ -673,6 +680,24 @@ class RadarD:
       self.radar_state.leadOne = lead_one
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, low_speed_override=False,
                                                  update_counters=False)
+
+      # A car merging in front gets handed to the planner as the second obstacle. The MPC already
+      # constrains against leadTwo, so nothing downstream changes -- and leadOne is left alone,
+      # which matters: it is the vision-matched track the whole follow behaviour is built on, and
+      # a merge is exactly when vision is least sure. See cut_in.py for why this is worth doing at
+      # all; the short version is that waiting for the gap to collapse leaves 0.74s of headway and
+      # a plan asking for -0.18 m/s^2.
+      #
+      # Cheapest possible way to be wrong: a false call hands over a real radar track at its real
+      # distance, so the worst case is giving a little room to a car that was never coming.
+      if self.cut_in_enabled:
+        lead_d_rel = float(self.radar_state.leadOne.dRel) if self.radar_state.leadOne.present else 0.0
+        tid = self.cut_in.update(self.tracks, self.current_time, self.v_ego, lead_d_rel)
+        track = self.tracks.get(tid) if tid >= 0 else None
+        # Only when it is the more binding of the two; leadTwo's own candidate may be nearer.
+        if track is not None and (not self.radar_state.leadTwo.present
+                                  or track.dRel < self.radar_state.leadTwo.dRel):
+          self.radar_state.leadTwo = track.get_RadarState(0.0)
 
     # Adjacent-lane leads. Independent of the vision lead match above -- nothing else consumes
     # them, and the lane change gate wants the nearest vehicle over there whether or not the
