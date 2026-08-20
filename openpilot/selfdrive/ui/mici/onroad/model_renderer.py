@@ -35,12 +35,14 @@ SIDE_MIN_HALF_PX = 11.0
 
 # The lead label replaced the chevron, so it is the indicator rather than an annotation on one,
 # and it was sized to sit beside a shape that is no longer drawn.
-LEAD_LABEL_SCALE = 0.8
+# One size for every number and label on a marker. Distances are always in metres: the markers are
+# read against each other, and mixing units or sizes between them would say one is the more
+# important, which it is not.
+MARKER_FONT_SIZE = 26.0
 
 # The lead's own type, off the factory camera's lead group, matched on distance like the side ones.
 DAS_GROUP_LEAD = 0
 DAS_LEAD_MATCH_M = 4.0
-METER_TO_FOOT = 3.28084
 SIDE_LINE_PX = 4.0
 SIDE_VEHICLE_COLOR = rl.Color(255, 255, 255, 180)
 SIDE_CUTIN_COLOR = rl.Color(226, 44, 44, 235)
@@ -507,20 +509,25 @@ class ModelRenderer(Widget):
       rl.draw_line_ex(rl.Vector2(x0, y0), rl.Vector2(x1, y1), SIDE_LINE_PX, colour)
     return top
 
-  def _draw_marker_text(self, text, x, bottom_y, font_size, colour):
-    """One line centred on x, sitting above bottom_y. Returns the y it now occupies."""
-    size = measure_text_cached(self._font_bold, text, font_size)
-    tx, ty = x - size.x / 2, bottom_y - size.y - 2
-    rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx + 1, ty + 1), font_size, 0, SIDE_SHADOW_COLOR)
-    rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx, ty), font_size, 0, colour)
-    return ty
+  def _draw_marker_text(self, text, x, anchor_y, colour, above=True):
+    """One line centred on x, stacked above or below anchor_y. Returns the edge it now occupies.
+
+    Everything on a marker is the same size, lead and adjacent lane alike -- the numbers are read
+    together and a difference in size would say one mattered more, which is not the case.
+    """
+    size = measure_text_cached(self._font_bold, text, MARKER_FONT_SIZE)
+    ty = anchor_y - size.y - 2 if above else anchor_y + 2
+    tx = x - size.x / 2
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx + 1, ty + 1), MARKER_FONT_SIZE, 0, SIDE_SHADOW_COLOR)
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx, ty), MARKER_FONT_SIZE, 0, colour)
+    return ty if above else ty + size.y
 
   def _draw_side_vehicles(self):
     """A bracket sitting on the road where the vehicle is, its width the vehicle's own."""
     for (x, y, half, height, is_cutin, d_rel) in self._side_vehicles:
       colour = SIDE_CUTIN_COLOR if is_cutin else SIDE_VEHICLE_COLOR
       top = self._draw_bracket(x, y, half, height, colour)
-      self._draw_marker_text(f"{d_rel:.0f}", x, top, float(np.clip(height * 1.9, 22, 40)), colour)
+      self._draw_marker_text(f"{d_rel:.0f}m", x, top, colour)
   def _draw_lead_indicator(self):
     # Draw lead vehicles if available
     for lead in self._lead_vehicles:
@@ -544,14 +551,14 @@ class ModelRenderer(Widget):
       # from. The distance used to live in the left column and is here now because this is where
       # it is being looked at.
       half = max(SIDE_MIN_HALF_PX, sz * (lead.half_width / SIDE_REFERENCE_HALF_WIDTH))
-      top = self._draw_bracket(apex_x, apex_y + sz, half, sz * 0.42, colour)
+      bottom = apex_y + sz
+      top = self._draw_bracket(apex_x, bottom, half, sz * 0.42, colour)
 
-      dist = f"{lead.d_rel:.0f}m" if ui_state.is_metric else f"{lead.d_rel * METER_TO_FOOT:.0f}ft"
-      top = self._draw_marker_text(dist, apex_x, top, float(np.clip(sz * 1.9, 22, 40)), colour)
-
+      # Distance above the bracket, exactly as the adjacent-lane markers place theirs, and the
+      # source below it -- which of the two is wanted at a glance is the distance.
+      self._draw_marker_text(f"{lead.d_rel:.0f}m", apex_x, top, colour)
       label = f"{lead.source} {lead.vehicle_class}" if lead.vehicle_class else lead.source
-      font_size = float(np.clip(sz * 2.48, 52, 72)) * LEAD_LABEL_SCALE
-      self._draw_marker_text(label, apex_x, top, font_size, colour)
+      self._draw_marker_text(label, apex_x, bottom, colour, above=False)
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_height: float) -> int:
