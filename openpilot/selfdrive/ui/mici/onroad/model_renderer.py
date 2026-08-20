@@ -28,6 +28,10 @@ SIDE_REFERENCE_HALF_WIDTH = 0.90
 # it also comes out the smallest marker on screen for the vehicle hardest to see in reality. The
 # floor keeps a narrow one legible without flattening the difference: a car still draws wider.
 SIDE_MIN_HALF_PX = 11.0
+
+# The lead label replaced the chevron, so it is the indicator rather than an annotation on one,
+# and it was sized to sit beside a shape that is no longer drawn.
+LEAD_LABEL_SCALE = 0.8
 SIDE_LINE_PX = 4.0
 SIDE_VEHICLE_COLOR = rl.Color(255, 255, 255, 180)
 SIDE_CUTIN_COLOR = rl.Color(226, 44, 44, 235)
@@ -484,33 +488,26 @@ class ModelRenderer(Widget):
   def _draw_lead_indicator(self):
     # Draw lead vehicles if available
     for lead in self._lead_vehicles:
-      if not lead.glow or not lead.chevron:
+      if not lead.chevron or not lead.source:
         continue
 
-      rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
-      rl.draw_triangle_fan(lead.chevron, len(lead.chevron), rl.Color(201, 34, 49, lead.fill_alpha))
-
-      if not lead.source:
-        continue
-
-      # Perception source of this lead: R = matched to a radar track, V = vision only.
-      # vehicle_class, when the radar reported one with enough confidence, rides along in the
-      # same label rather than a second text draw -- one readable line beats two small ones at
-      # this size.
-      # The label sits below the chevron rather than inside it: chevrons here are only
-      # 15-30px tall, so at this size the text is wider than the chevron itself. Use a
-      # loaded font: rl.draw_text() would draw nothing, since raylib's built-in default
-      # font isn't populated in this app.
+      # The label is the whole indicator now. The chevron and its glow were the largest thing on
+      # a 536-wide screen and said nothing the label does not: where the lead is, which the label
+      # already sits on, and how close, which the distance readout gives in metres.
+      #
+      # R = matched to a radar track, V = vision only. vehicle_class, when the radar reported one
+      # with enough confidence, rides along in the same label rather than a second text draw --
+      # one readable line beats two small ones at this size. Use a loaded font: rl.draw_text()
+      # would draw nothing, since raylib's built-in default font isn't populated in this app.
       label = f"{lead.source} {lead.vehicle_class}" if lead.vehicle_class else lead.source
       apex_x, apex_y = lead.chevron[1]
       chevron_height = max(lead.chevron[0][1] - apex_y, 1.0)
-      chevron_half_width = abs(lead.chevron[0][0] - apex_x)
-      font_size = float(np.clip(chevron_height * 2.48, 52, 72))
+      font_size = float(np.clip(chevron_height * 2.48, 52, 72)) * LEAD_LABEL_SCALE
       text_size = measure_text_cached(self._font_bold, label, font_size)
 
-      # To the right of the chevron, vertically centered on it.
-      text_x = np.clip(apex_x + chevron_half_width + 6.0, 2.0, max(self._rect.width - text_size.x - 2.0, 2.0))
-      text_y = np.clip(apex_y + chevron_height / 2 - text_size.y / 2, 2.0,
+      # Centred on where the chevron's apex was, which is the lead itself.
+      text_x = np.clip(apex_x - text_size.x / 2, 2.0, max(self._rect.width - text_size.x - 2.0, 2.0))
+      text_y = np.clip(apex_y - text_size.y / 2, 2.0,
                        max(self._rect.height - text_size.y - 2.0, 2.0))
 
       color = rl.Color(80, 200, 255, 255) if lead.source == "R" else rl.Color(255, 190, 50, 255)
