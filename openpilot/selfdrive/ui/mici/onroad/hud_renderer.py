@@ -3,6 +3,8 @@ import time
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
+from openpilot.selfdrive.ui.mici.onroad import SIDE_PANEL_WIDTH
+from openpilot.selfdrive.ui.mici.onroad.side_vehicles import GROUP_LEFT, MAX_DREL, side_vehicles
 from openpilot.selfdrive.ui.mici.onroad.torque_bar import TorqueBar
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -50,6 +52,15 @@ class FontSizes:
 TRAFFIC_OFF, TRAFFIC_RED, TRAFFIC_GREEN = 0, 1, 2
 # xState: which longitudinal state its planner is in. Only the stopping ones matter here.
 XSTATE_E2E_STOP, XSTATE_E2E_STOPPED = 3, 5
+
+# Where the adjacent-lane markers go. What to draw is decided in side_vehicles.py; this is only
+# the geometry. Near the bottom is near the car, the way the road already reads on screen.
+SIDE_LANE_MARGIN = 6          # from the edge of the content area
+SIDE_LANE_TOP = 150           # y of the far end of the strip
+SIDE_LANE_BOTTOM = 300        # y of the near end
+SIDE_LANE_MARKER_H = 9
+SIDE_LANE_PX_PER_M = 13.0     # marker width per metre of real vehicle width
+SIDE_LANE_FONT_SIZE = 20.0
 
 # carState.navMap.roadClass / rampType, decoded off the Tesla gateway's own map view -- see
 # NavMapData in car.capnp. Ramp takes priority over road class when both are present: roadClass
@@ -163,6 +174,7 @@ class HudRenderer(Widget):
     self._last_gap_adjust: int = 0
     self._gap_popup_until: float = 0.0
     self._lead_d_rel: float | None = None
+    self._side_vehicles: list = []
 
     self._nav_valid: bool = False
     self._road_class: int = 0
@@ -222,6 +234,7 @@ class HudRenderer(Widget):
       self._last_gap_adjust = 0
       self._gap_popup_until = 0.0
       self._lead_d_rel = None
+      self._side_vehicles = []
       self._nav_valid = False
       self._traffic_state = TRAFFIC_OFF
       self._x_state = 0
@@ -279,6 +292,8 @@ class HudRenderer(Widget):
     lead_one = sm['radarState'].leadOne if sm.valid['radarState'] else None
     self._lead_d_rel = lead_one.dRel if (lead_one and lead_one.present) else None
 
+    self._side_vehicles = side_vehicles(car_state.dasObjects)
+
     # Only the carrot planner fills these; the stock one leaves them zero, which reads as
     # "no traffic light seen" and draws nothing.
     self._traffic_state = int(plan.trafficState)
@@ -311,6 +326,9 @@ class HudRenderer(Widget):
       self._draw_gap_popup(rect)
 
     self._draw_traffic_light(rect)
+
+    if self._engaged:
+      self._draw_side_vehicles(rect)
 
   def _draw_traffic_light(self, rect: rl.Rectangle) -> None:
     """A lamp for what the model sees, and an arrow for what the plan does about it.
@@ -469,6 +487,44 @@ class HudRenderer(Widget):
       0,
       max_color,
     )
+
+  def _draw_side_vehicles(self, rect: rl.Rectangle) -> None:
+    """Whatever is in the lane either side, as a marker whose width is the vehicle's own.
+
+    Nothing else on this car can say what kind of vehicle it is looking at; the radar reports 90%
+    of its tracks as unknown and contradicts itself on the rest. The factory camera does, so a
+    motorcycle draws narrow and a lorry wide, and the difference is readable without a legend.
+
+    Vertical position is distance -- near the bottom is near the car, the way the road already
+    reads on screen. Which vehicles these are is side_vehicles()'s decision, not this one's.
+    """
+    if not self._side_vehicles:
+      return
+
+    for veh in self._side_vehicles:
+      width = max(8.0, veh.half_width * 2.0 * SIDE_LANE_PX_PER_M)
+      frac = min(1.0, veh.d_rel / MAX_DREL)
+      y = rect.y + SIDE_LANE_BOTTOM - frac * (SIDE_LANE_BOTTOM - SIDE_LANE_TOP)
+
+      if veh.group == GROUP_LEFT:
+        x = rect.x + SIDE_LANE_MARGIN
+      else:
+        x = rect.x + rect.width - SIDE_PANEL_WIDTH - SIDE_LANE_MARGIN - width
+
+      # A vehicle the camera has called a cut-in is the one worth looking at; everything else is
+      # context, and drawing it as loudly would bury the one that matters.
+      colour = COLORS.LIGHT_RED if veh.is_cutin else COLORS.WHITE_TRANSLUCENT
+      rl.draw_rectangle_rounded(rl.Rectangle(x + 1, y + 1, width, SIDE_LANE_MARKER_H),
+                                0.5, 4, COLORS.BLACK_TRANSLUCENT)
+      rl.draw_rectangle_rounded(rl.Rectangle(x, y, width, SIDE_LANE_MARKER_H), 0.5, 4, colour)
+
+      text = f"{veh.d_rel:.0f}"
+      size = measure_text_cached(self._font_bold, text, SIDE_LANE_FONT_SIZE)
+      tx = x + width / 2 - size.x / 2
+      ty = y - size.y - 1
+      rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx + 1, ty + 1), SIDE_LANE_FONT_SIZE, 0,
+                      rl.Color(0, 0, 0, 220))
+      rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx, ty), SIDE_LANE_FONT_SIZE, 0, colour)
 
   def _draw_lead_distance(self, rect: rl.Rectangle) -> None:
     """Distance to the lead, in the left strip between the driver monitor and the wheel."""
