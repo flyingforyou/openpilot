@@ -31,6 +31,7 @@ MAX_PER_SIDE = 2
 class SideVehicle(NamedTuple):
   group: int          # GROUP_LEFT or GROUP_RIGHT
   d_rel: float        # metres ahead
+  dy: float           # metres across, RIGHT-positive -- the opposite of the radar's yRel
   half_width: float   # metres, from the camera's type
   is_cutin: bool      # the camera has called this one a cut-in
 
@@ -54,7 +55,7 @@ def side_vehicles(das_objects) -> list[SideVehicle]:
     d_rel = float(obj.dx)
     if not 0.0 < d_rel < MAX_DREL:
       continue
-    found.append(SideVehicle(group, d_rel,
+    found.append(SideVehicle(group, d_rel, float(obj.dy),
                              HALF_WIDTH.get(int(obj.objType), DEFAULT_HALF_WIDTH),
                              int(obj.objId) in cutin_ids))
 

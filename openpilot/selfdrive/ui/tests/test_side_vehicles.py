@@ -22,8 +22,9 @@ MOTORCYCLE, CAR, TRUCK = 3, 2, 1
 
 
 class Obj:
-  def __init__(self, group, dx, obj_type=CAR, obj_id=1):
-    self.group, self.dx, self.objType, self.objId = group, dx, obj_type, obj_id
+  def __init__(self, group, dx, obj_type=CAR, obj_id=1, dy=0.0):
+    self.group, self.dx, self.dy = group, dx, dy
+    self.objType, self.objId = obj_type, obj_id
 
 
 collect = side_vehicles
@@ -68,6 +69,15 @@ class TestSelection:
     assert sum(v.group == GROUP_LEFT for v in got) == MAX_PER_SIDE
     assert sum(v.group == GROUP_RIGHT for v in got) == MAX_PER_SIDE
     assert [round(v.d_rel) for v in got] == [10, 15, 20, 25]
+
+
+class TestProjection:
+  """dy is carried through because the marker is drawn where the vehicle is, not at the edge of
+  the screen. Its sign convention is the camera's, which is the opposite of the radar's."""
+
+  def test_dy_is_carried_through_unchanged(self):
+    got = side_vehicles([Obj(GROUP_RIGHT, 20.0, dy=2.8), Obj(GROUP_LEFT, 25.0, dy=-3.1)])
+    assert [round(v.dy, 1) for v in got] == [2.8, -3.1]
 
 
 class TestWidth:

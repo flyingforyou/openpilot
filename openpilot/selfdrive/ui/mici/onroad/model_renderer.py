@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
+from openpilot.selfdrive.ui.mici.onroad.side_vehicles import side_vehicles
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.mici.onroad import blend_colors
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -18,6 +19,13 @@ from openpilot.system.ui.widgets import Widget
 CLIP_MARGIN = 500
 MIN_DRAW_DISTANCE = 10.0
 MAX_DRAW_DISTANCE = 100.0
+
+# Adjacent-lane markers. The width of one is the vehicle's real width, so it needs a reference:
+# a car, against which a motorcycle draws narrow and a lorry wide.
+SIDE_REFERENCE_HALF_WIDTH = 0.90
+SIDE_VEHICLE_COLOR = rl.Color(255, 255, 255, 180)
+SIDE_CUTIN_COLOR = rl.Color(226, 44, 44, 235)
+SIDE_SHADOW_COLOR = rl.Color(0, 0, 0, 190)
 
 # radarState.leadOne/leadTwo.present flickers false for single frames on a real lead -- checked
 # against today's actual driving data (route 00000003) and found 56 drop/recover episodes in
@@ -89,6 +97,7 @@ class ModelRenderer(Widget):
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._lead_last_seen = [0.0, 0.0]
+    self._side_vehicles: list = []
     self._path_offset_z = HEIGHT_INIT[0]
 
     # Initialize ModelPoints objects
@@ -169,6 +178,7 @@ class ModelRenderer(Widget):
       self._update_model(lead_one, path_x_array)
       if render_lead_indicator:
         self._update_leads(radar_state, path_x_array)
+      self._update_side_vehicles(car_state, path_x_array)
       self._transform_dirty = False
 
     # Draw elements (hide when disengaged)
@@ -178,6 +188,8 @@ class ModelRenderer(Widget):
 
       if render_lead_indicator and radar_state:
         self._draw_lead_indicator()
+
+      self._draw_side_vehicles()
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
@@ -217,6 +229,33 @@ class ModelRenderer(Widget):
         # Only actually clear it once the grace period is up -- a status flicker on the same
         # frame this runs would otherwise blank the chevron immediately, every time.
         self._lead_vehicles[i] = LeadVehicle()
+
+  def _update_side_vehicles(self, car_state, path_x_array):
+    """Project the adjacent-lane vehicles into the image, where they actually are.
+
+    Drawn in car space like the lead chevron rather than parked at the edge of the screen: a
+    marker that does not move with the vehicle it describes is a legend, not an indicator, and
+    at this size it is easier to ignore than to read.
+
+    Width is the vehicle's own, scaled by the same perspective factor the chevron uses, so a
+    motorcycle stays narrow at any distance and a lorry stays wide. That is the whole reason the
+    factory camera's type is worth reading -- the radar cannot tell them apart.
+    """
+    self._side_vehicles = []
+    if car_state is None:
+      return
+
+    for veh in side_vehicles(car_state.dasObjects):
+      idx = self._get_path_length_idx(path_x_array, veh.d_rel)
+      z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
+      # dasObjects' dy is right-positive, the same sense _map_to_screen is given for a lead
+      # (which passes -yRel, and yRel is left-positive). No sign flip here.
+      point = self._map_to_screen(veh.d_rel, veh.dy, z + self._path_offset_z)
+      if point is None:
+        continue
+      sz = np.clip((25 * 30) / (veh.d_rel / 3 + 30), 15.0, 30.0)
+      half = sz * (veh.half_width / SIDE_REFERENCE_HALF_WIDTH)
+      self._side_vehicles.append((point[0], point[1], half, sz * 0.42, veh.is_cutin, veh.d_rel))
 
   def _update_model(self, lead, path_x_array):
     """Update model visualization data based on model message"""
@@ -404,6 +443,30 @@ class ModelRenderer(Widget):
         draw_polygon(self._rect, self._path.projected_points, rl.Color(0, 0, 0, 90))
       else:
         draw_polygon(self._rect, self._path.projected_points, gradient=gradient)
+
+  def _draw_side_vehicles(self):
+    """A bracket sitting on the road where the vehicle is, its width the vehicle's own."""
+    for (x, y, half, height, is_cutin, d_rel) in self._side_vehicles:
+      colour = SIDE_CUTIN_COLOR if is_cutin else SIDE_VEHICLE_COLOR
+      left, right, top, bottom = x - half, x + half, y - height, y
+
+      # Open at the top so it reads as sitting on the road rather than boxing the vehicle in,
+      # which at 15-30px would just be a smudge.
+      for (x0, y0, x1, y1) in ((left, bottom, right, bottom),
+                               (left, bottom, left, top),
+                               (right, bottom, right, top)):
+        rl.draw_line_ex(rl.Vector2(x0 + 1, y0 + 1), rl.Vector2(x1 + 1, y1 + 1), 3.0, SIDE_SHADOW_COLOR)
+      for (x0, y0, x1, y1) in ((left, bottom, right, bottom),
+                               (left, bottom, left, top),
+                               (right, bottom, right, top)):
+        rl.draw_line_ex(rl.Vector2(x0, y0), rl.Vector2(x1, y1), 3.0, colour)
+
+      text = f"{d_rel:.0f}"
+      font_size = float(np.clip(height * 1.9, 22, 40))
+      size = measure_text_cached(self._font_bold, text, font_size)
+      tx, ty = x - size.x / 2, top - size.y - 2
+      rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx + 1, ty + 1), font_size, 0, SIDE_SHADOW_COLOR)
+      rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx, ty), font_size, 0, colour)
 
   def _draw_lead_indicator(self):
     # Draw lead vehicles if available
