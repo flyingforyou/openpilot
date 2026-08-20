@@ -20,7 +20,11 @@ class TypedParams:
     return float(v) if v is not None else 0.0
 
   def get_bool(self, key) -> bool:
-    return bool(self._p.get_bool(key))
+    # Not Params.get_bool: it reads the file and calls an absent one False, ignoring the default
+    # declared in params_keys.h. get_int and get_float above already honour that default, so a
+    # bool that had never been written was the one type here that silently disagreed with what
+    # the header said it was -- TeslaMapCurveUseMap ships as "1" and read back as off.
+    return bool(self._raw(key))    # None (no value, no default) is False, which is the old answer
 
   def __getattr__(self, name):
     return getattr(self._p, name)
