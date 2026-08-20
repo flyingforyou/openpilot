@@ -26,6 +26,13 @@ AddOption('--minimal',
           dest='extras',
           default=(not COMMA_HARDWARE and not release),
           help='the minimum build to run openpilot. no tests, tools, etc.')
+# Replaying a recorded drive onto the device's own screen is a supported workflow here -- see
+# tools/replay/README-comma4-onroad.md -- but replay lives behind --extras, which defaults off on
+# comma hardware with no way to turn it back on. This is that way.
+AddOption('--replay',
+          action='store_true',
+          default=False,
+          help='build tools/replay, including on comma hardware')
 AddOption('--ubsan',
           action='store_true',
           help='turn on UBSan')
@@ -298,6 +305,9 @@ SConscript([
   'openpilot/selfdrive/modeld/SConscript',
   'openpilot/selfdrive/ui/SConscript',
 ])
+
+if GetOption('replay') and arch == "comma_arm64":
+  SConscript(['openpilot/tools/replay/SConscript'])
 
 # Build desktop-only tools
 if GetOption('extras') and arch != "comma_arm64":
