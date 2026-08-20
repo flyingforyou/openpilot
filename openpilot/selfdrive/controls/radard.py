@@ -692,7 +692,7 @@ class RadarD:
       # distance, so the worst case is giving a little room to a car that was never coming.
       if self.cut_in_enabled:
         lead_d_rel = float(self.radar_state.leadOne.dRel) if self.radar_state.leadOne.present else 0.0
-        tid = self.cut_in.update(self.tracks, self.current_time, self.v_ego, lead_d_rel)
+        tid = self.cut_in.update(self.tracks, self.current_time, self.v_ego, lead_d_rel, yaw_rate)
         track = self.tracks.get(tid) if tid >= 0 else None
         # Only when it is the more binding of the two; leadTwo's own candidate may be nearer.
         if track is not None and (not self.radar_state.leadTwo.present

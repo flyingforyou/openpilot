@@ -60,6 +60,20 @@ MIN_SAMPLES = 3
 PROGRESS_WINDOW_S = 3.0
 MIN_PROGRESS = 0.5
 
+# ...and progress is only meaningful if the frame it is measured in held still. dPath is an offset
+# from the model's lane centre, so while the car is turning hard that centre swings and a parked
+# car appears to march across the lane. Integrating that over three seconds produces exactly the
+# signature this looks for.
+#
+# It is not hypothetical: replaying the 2026-08-19 drive, the very first call came 1.3 s after
+# engaging out of a hand-driven U-turn, on a track 42.5 m away that was not going anywhere.
+#
+# 0.20 rad/s separates the two cleanly. That U-turn ran a median 0.397 and peaked at 0.677, while
+# ordinary driving on the freeway route reaches 0.043 at p99.9 and never crosses 0.20 at all. The
+# wait afterwards is the full progress window, because that is how much settled history the
+# cumulative gate consumes.
+MAX_YAW_RATE = 0.20
+
 # The three gates that make a merge a merge. Every one is tighter than CarrotPilot's equivalent,
 # because this fires a brake: a miss costs comfort, a false call costs trust.
 MIN_CLOSING = 0.25        # m/s towards the lane centre, sustained over the window
@@ -86,6 +100,7 @@ class CutInDetector:
     self._trail: dict[int, deque] = {}     # track id -> [(t, |dPath|)] over RATE_WINDOW_S
     self._confirm: dict[int, int] = {}     # track id -> consecutive qualifying frames
     self._release: dict[int, int] = {}     # track id -> frames since it last qualified
+    self._turning_until: float = -1e9      # no call before this: the lane frame is still moving
     self.track_id: int = -1                # the merging track, or -1
 
   def _motion(self, tid: int, t: float, abs_d_path: float) -> tuple[float, float] | None:
@@ -126,10 +141,25 @@ class CutInDetector:
       return False
     return (abs_dp - half) / closing < MAX_LANE_ENTRY_S
 
-  def update(self, tracks: dict, t: float, v_ego: float, lead_d_rel: float = 0.0) -> int:
+  def update(self, tracks: dict, t: float, v_ego: float, lead_d_rel: float = 0.0,
+             yaw_rate: float = 0.0) -> int:
     """Returns the merging track's id, or -1. `lead_d_rel` is 0.0 when nothing is followed."""
     if v_ego < MIN_VLEAD:
       self.reset()
+      return -1
+
+    # Turning hard invalidates every track's history, not just the next frame's reading, so the
+    # trails go too -- keeping them would let the turn's own swing count as progress once the
+    # wait expires.
+    if abs(yaw_rate) > MAX_YAW_RATE:
+      self._turning_until = t + PROGRESS_WINDOW_S
+      self._trail.clear()
+      self._confirm.clear()
+      self._release.clear()
+      self.track_id = -1
+      return -1
+    if t < self._turning_until:
+      self.track_id = -1
       return -1
 
     live = set(tracks)
@@ -160,4 +190,5 @@ class CutInDetector:
     self._trail.clear()
     self._confirm.clear()
     self._release.clear()
+    self._turning_until = -1e9
     self.track_id = -1

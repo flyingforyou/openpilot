@@ -33,7 +33,7 @@ class FakeTrack:
 
 
 def merge(det, tid=1, *, d_path0=3.2, closing=0.5, frames=60, d_rel=30.0, v_ego=20.0,
-          lead_d_rel=0.0, half=HALF, t_start=0.0, d_path_min=0.0):
+          lead_d_rel=0.0, half=HALF, t_start=0.0, d_path_min=0.0, yaw=0.0):
   """Walk a track towards the lane centre at `closing` m/s, returning when it was first called.
 
   `d_path_min` stops the walk short of the lane. Useful where a test wants the detector left in a
@@ -45,7 +45,7 @@ def merge(det, tid=1, *, d_path0=3.2, closing=0.5, frames=60, d_rel=30.0, v_ego=
     t = t_start + i * DT
     dp = max(d_path_min, d_path0 - closing * (t - t_start))
     tracks = {tid: FakeTrack(tid, d_rel=d_rel, d_path=dp, half=half)}
-    got = det.update(tracks, t, v_ego, lead_d_rel)
+    got = det.update(tracks, t, v_ego, lead_d_rel, yaw)
     if got == tid and called_at is None:
       called_at = t - t_start
   return called_at
@@ -192,6 +192,42 @@ class TestDoesNotFire:
   def test_standing_still(self):
     det = CutInDetector()
     assert merge(det, v_ego=1.0) is None
+
+
+class TestTurning:
+  """dPath is an offset from the model's lane centre, so a hard turn swings the frame it is
+  measured in and a parked car marches across the lane. Three seconds of that is exactly the
+  signature the cumulative gate looks for -- which is how the first replayed call came 1.3s out
+  of a hand-driven U-turn, on a track 42.5m away that was going nowhere."""
+
+  def test_a_hard_turn_suppresses_everything(self):
+    det = CutInDetector()
+    assert merge(det, yaw=0.4) is None
+
+  def test_and_keeps_suppressing_until_the_window_has_refilled(self):
+    """The wait is the whole progress window: less, and the turn's own swing is still in the
+    history being integrated."""
+    det = CutInDetector()
+    merge(det, frames=60, yaw=0.4)
+    at = merge(det, frames=20, t_start=3.0, yaw=0.0)     # 1s of settled driving
+    assert at is None
+
+  def test_but_a_settled_frame_works_normally_again(self):
+    det = CutInDetector()
+    merge(det, frames=60, yaw=0.4)          # ends at t=2.95, so the wait runs to t=5.95
+    assert merge(det, frames=60, t_start=6.0, yaw=0.0) is not None
+
+  def test_an_ordinary_curve_does_not_suppress(self):
+    """0.043 rad/s is p99.9 of the freeway drive; the guard must sit well clear of it."""
+    det = CutInDetector()
+    assert merge(det, yaw=0.05) is not None
+
+  def test_a_turn_discards_the_history_it_polluted(self):
+    """Waiting is not enough on its own -- the trail gathered during the turn has to go, or it
+    counts as progress the moment the wait expires."""
+    det = CutInDetector()
+    merge(det, frames=60, yaw=0.4)
+    assert det._trail == {}
 
 
 class TestState:

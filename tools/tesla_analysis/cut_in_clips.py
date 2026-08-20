@@ -50,8 +50,9 @@ def lane_frame(md):
 def main(paths):
   paths = sorted(paths, key=seg_no)
   det = CutInDetector()
-  frame, v_ego, lead_d = None, 0.0, 0.0
-  calls = []          # (segment, absolute t, dRel, dPath, mph)
+  frame, v_ego, lead_d, yaw = None, 0.0, 0.0, 0.0
+  engaged, engaged_since = False, None
+  calls = []          # (segment, absolute t, dRel, dPath, mph, engaged, s since engage)
 
   seg_start: dict[int, float] = {}
   for p in paths:
@@ -62,14 +63,22 @@ def main(paths):
       # initData carries the *route* start time in every segment, so anchoring on the first
       # message read makes every offset route-relative. Anchor on the stream instead, and take
       # a running minimum because the file is only roughly time-ordered.
-      if w not in ('carState', 'modelV2', 'radarState', 'radarTracks'):
+      if w not in ('carState', 'modelV2', 'radarState', 'radarTracks', 'selfdriveState'):
         continue
       t = msg.logMonoTime / 1e9
       seg_start[seg] = min(seg_start.get(seg, t), t)
-      if w == 'carState':
+      if w == 'selfdriveState':
+        was, engaged = engaged, bool(msg.selfdriveState.enabled)
+        if engaged and not was:
+          engaged_since = t
+        elif not engaged:
+          engaged_since = None
+      elif w == 'carState':
         v_ego = float(msg.carState.vEgo)
       elif w == 'modelV2':
         frame = lane_frame(msg.modelV2)
+        r = msg.modelV2.orientationRate.z
+        yaw = float(r[0]) if len(r) else 0.0
       elif w == 'radarState':
         L = msg.radarState.leadOne
         lead_d = float(L.dRel) if L.present else 0.0
@@ -82,11 +91,12 @@ def main(paths):
           half = max(0.1, abs(right - left) / 2.0)
           tracks[int(pt.trackId)] = Track(int(pt.trackId), d, float(pt.yRel) + (left + right) / 2.0,
                                           float(pt.vLead), bool(pt.measured), half)
-        tid = det.update(tracks, t, v_ego, lead_d)
+        tid = det.update(tracks, t, v_ego, lead_d, yaw)
         # report the moment it starts, not every frame it stays true
         if tid >= 0 and tid != last_id:
           tr = tracks[tid]
-          calls.append((seg, t, tr.dRel, tr.dPath, v_ego * 2.23694))
+          since = (t - engaged_since) if engaged_since is not None else -1.0
+          calls.append((seg, t, tr.dRel, tr.dPath, v_ego * 2.23694, engaged, since))
         last_id = tid
 
   route = route_of(paths[0])
@@ -95,16 +105,24 @@ def main(paths):
     print("  no cut-ins called")
     return
 
-  print(f"  {'segment':>9} {'at':>7}   {'dRel':>6} {'dPath':>7} {'mph':>5}   video")
-  for (seg, abs_t, d_rel, d_path, mph) in calls:
+  live = [c for c in calls if c[5]]
+  print(f"  {len(calls)} calls, {len(live)} of them while engaged. Only an engaged one can do")
+  print("  anything -- the planner is not driving otherwise -- so the rest are listed apart.\n")
+  print(f"  {'segment':>9} {'at':>7}   {'dRel':>6} {'dPath':>7} {'mph':>5} {'engaged':>8} {'since':>7}   video")
+  for (seg, abs_t, d_rel, d_path, mph, eng, since) in calls:
     off = abs_t - seg_start[seg]
     # a merge is worth watching from a few seconds before the call
     start = max(0.0, off - 4.0)
     where = f"{route}--{seg}  seek {start:.0f}s"
-    print(f"  {seg:>9} {int(off // 60):01d}:{off % 60:04.1f}   {d_rel:5.1f}m {d_path:+6.2f}m {mph:5.0f}   {where}")
+    tag = f"{since:6.1f}s" if eng and since >= 0 else ("     -" if eng else "   OFF")
+    left = f"  {seg:>9} {int(off // 60):01d}:{off % 60:04.1f}   {d_rel:5.1f}m {d_path:+6.2f}m {mph:5.0f}"
+    print(f"{left} {str(eng):>8} {tag:>7}   {where}")
 
-  segs = sorted({c[0] for c in calls})
-  print(f"\n  {len(calls)} cut-ins across segments {segs}")
+  segs = sorted({c[0] for c in live})
+  print(f"\n  engaged cut-ins across segments {segs}")
+  fresh = [c for c in live if 0 <= c[6] < 5.0]
+  if fresh:
+    print(f"  {len(fresh)} of them within 5s of engaging, where the lane frame is still settling")
   print(f"\n  on the device the clips are /data/media/0/realdata/{route}--<segment>/")
   print("  qcamera.ts is the small one and plays anywhere; fcamera.hevc is full resolution.")
 
