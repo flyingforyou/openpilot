@@ -8,7 +8,11 @@ from dataclasses import dataclass, field
 from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.locationd.calibrationd import HEIGHT_INIT
-from openpilot.selfdrive.ui.mici.onroad.side_vehicles import side_vehicles
+from openpilot.selfdrive.ui.mici.onroad.side_vehicles import (
+  DEFAULT_HALF_WIDTH,
+  HALF_WIDTH,
+  side_vehicles,
+)
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.selfdrive.ui.mici.onroad import blend_colors
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -32,6 +36,11 @@ SIDE_MIN_HALF_PX = 11.0
 # The lead label replaced the chevron, so it is the indicator rather than an annotation on one,
 # and it was sized to sit beside a shape that is no longer drawn.
 LEAD_LABEL_SCALE = 0.8
+
+# The lead's own type, off the factory camera's lead group, matched on distance like the side ones.
+DAS_GROUP_LEAD = 0
+DAS_LEAD_MATCH_M = 4.0
+METER_TO_FOOT = 3.28084
 SIDE_LINE_PX = 4.0
 SIDE_VEHICLE_COLOR = rl.Color(255, 255, 255, 180)
 SIDE_CUTIN_COLOR = rl.Color(226, 44, 44, 235)
@@ -88,6 +97,8 @@ class ModelPoints:
 class LeadVehicle:
   glow: list[float] = field(default_factory=list)
   chevron: list[float] = field(default_factory=list)
+  d_rel: float = 0.0
+  half_width: float = 0.90
   fill_alpha: int = 0
   source: str = ""
   vehicle_class: str = ""  # "" = not reported or not confident enough to show
@@ -108,6 +119,7 @@ class ModelRenderer(Widget):
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._lead_last_seen = [0.0, 0.0]
     self._side_vehicles: list = []
+    self._das_objects: list = []
     self._path_offset_z = HEIGHT_INIT[0]
 
     # Initialize ModelPoints objects
@@ -184,6 +196,9 @@ class ModelRenderer(Widget):
       path_x_array = self._path.raw_points[:, 0]
       if path_x_array.size == 0:
         return
+
+      # Before the leads, which read it for the lead's own type.
+      self._das_objects = list(car_state.dasObjects) if car_state is not None else []
 
       self._update_model(lead_one, path_x_array)
       if render_lead_indicator:
@@ -356,6 +371,22 @@ class ModelRenderer(Widget):
     self._exp_gradient.colors = segment_colors
     self._exp_gradient.stops = gradient_stops
 
+  def _lead_half_width(self, d_rel):
+    """The lead's real half-width, from the factory camera's own lead group when it has one.
+
+    Same table and same reason as the side markers: the radar cannot type a vehicle on this car,
+    and drawing every lead the width of a saloon throws away the one thing that makes the marker
+    say what is in front rather than just where.
+    """
+    best, gap = DEFAULT_HALF_WIDTH, DAS_LEAD_MATCH_M
+    for obj in self._das_objects:
+      if int(obj.group) != DAS_GROUP_LEAD:
+        continue
+      if abs(float(obj.dx) - d_rel) < gap:
+        gap = abs(float(obj.dx) - d_rel)
+        best = HALF_WIDTH.get(int(obj.objType), DEFAULT_HALF_WIDTH)
+    return best
+
   def _update_lead_vehicle(self, d_rel, v_rel, point, rect, source, vehicle_class=""):
     speed_buff, lead_buff = 10.0, 40.0
 
@@ -378,7 +409,9 @@ class ModelRenderer(Widget):
     glow = [(x + (sz * 1.35) + g_xo, y + sz + g_yo), (x, y - g_yo), (x - (sz * 1.35) - g_xo, y + sz + g_yo)]
     chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]
 
-    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), source=source, vehicle_class=vehicle_class)
+    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha), source=source,
+                       vehicle_class=vehicle_class, d_rel=float(d_rel),
+                       half_width=self._lead_half_width(d_rel))
 
   def _get_ll_color(self, prob: float, adjacent: bool, left: bool):
     alpha = np.clip(prob, 0.0, 0.7)
@@ -461,30 +494,33 @@ class ModelRenderer(Widget):
       else:
         draw_polygon(self._rect, self._path.projected_points, gradient=gradient)
 
+  def _draw_bracket(self, x, y, half, height, colour):
+    """A bracket standing on the road at (x, y), `half` wide. Open at the top so it reads as
+    sitting under the vehicle rather than boxing it in, which at this size is just a smudge.
+
+    Returns the y of its top edge, so a caller can stack text above it."""
+    left, right, top, bottom = x - half, x + half, y - height, y
+    sides = ((left, bottom, right, bottom), (left, bottom, left, top), (right, bottom, right, top))
+    for (x0, y0, x1, y1) in sides:
+      rl.draw_line_ex(rl.Vector2(x0 + 1, y0 + 1), rl.Vector2(x1 + 1, y1 + 1), SIDE_LINE_PX, SIDE_SHADOW_COLOR)
+    for (x0, y0, x1, y1) in sides:
+      rl.draw_line_ex(rl.Vector2(x0, y0), rl.Vector2(x1, y1), SIDE_LINE_PX, colour)
+    return top
+
+  def _draw_marker_text(self, text, x, bottom_y, font_size, colour):
+    """One line centred on x, sitting above bottom_y. Returns the y it now occupies."""
+    size = measure_text_cached(self._font_bold, text, font_size)
+    tx, ty = x - size.x / 2, bottom_y - size.y - 2
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx + 1, ty + 1), font_size, 0, SIDE_SHADOW_COLOR)
+    rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx, ty), font_size, 0, colour)
+    return ty
+
   def _draw_side_vehicles(self):
     """A bracket sitting on the road where the vehicle is, its width the vehicle's own."""
     for (x, y, half, height, is_cutin, d_rel) in self._side_vehicles:
       colour = SIDE_CUTIN_COLOR if is_cutin else SIDE_VEHICLE_COLOR
-      left, right, top, bottom = x - half, x + half, y - height, y
-
-      # Open at the top so it reads as sitting on the road rather than boxing the vehicle in,
-      # which at 15-30px would just be a smudge.
-      for (x0, y0, x1, y1) in ((left, bottom, right, bottom),
-                               (left, bottom, left, top),
-                               (right, bottom, right, top)):
-        rl.draw_line_ex(rl.Vector2(x0 + 1, y0 + 1), rl.Vector2(x1 + 1, y1 + 1), SIDE_LINE_PX, SIDE_SHADOW_COLOR)
-      for (x0, y0, x1, y1) in ((left, bottom, right, bottom),
-                               (left, bottom, left, top),
-                               (right, bottom, right, top)):
-        rl.draw_line_ex(rl.Vector2(x0, y0), rl.Vector2(x1, y1), SIDE_LINE_PX, colour)
-
-      text = f"{d_rel:.0f}"
-      font_size = float(np.clip(height * 1.9, 22, 40))
-      size = measure_text_cached(self._font_bold, text, font_size)
-      tx, ty = x - size.x / 2, top - size.y - 2
-      rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx + 1, ty + 1), font_size, 0, SIDE_SHADOW_COLOR)
-      rl.draw_text_ex(self._font_bold, text, rl.Vector2(tx, ty), font_size, 0, colour)
-
+      top = self._draw_bracket(x, y, half, height, colour)
+      self._draw_marker_text(f"{d_rel:.0f}", x, top, float(np.clip(height * 1.9, 22, 40)), colour)
   def _draw_lead_indicator(self):
     # Draw lead vehicles if available
     for lead in self._lead_vehicles:
@@ -499,21 +535,23 @@ class ModelRenderer(Widget):
       # with enough confidence, rides along in the same label rather than a second text draw --
       # one readable line beats two small ones at this size. Use a loaded font: rl.draw_text()
       # would draw nothing, since raylib's built-in default font isn't populated in this app.
-      label = f"{lead.source} {lead.vehicle_class}" if lead.vehicle_class else lead.source
       apex_x, apex_y = lead.chevron[1]
-      chevron_height = max(lead.chevron[0][1] - apex_y, 1.0)
-      font_size = float(np.clip(chevron_height * 2.48, 52, 72)) * LEAD_LABEL_SCALE
-      text_size = measure_text_cached(self._font_bold, label, font_size)
+      sz = max(lead.chevron[0][1] - apex_y, 1.0)
+      colour = rl.Color(80, 200, 255, 255) if lead.source == "R" else rl.Color(255, 190, 50, 255)
 
-      # Centred on where the chevron's apex was, which is the lead itself.
-      text_x = np.clip(apex_x - text_size.x / 2, 2.0, max(self._rect.width - text_size.x - 2.0, 2.0))
-      text_y = np.clip(apex_y - text_size.y / 2, 2.0,
-                       max(self._rect.height - text_size.y - 2.0, 2.0))
+      # Drawn the same way as the side markers, so the road reads as one picture: a bracket under
+      # the vehicle, its distance above it, and above that what the lead is and where it came
+      # from. The distance used to live in the left column and is here now because this is where
+      # it is being looked at.
+      half = max(SIDE_MIN_HALF_PX, sz * (lead.half_width / SIDE_REFERENCE_HALF_WIDTH))
+      top = self._draw_bracket(apex_x, apex_y + sz, half, sz * 0.42, colour)
 
-      color = rl.Color(80, 200, 255, 255) if lead.source == "R" else rl.Color(255, 190, 50, 255)
-      rl.draw_text_ex(self._font_bold, label, rl.Vector2(text_x + 3, text_y + 3), font_size, 0,
-                      rl.Color(0, 0, 0, 220))
-      rl.draw_text_ex(self._font_bold, label, rl.Vector2(text_x, text_y), font_size, 0, color)
+      dist = f"{lead.d_rel:.0f}m" if ui_state.is_metric else f"{lead.d_rel * METER_TO_FOOT:.0f}ft"
+      top = self._draw_marker_text(dist, apex_x, top, float(np.clip(sz * 1.9, 22, 40)), colour)
+
+      label = f"{lead.source} {lead.vehicle_class}" if lead.vehicle_class else lead.source
+      font_size = float(np.clip(sz * 2.48, 52, 72)) * LEAD_LABEL_SCALE
+      self._draw_marker_text(label, apex_x, top, font_size, colour)
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_height: float) -> int:
