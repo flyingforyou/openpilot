@@ -50,7 +50,7 @@ def lane_frame(md):
 def main(paths):
   paths = sorted(paths, key=seg_no)
   det = CutInDetector()
-  frame, v_ego, lead_d, yaw = None, 0.0, 0.0, 0.0
+  frame, v_ego, lead_d, yaw, changing = None, 0.0, 0.0, 0.0, False
   engaged, engaged_since = False, None
   calls = []          # (segment, absolute t, dRel, dPath, mph, engaged, s since engage)
 
@@ -79,6 +79,7 @@ def main(paths):
         frame = lane_frame(msg.modelV2)
         r = msg.modelV2.orientationRate.z
         yaw = float(r[0]) if len(r) else 0.0
+        changing = str(msg.modelV2.meta.laneChangeState) != 'off'
       elif w == 'radarState':
         L = msg.radarState.leadOne
         lead_d = float(L.dRel) if L.present else 0.0
@@ -91,7 +92,7 @@ def main(paths):
           half = max(0.1, abs(right - left) / 2.0)
           tracks[int(pt.trackId)] = Track(int(pt.trackId), d, float(pt.yRel) + (left + right) / 2.0,
                                           float(pt.vLead), bool(pt.measured), half)
-        tid = det.update(tracks, t, v_ego, lead_d, yaw)
+        tid = det.update(tracks, t, v_ego, lead_d, yaw, changing)
         # report the moment it starts, not every frame it stays true
         if tid >= 0 and tid != last_id:
           tr = tracks[tid]

@@ -74,6 +74,15 @@ MIN_PROGRESS = 0.5
 # cumulative gate consumes.
 MAX_YAW_RATE = 0.20
 
+# The same reasoning applies to our own lane change, and it is not a corner case: replayed over
+# 00000087 one of the eight calls was the car changing lanes to the right, with the blinker on and
+# laneChangeState running preLaneChange -> laneChangeStarting. Nobody merged. We moved, the lane
+# centre moved with us, and a car sitting still in the next lane read as sweeping into ours.
+#
+# A merge and a lane change look identical from a track's dPath alone, because dPath cannot tell
+# which of the two cars did the moving. What separates them is knowing our own intent, which the
+# model already publishes.
+
 # The three gates that make a merge a merge. Every one is tighter than CarrotPilot's equivalent,
 # because this fires a brake: a miss costs comfort, a false call costs trust.
 MIN_CLOSING = 0.25        # m/s towards the lane centre, sustained over the window
@@ -100,7 +109,7 @@ class CutInDetector:
     self._trail: dict[int, deque] = {}     # track id -> [(t, |dPath|)] over RATE_WINDOW_S
     self._confirm: dict[int, int] = {}     # track id -> consecutive qualifying frames
     self._release: dict[int, int] = {}     # track id -> frames since it last qualified
-    self._turning_until: float = -1e9      # no call before this: the lane frame is still moving
+    self._unsettled_until: float = -1e9    # no call before this: the lane frame is still moving
     self.track_id: int = -1                # the merging track, or -1
 
   def _motion(self, tid: int, t: float, abs_d_path: float) -> tuple[float, float] | None:
@@ -142,23 +151,23 @@ class CutInDetector:
     return (abs_dp - half) / closing < MAX_LANE_ENTRY_S
 
   def update(self, tracks: dict, t: float, v_ego: float, lead_d_rel: float = 0.0,
-             yaw_rate: float = 0.0) -> int:
+             yaw_rate: float = 0.0, lane_changing: bool = False) -> int:
     """Returns the merging track's id, or -1. `lead_d_rel` is 0.0 when nothing is followed."""
     if v_ego < MIN_VLEAD:
       self.reset()
       return -1
 
-    # Turning hard invalidates every track's history, not just the next frame's reading, so the
-    # trails go too -- keeping them would let the turn's own swing count as progress once the
-    # wait expires.
-    if abs(yaw_rate) > MAX_YAW_RATE:
-      self._turning_until = t + PROGRESS_WINDOW_S
+    # Moving the frame invalidates every track's history, not just the next frame's reading, so
+    # the trails go too -- keeping them would let our own motion count as progress once the wait
+    # expires. Both causes are the same bug: dPath cannot say which car moved.
+    if abs(yaw_rate) > MAX_YAW_RATE or lane_changing:
+      self._unsettled_until = t + PROGRESS_WINDOW_S
       self._trail.clear()
       self._confirm.clear()
       self._release.clear()
       self.track_id = -1
       return -1
-    if t < self._turning_until:
+    if t < self._unsettled_until:
       self.track_id = -1
       return -1
 
@@ -190,5 +199,5 @@ class CutInDetector:
     self._trail.clear()
     self._confirm.clear()
     self._release.clear()
-    self._turning_until = -1e9
+    self._unsettled_until = -1e9
     self.track_id = -1

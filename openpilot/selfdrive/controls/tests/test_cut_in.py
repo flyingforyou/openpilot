@@ -33,7 +33,7 @@ class FakeTrack:
 
 
 def merge(det, tid=1, *, d_path0=3.2, closing=0.5, frames=60, d_rel=30.0, v_ego=20.0,
-          lead_d_rel=0.0, half=HALF, t_start=0.0, d_path_min=0.0, yaw=0.0):
+          lead_d_rel=0.0, half=HALF, t_start=0.0, d_path_min=0.0, yaw=0.0, changing=False):
   """Walk a track towards the lane centre at `closing` m/s, returning when it was first called.
 
   `d_path_min` stops the walk short of the lane. Useful where a test wants the detector left in a
@@ -45,7 +45,7 @@ def merge(det, tid=1, *, d_path0=3.2, closing=0.5, frames=60, d_rel=30.0, v_ego=
     t = t_start + i * DT
     dp = max(d_path_min, d_path0 - closing * (t - t_start))
     tracks = {tid: FakeTrack(tid, d_rel=d_rel, d_path=dp, half=half)}
-    got = det.update(tracks, t, v_ego, lead_d_rel, yaw)
+    got = det.update(tracks, t, v_ego, lead_d_rel, yaw, changing)
     if got == tid and called_at is None:
       called_at = t - t_start
   return called_at
@@ -227,6 +227,31 @@ class TestTurning:
     counts as progress the moment the wait expires."""
     det = CutInDetector()
     merge(det, frames=60, yaw=0.4)
+    assert det._trail == {}
+
+
+class TestOurOwnLaneChange:
+  """dPath cannot say which of the two cars moved. When we change lanes the centre moves with us
+  and a car sitting still in the next lane sweeps into ours -- one of the eight calls replayed
+  over 00000087 was exactly that, blinker on, nobody merging."""
+
+  def test_our_lane_change_suppresses_calls(self):
+    det = CutInDetector()
+    assert merge(det, changing=True) is None
+
+  def test_and_keeps_suppressing_while_the_history_refills(self):
+    det = CutInDetector()
+    merge(det, frames=60, changing=True)
+    assert merge(det, frames=20, t_start=3.0, changing=False) is None
+
+  def test_then_works_normally_again(self):
+    det = CutInDetector()
+    merge(det, frames=60, changing=True)     # ends at t=2.95, wait runs to t=5.95
+    assert merge(det, frames=60, t_start=6.0, changing=False) is not None
+
+  def test_the_polluted_history_is_discarded(self):
+    det = CutInDetector()
+    merge(det, frames=60, changing=True)
     assert det._trail == {}
 
 
