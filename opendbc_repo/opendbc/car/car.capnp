@@ -241,6 +241,24 @@ struct CarState {
   # that says whether any of it means anything.
   navMap @64 :NavMapData;
 
+  # What the factory camera says is around the car, off DAS_object. Legacy Tesla only; empty
+  # everywhere else. Two things here are not obtainable from this car's radar, which reports 90%
+  # of its tracks as unknown and contradicts itself on the rest: what kind of vehicle each object
+  # is, and which one the factory itself considers to be merging in.
+  dasObjects @65 :List(DasObject);
+
+  struct DasObject {
+    group @0 :UInt8;      # 0 lead, 1 left, 2 right, 3 cut-in
+    objType @1 :UInt8;    # 0 unknown, 1 truck, 2 car, 3 motorcycle, 4 bicycle, 5 pedestrian
+    objId @2 :UInt8;
+    # dx is longitudinal, dy lateral and RIGHT-positive -- the opposite of the radar's yRel, so
+    # do not compare their signs without converting one of them.
+    dx @3 :Float32;
+    dy @4 :Float32;
+    vxRel @5 :Float32;
+    relevantForControl @6 :Bool;
+  }
+
   struct WheelSpeeds {
     # optional wheel speeds
     fl @0 :Float32;

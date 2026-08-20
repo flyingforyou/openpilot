@@ -12,7 +12,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
-from openpilot.selfdrive.controls.lib.cut_in import CutInDetector
+from openpilot.selfdrive.controls.lib.cut_in import DEFAULT_HALF_WIDTH, VEHICLE_HALF_WIDTH, CutInDetector
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -64,6 +64,12 @@ TRACK_JUMP_V = 7.0   # m/s
 # believes it has room it does not have. Holding the track we were already following bridges the
 # dip instead of accepting that jump.
 RADAR_LEAD_HOLD_DEFAULT_MS = 1000
+
+# Pairing the factory camera's object list to our radar tracks. Both report longitudinal distance
+# well -- over 2272 matched frames they agree to well under a metre -- so a 2m window is generous
+# without being loose enough to pair a car with the one behind it.
+DAS_MATCH_MAX_DREL = 2.0
+DAS_GROUP_CUTIN = 3
 
 
 class KalmanParams:
@@ -695,8 +701,9 @@ class RadarD:
         # Our own lane change moves the frame dPath is measured in, so a stationary car in the
         # next lane reads as sweeping into ours. The model already says when we are doing it.
         lane_changing = sm['modelV2'].meta.laneChangeState != log.LaneChangeState.off
+        half_widths, factory_cutin = self.match_das_objects(sm['carState'])
         tid = self.cut_in.update(self.tracks, self.current_time, self.v_ego, lead_d_rel,
-                                 yaw_rate, lane_changing)
+                                 yaw_rate, lane_changing, half_widths, factory_cutin)
         track = self.tracks.get(tid) if tid >= 0 else None
         # Only when it is the more binding of the two; leadTwo's own candidate may be nearer.
         if track is not None and (not self.radar_state.leadTwo.present
@@ -707,6 +714,36 @@ class RadarD:
     # them, and the lane change gate wants the nearest vehicle over there whether or not the
     # model has an opinion about it.
     self.radar_state.leadLeft, self.radar_state.leadRight = get_side_leads(self.tracks)
+
+  def match_das_objects(self, car_state) -> tuple[dict[int, float], int]:
+    """Pair the factory camera's objects with our radar tracks, by distance.
+
+    Distance alone is enough and lateral position would not help: the camera measures dy from the
+    car's axis with the opposite sign convention to the radar's yRel, and over 2272 matched frames
+    the two agree on distance to well under a metre while their lateral readings correlate at only
+    -0.46. So this matches on the axis both sensors are good at, and takes from the camera only
+    what the radar cannot supply -- the vehicle type, and its own cut-in call.
+
+    Returns (track id -> half-width, the track the camera calls a cut-in or -1).
+    """
+    widths: dict[int, float] = {}
+    cutin = -1
+    objects = getattr(car_state, 'dasObjects', None)
+    if not objects:
+      return widths, cutin
+
+    for obj in objects:
+      nearest, best = -1, DAS_MATCH_MAX_DREL
+      for tid, track in self.tracks.items():
+        gap = abs(float(obj.dx) - track.dRel)
+        if gap < best:
+          nearest, best = tid, gap
+      if nearest < 0:
+        continue
+      widths[nearest] = VEHICLE_HALF_WIDTH.get(int(obj.objType), DEFAULT_HALF_WIDTH)
+      if int(obj.group) == DAS_GROUP_CUTIN:
+        cutin = nearest
+    return widths, cutin
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None

@@ -7,6 +7,7 @@ from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
 from opendbc.car.tesla.teslacan import get_steer_ctrl_type
+from opendbc.car.tesla.das_object import parse_das_object
 from opendbc.car.tesla.values import DBC, CANBUS, GEAR_MAP, STEER_THRESHOLD, TeslaFlags, TeslaLegacyParams, CAR, LEGACY_CARS
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -47,6 +48,11 @@ NAV_MAP_STALE_FRAMES = 300
 # value forever once a message stops, and a frozen cubic that says "sharp bend" would hold the
 # car down indefinitely. Half a second of silence is enough to stop believing it.
 CURVATURE_STALE_FRAMES = 50
+
+# DAS_object gives each group about 6.7 Hz while carState runs at 100 Hz, so an object is only
+# refreshed every ~15 cycles. Half a second of silence is ten missed turns of its group, which is
+# a vehicle that has gone rather than one between updates.
+DAS_OBJECT_STALE_FRAMES = 50
 
 
 def decode_tesla_gap(raw_gap: int) -> int:
@@ -252,7 +258,8 @@ class CarState(CarStateBase):
     self.stock_autopark_offered = False
     self.das_control = None
     # The factory's latest DAS_object frame per group, kept only when the cluster workaround is on.
-    self.das_objects: dict[int, dict[str, float]] = {}
+    # (group, object id) -> [frames since last seen, DasVehicle]
+    self.das_vehicles: dict[tuple[int, int], list] = {}
     # The stalk's own last frame. Emulating a press means re-sending the SCCM's frame with one
     # field changed, so everything else on it -- turn signals, wipers, follow distance, the gear
     # stalk's own state -- goes back out as the SCCM had it rather than as something we invented.
@@ -566,7 +573,7 @@ class CarState(CarStateBase):
     # recording, and DAS_control is a channel the car expects fed at 25Hz.
     self.stock_autopark_offered = autopark_offered or self.stock_autopark_frames > 0
 
-    self.update_das_objects(cp_ap_party)
+    self.update_das_objects(ret, cp_ap_party)
 
     # Same lazy-registration rule as DAS_object: touch vl once so the parser picks the message up.
     if self.CP.flags & TeslaFlags.SYNC_CLUSTER_SPEED:
@@ -575,26 +582,23 @@ class CarState(CarStateBase):
 
     return ret
 
-  def update_das_objects(self, cp_ap_party) -> None:
-    """Collect the factory object frames that arrived since the last update, one per group.
+  def update_das_objects(self, ret: structs.CarState, cp_ap_party) -> None:
+    """The factory's view of the vehicles around the car, held together and published.
 
-    Deliberately not a running snapshot. Holding the last frame of each group and re-sending it
-    every cycle would put our copy on the bus at the control rate -- eight times what the factory
-    sends -- carrying values that have not changed since the group last came round. Emptying it
-    each update means exactly one relabelled frame goes out per factory frame, at the factory's
-    own cadence, which is also what keeps the extra bus load proportionate.
-
-    DAS_object rotates through its groups -- lead, left, right, cutin, headings -- one per frame at
-    about 6.7 Hz each, so a single read only ever sees whichever came last. vl_all carries every
-    frame received since the previous update, which is what makes it possible to hold all of them
-    at once. The signals arrive as parallel lists, one entry per frame, so they zip back into
+    DAS_object rotates through its groups -- lead, left, right, cutin, headings -- one per frame
+    at about 6.7 Hz each, so a single read only ever sees whichever came last. vl_all carries
+    every frame received since the previous update, which is what makes it possible to catch all
+    of them; the signals arrive as parallel lists, one entry per frame, so they zip back into
     frames in order.
 
-    Collected unconditionally. This used to be gated on the cluster workaround, which was the
-    only consumer; the objects are now read for their vehicle type and the factory's own cut-in
-    determination, both of which the radar cannot supply -- it reports every track as unknown.
+    Held rather than emptied. carState runs at 100 Hz and a group comes round at 6.7, so a cycle
+    that cleared what it did not just receive would publish an almost always empty list. Entries
+    age out instead, which is also what stops a vehicle that has gone lingering forever.
+
+    This used to feed a display workaround and was gated on it. It is read for control now: the
+    vehicle type, and the factory's own determination of which vehicle is cutting in -- neither
+    of which this car's radar can supply, since it calls 90% of its tracks unknown.
     """
-    self.das_objects.clear()
 
     # These parsers are built with no message list and pick messages up on demand, but only
     # through vl -- that is the one wired for lazy registration. vl_all is a plain dict that
@@ -604,6 +608,7 @@ class CarState(CarStateBase):
 
     frames = cp_ap_party.vl_all.get("DAS_object")
     if not frames:
+      self._age_das_vehicles(ret)
       return
 
     names = list(frames)
@@ -611,11 +616,32 @@ class CarState(CarStateBase):
     # One entry per frame in every column. Guard rather than zip strictly: a mismatch here would
     # be a parser bug, and raising in CarState would take the car down over a display feature.
     if len({len(c) for c in columns}) != 1:
+      self._age_das_vehicles(ret)
       return
 
     for row in zip(*columns):
       values = dict(zip(names, row))
-      self.das_objects[int(values["DAS_objectId"])] = values
+      for veh in parse_das_object(values):
+        self.das_vehicles[(veh.group, veh.obj_id)] = [0, veh]
+
+    self._age_das_vehicles(ret)
+
+  def _age_das_vehicles(self, ret: structs.CarState) -> None:
+    """Count everything held one frame older, drop what has gone quiet, publish the rest."""
+    for key in list(self.das_vehicles):
+      self.das_vehicles[key][0] += 1
+      if self.das_vehicles[key][0] > DAS_OBJECT_STALE_FRAMES:
+        del self.das_vehicles[key]
+
+    objects = ret.init('dasObjects', len(self.das_vehicles))
+    for i, (_, veh) in enumerate(self.das_vehicles.values()):
+      objects[i].group = int(veh.group)
+      objects[i].objType = int(veh.obj_type)
+      objects[i].objId = int(veh.obj_id)
+      objects[i].dx = float(veh.dx)
+      objects[i].dy = float(veh.dy)
+      objects[i].vxRel = float(veh.vx_rel)
+      objects[i].relevantForControl = bool(veh.relevant_for_control)
 
   @staticmethod
   def get_can_parsers(CP):

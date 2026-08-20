@@ -88,25 +88,45 @@ MAX_YAW_RATE = 0.20
 # because this fires a brake: a miss costs comfort, a false call costs trust.
 MIN_CLOSING = 0.25        # m/s towards the lane centre, sustained over the window
 
-# How far off our lane centre a vehicle has to have got before it counts as arriving.
+# How far into our lane a vehicle has to have got before it counts as arriving.
 #
-# The first version used the lane line, and that is too generous by a whole vehicle width. A lane
-# line 1.8 m out means the next lane runs from 1.8 to 5.4 m, so a bike riding its far edge and
-# moving to the middle of its own lane crosses 3.2 -> 2.4 m without ever leaving its lane. That
-# is a merge by every motion test and is not a merge at all -- it is what a motorcycle on route
-# 00000087 segment 6 actually did, and this called it.
+# Asked in metres of overlap, not metres of centre offset. |dPath| is the other vehicle's centre
+# and its near edge sits half a vehicle closer, so the same |dPath| means quite different things
+# for a lorry and a bicycle:
 #
-# 2.1 m is the factory camera's own threshold, read off its DAS_object CUTIN group: over route
-# 00000087 it never promoted a vehicle at a wider |dy| than 2.10 m, at any distance -- median
-# 1.75 in both the 15-25 m and the 25-35 m band, so it does not scale with range. Subtract half a
-# vehicle and it means the body is about 0.6 m inside our lane, which is the same question as
-# "would this hit me if I went straight".
+#   encroachment = our lane half-width + their half-width - |dPath|
 #
-# This replaces the window rather than adding to it. There is no lower bound, because the factory
-# has none either: it promotes from 1.05 m as readily as from 2.10. A lower bound at the lane line
-# was the other half of the same mistake -- a track that has already arrived is still worth
-# flagging, since leadOne is vision-matched and does not necessarily have it yet.
-ENTRY_DPATH = 2.1
+# The first version used the lane line as the bar, which is too generous by a whole vehicle width:
+# a line 1.8 m out means the next lane runs 1.8 to 5.4 m, so a bike riding its far edge and moving
+# to the middle of its own lane crosses 3.2 -> 2.4 m without ever leaving that lane. Twice on
+# route 00000087 this called that a merge, both confirmed on video.
+#
+# 0.6 m is the factory camera's own threshold in disguise. Its CUTIN group never promoted a
+# vehicle at a wider |dy| than 2.10 m over that route, at any distance -- median 1.75 in both the
+# 15-25 m and the 25-35 m band, so it is a fixed gate and not a function of range. A car at 2.10 m
+# in a 1.8 m half-lane is exactly 0.6 m of overlap.
+#
+# Type is what makes it work. At |dPath| 2.08 a motorcycle, half-width 0.4 m, has 0.12 m of
+# overlap -- it has touched the line and no more -- where the same number read with a car's 0.9 m
+# comes to 0.62 m and clears the bar. That was the last surviving false call on the route.
+#
+# There is no lower bound, and the factory has none either: it promotes from 1.05 m as readily as
+# from 2.10. A track that has already arrived is still worth flagging, since leadOne is
+# vision-matched and does not necessarily have it yet.
+MIN_ENCROACH = 0.6
+
+# Half-widths by DAS_objVehType. The radar cannot supply these: it reports 90% of tracks as
+# unknown, and of the rest called a clearly-a-car track fourWheel 0% of the time and a motorcycle
+# 32%. Unknown assumes a car, which is 78% of what the camera does classify.
+VEHICLE_HALF_WIDTH = {0: 0.90, 1: 1.25, 2: 0.90, 3: 0.40, 4: 0.30, 5: 0.30}
+DEFAULT_HALF_WIDTH = VEHICLE_HALF_WIDTH[0]
+
+# How far out a track may be and still be believed when the factory names it. Its call is taken
+# without the motion gates, so a mis-pairing has nothing else to stop it -- and pairing is done on
+# distance alone, which goes wrong when one object leaves and another is at much the same range.
+# Replayed, that put one call on a track 3.85 m off our lane centre, a lane and a half away.
+# The factory's own calls all sit inside 2.10 m, so a full lane of margin on top is generous.
+FACTORY_MAX_DPATH = 3.6
 
 # Half a second of agreement before it counts, and a second of silence before it stops counting.
 # The hold matters more than it looks: a merging car crossing the lane line is exactly when the
@@ -145,7 +165,7 @@ class CutInDetector:
     progress = max(dp for _, dp in trail) - abs_d_path
     return closing, progress
 
-  def _qualifies(self, track, t: float, lead_d_rel: float) -> bool:
+  def _qualifies(self, track, t: float, lead_d_rel: float, half_width: float) -> bool:
     if not track.measured or not (MIN_DREL < track.dRel < MAX_DREL) or track.vLead < MIN_VLEAD:
       return False
     # Nothing to gain from a car merging in behind what we already follow.
@@ -153,6 +173,7 @@ class CutInDetector:
       return False
 
     abs_dp = abs(track.dPath)
+    lane_half = max(0.1, track.lane_half_width)
 
     # History first, and unconditionally: progress is measured across the approach, so the trail
     # has to span the part of it that happens outside the window below. Gating this on position
@@ -165,9 +186,8 @@ class CutInDetector:
     # Has it actually got far enough in to be our problem? Motion alone says nothing about that,
     # and this is where the first version went wrong: with the window opening at the lane line,
     # a motorcycle riding the far edge of the next lane and moving to the middle of its own lane
-    # swept 3.2 -> 2.4 m and was called a merge twice on route 00000087, once in segment 6 and
-    # once in segment 7. It never left its lane.
-    if abs_dp >= ENTRY_DPATH:
+    # swept 3.2 -> 2.4 m and was called a merge twice on route 00000087. It never left its lane.
+    if lane_half + half_width - abs_dp < MIN_ENCROACH:
       return False
 
     closing, progress = motion
@@ -175,8 +195,14 @@ class CutInDetector:
     return closing > MIN_CLOSING and progress > MIN_PROGRESS
 
   def update(self, tracks: dict, t: float, v_ego: float, lead_d_rel: float = 0.0,
-             yaw_rate: float = 0.0, lane_changing: bool = False) -> int:
-    """Returns the merging track's id, or -1. `lead_d_rel` is 0.0 when nothing is followed."""
+             yaw_rate: float = 0.0, lane_changing: bool = False,
+             half_widths: dict | None = None, factory_cutin: int = -1) -> int:
+    """Returns the merging track's id, or -1. `lead_d_rel` is 0.0 when nothing is followed.
+
+    `half_widths` maps track id to the vehicle's half-width where the factory camera has typed it;
+    anything missing is assumed to be a car. `factory_cutin` is the track the camera has itself
+    declared a cut-in, or -1.
+    """
     if v_ego < MIN_VLEAD:
       self.reset()
       return -1
@@ -202,9 +228,20 @@ class CutInDetector:
         self._confirm.pop(tid, None)
         self._release.pop(tid, None)
 
+    widths = half_widths or {}
     best, best_d = -1, 1e9
     for tid, track in tracks.items():
-      if self._qualifies(track, t, lead_d_rel):
+      # The factory has its own answer and its own confirmation behind it. Where it has one, take
+      # it -- it beat this detector to four of its five calls on route 00000087 twice, and the
+      # cases it sees first are the far ones where its camera reads lateral position better than
+      # our radar does. It is not trusted blindly: the guards above still apply, and one of the
+      # five was our own lane change, which those guards catch and the factory does not.
+      basic = (track.measured and MIN_DREL < track.dRel < MAX_DREL and track.vLead >= MIN_VLEAD
+               and (lead_d_rel <= 0.0 or track.dRel < lead_d_rel - 1.0))
+      if tid == factory_cutin and basic and abs(track.dPath) < FACTORY_MAX_DPATH:
+        self._confirm[tid] = CONFIRM_FRAMES
+        self._release[tid] = 0
+      elif self._qualifies(track, t, lead_d_rel, widths.get(tid, DEFAULT_HALF_WIDTH)):
         self._confirm[tid] = self._confirm.get(tid, 0) + 1
         self._release[tid] = 0
       else:

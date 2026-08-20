@@ -13,7 +13,9 @@ from openpilot.selfdrive.controls.lib.cut_in import (
   MAX_DREL,
   MIN_DREL,
   MIN_VLEAD,
-  ENTRY_DPATH,
+  DEFAULT_HALF_WIDTH,
+  MIN_ENCROACH,
+  VEHICLE_HALF_WIDTH,
   RELEASE_FRAMES,
   CutInDetector,
 )
@@ -33,7 +35,8 @@ class FakeTrack:
 
 
 def merge(det, tid=1, *, d_path0=3.0, closing=0.5, frames=60, d_rel=30.0, v_ego=20.0,
-          lead_d_rel=0.0, half=HALF, t_start=0.0, d_path_min=0.0, yaw=0.0, changing=False):
+          lead_d_rel=0.0, half=HALF, t_start=0.0, d_path_min=0.0, yaw=0.0, changing=False,
+          widths=None, factory=-1):
   """Walk a track towards the lane centre at `closing` m/s, returning when it was first called.
 
   `d_path_min` stops the walk short of the lane. Useful where a test wants the detector left in a
@@ -45,7 +48,7 @@ def merge(det, tid=1, *, d_path0=3.0, closing=0.5, frames=60, d_rel=30.0, v_ego=
     t = t_start + i * DT
     dp = max(d_path_min, d_path0 - closing * (t - t_start))
     tracks = {tid: FakeTrack(tid, d_rel=d_rel, d_path=dp, half=half)}
-    got = det.update(tracks, t, v_ego, lead_d_rel, yaw, changing)
+    got = det.update(tracks, t, v_ego, lead_d_rel, yaw, changing, widths, factory)
     if got == tid and called_at is None:
       called_at = t - t_start
   return called_at
@@ -56,13 +59,13 @@ class TestFires:
     assert merge(CutInDetector()) is not None
 
   def test_it_is_called_before_the_car_is_centred_on_us(self):
-    """It has to fire on the way in, not once the merge is over. The bar is ENTRY_DPATH, which is
+    """It has to fire on the way in, not once the merge is over. The bar is MIN_ENCROACH, which is
     where the factory camera draws it -- about 0.6m of the other car's body inside our lane."""
     det = CutInDetector()
     at = merge(det, d_path0=3.0, closing=0.5)
     assert at is not None
     dp = 3.0 - 0.5 * at
-    assert 0.0 < dp <= ENTRY_DPATH
+    assert 0.0 < dp <= HALF + DEFAULT_HALF_WIDTH - MIN_ENCROACH
 
   def test_confirmation_is_not_instant(self):
     det = CutInDetector()
@@ -236,6 +239,90 @@ class TestTurning:
     det = CutInDetector()
     merge(det, frames=60, yaw=0.4)
     assert det._trail == {}
+
+
+class TestVehicleWidth:
+  """The same |dPath| is a different amount of encroachment for a lorry and a bicycle, and
+  treating a motorcycle as a narrow car is what kept a false call that video disproved."""
+
+  MOTORCYCLE, CAR, TRUCK = 3, 2, 1
+
+  def at(self, kind, d_path0=3.0):
+    det = CutInDetector()
+    w = {1: VEHICLE_HALF_WIDTH[kind]}
+    return merge(det, d_path0=d_path0, closing=0.5, widths=w, frames=120)
+
+  def test_a_motorcycle_has_to_come_further_in_than_a_car(self):
+    car, bike = self.at(self.CAR), self.at(self.MOTORCYCLE)
+    assert car is not None and bike is not None
+    assert bike > car, "the narrower vehicle must be allowed closer before it counts"
+
+  def test_a_lorry_counts_sooner_than_a_car(self):
+    assert self.at(self.TRUCK) < self.at(self.CAR)
+
+  def test_the_bike_that_only_touched_the_line(self):
+    """Route 00000087 segment 7, stated as arithmetic because that is all it was. At |dPath| 2.08
+    in a 1.8m half-lane a motorcycle overlaps by 0.12m -- it has touched the line and no more --
+    while the same reading taken as a car comes to 0.62m and clears the bar."""
+    dpath, lane_half = 2.08, 1.8
+    bike = lane_half + VEHICLE_HALF_WIDTH[self.MOTORCYCLE] - dpath
+    car = lane_half + VEHICLE_HALF_WIDTH[self.CAR] - dpath
+    assert bike == pytest.approx(0.12, abs=0.01)
+    assert car == pytest.approx(0.62, abs=0.01)
+    assert bike < MIN_ENCROACH <= car
+
+  def test_where_each_type_first_counts_as_arrived(self):
+    """The bar in metres of |dPath| for each, which is what the gate really compares against."""
+    lane_half = 1.8
+    bars = {k: lane_half + w - MIN_ENCROACH for k, w in VEHICLE_HALF_WIDTH.items()}
+    assert bars[self.TRUCK] == pytest.approx(2.45)
+    assert bars[self.CAR] == pytest.approx(2.10)      # the factory's own measured threshold
+    assert bars[self.MOTORCYCLE] == pytest.approx(1.60)
+
+  def test_an_untyped_track_is_assumed_to_be_a_car(self):
+    det_default = CutInDetector()
+    det_car = CutInDetector()
+    assert (merge(det_default, d_path0=3.0, closing=0.5) ==
+            merge(det_car, d_path0=3.0, closing=0.5, widths={1: VEHICLE_HALF_WIDTH[self.CAR]}))
+
+
+class TestFactoryCutIn:
+  """The camera makes its own call, earlier than this on the far ones. Taking it is not the same
+  as trusting it: the guards still run, and it gets our own lane change wrong."""
+
+  def test_the_factory_call_is_taken_without_waiting_for_the_motion_gates(self):
+    det = CutInDetector()
+    # sitting still one lane over: nothing this detector would ever call by itself
+    for i in range(20):
+      got = det.update({1: FakeTrack(1, d_path=3.4)}, i * DT, 20.0, 0.0, 0.0, False, None, 1)
+    assert got == 1
+
+  def test_but_not_a_track_that_fails_the_basic_filters(self):
+    det = CutInDetector()
+    for i in range(20):
+      got = det.update({1: FakeTrack(1, d_path=3.4, v_lead=1.0)}, i * DT, 20.0, 0.0, 0.0, False, None, 1)
+    assert got == -1
+
+  def test_and_not_behind_the_lead_we_already_follow(self):
+    det = CutInDetector()
+    for i in range(20):
+      got = det.update({1: FakeTrack(1, d_rel=40.0, d_path=3.4)}, i * DT, 20.0, 20.0, 0.0, False, None, 1)
+    assert got == -1
+
+  def test_and_not_on_a_track_a_lane_and_a_half_away(self):
+    """Pairing is by distance alone, so it goes wrong when one object leaves and another sits at
+    much the same range. Replayed, that put a factory call on a track 3.85m off our lane centre."""
+    det = CutInDetector()
+    for i in range(20):
+      got = det.update({1: FakeTrack(1, d_path=3.85)}, i * DT, 20.0, 0.0, 0.0, False, None, 1)
+    assert got == -1
+
+  def test_and_not_during_our_own_lane_change(self):
+    """The one the factory gets wrong: on route 00000087 it called our own change a cut-in."""
+    det = CutInDetector()
+    for i in range(20):
+      got = det.update({1: FakeTrack(1, d_path=3.4)}, i * DT, 20.0, 0.0, 0.0, True, None, 1)
+    assert got == -1
 
 
 class TestOurOwnLaneChange:

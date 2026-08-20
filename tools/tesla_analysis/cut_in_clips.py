@@ -15,10 +15,18 @@ import sys
 
 import numpy as np
 
-from openpilot.selfdrive.controls.lib.cut_in import CutInDetector
+from opendbc.can import CANParser
+from opendbc.car.tesla.das_object import parse_das_object
+from openpilot.selfdrive.controls.lib.cut_in import (
+  DEFAULT_HALF_WIDTH,
+  VEHICLE_HALF_WIDTH,
+  CutInDetector,
+)
 from openpilot.tools.lib.logreader import LogReader
 
 SEG_S = 60.0
+DAS_MATCH_MAX_DREL = 2.0
+DAS_GROUP_CUTIN = 3
 
 
 class Track:
@@ -58,12 +66,13 @@ def main(paths):
   for p in paths:
     seg = seg_no(p)
     last_id = -1
+    cp, das = CANParser('tesla_can', [], 2), {}
     for msg in LogReader(f'{p}/rlog.zst'):
       w = msg.which()
       # initData carries the *route* start time in every segment, so anchoring on the first
       # message read makes every offset route-relative. Anchor on the stream instead, and take
       # a running minimum because the file is only roughly time-ordered.
-      if w not in ('carState', 'modelV2', 'radarState', 'radarTracks', 'selfdriveState'):
+      if w not in ('carState', 'modelV2', 'radarState', 'radarTracks', 'selfdriveState', 'can'):
         continue
       t = msg.logMonoTime / 1e9
       seg_start[seg] = min(seg_start.get(seg, t), t)
@@ -83,6 +92,15 @@ def main(paths):
       elif w == 'radarState':
         L = msg.radarState.leadOne
         lead_d = float(L.dRel) if L.present else 0.0
+      elif w == 'can':
+        if any(x.address == 777 and x.src == 2 for x in msg.can):
+          cp.update([(msg.logMonoTime, [(x.address, bytes(x.dat), x.src) for x in msg.can])])
+          for veh in parse_das_object(cp.vl["DAS_object"]):
+            das[(veh.group, veh.obj_id)] = [0, veh]
+        for k in list(das):
+          das[k][0] += 1
+          if das[k][0] > 50:
+            del das[k]
       elif w == 'radarTracks' and frame is not None:
         xs, ly, ry = frame
         tracks = {}
@@ -92,7 +110,19 @@ def main(paths):
           half = max(0.1, abs(right - left) / 2.0)
           tracks[int(pt.trackId)] = Track(int(pt.trackId), d, float(pt.yRel) + (left + right) / 2.0,
                                           float(pt.vLead), bool(pt.measured), half)
-        tid = det.update(tracks, t, v_ego, lead_d, yaw, changing)
+        widths, factory = {}, -1
+        for (_, veh) in das.values():
+          near, best = -1, DAS_MATCH_MAX_DREL
+          for k, tr in tracks.items():
+            gap = abs(float(veh.dx) - tr.dRel)
+            if gap < best:
+              near, best = k, gap
+          if near < 0:
+            continue
+          widths[near] = VEHICLE_HALF_WIDTH.get(int(veh.obj_type), DEFAULT_HALF_WIDTH)
+          if int(veh.group) == DAS_GROUP_CUTIN:
+            factory = near
+        tid = det.update(tracks, t, v_ego, lead_d, yaw, changing, widths, factory)
         # report the moment it starts, not every frame it stays true
         if tid >= 0 and tid != last_id:
           tr = tracks[tid]
