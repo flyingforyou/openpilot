@@ -27,7 +27,6 @@ static bool tesla_legacy_stock_lkas_prev = false;
 // Stock autopark (HW1). Off unless the car port opts in, since letting the stock module steer
 // means opening the forwarding gate on DAS_steeringControl for a system we can't bound.
 static bool tesla_legacy_allow_stock_autopark = false;
-static bool tesla_legacy_cars_as_trucks = false;
 static bool tesla_legacy_sync_cluster_speed = false;
 static bool tesla_legacy_stock_autopark = false;
 // The maneuver is announced late: on a recorded attempt DAS_steeringControl went to
@@ -321,14 +320,6 @@ static bool tesla_legacy_fwd_hook(int bus_num, int addr) {
       block_msg = true;
     }
 
-    // DAS_object. openpilot re-sends the factory's own object list with the vehicle type
-    // relabelled, because the cluster stopped drawing CAR. Forwarding the original as well would
-    // put two frames for the same group on the bus a few ms apart, one saying CAR and one saying
-    // TRUCK, and which one the cluster ends up drawing is not ours to decide. Display only: this
-    // message reaches nothing that steers or brakes.
-    if (tesla_legacy_cars_as_trucks && (addr == 0x309)) {
-      block_msg = true;
-    }
   }
 
   return block_msg;
@@ -341,7 +332,6 @@ static safety_config tesla_legacy_init(uint16_t param) {
   const int TESLA_FLAG_HW2 = 16;
   const int TESLA_FLAG_HW3 = 32;
   const int TESLA_FLAG_STOCK_AUTOPARK = 64;
-  const int TESLA_FLAG_CARS_AS_TRUCKS = 128;
   const int TESLA_FLAG_SYNC_CLUSTER_SPEED = 256;
 
   // Extract flags
@@ -351,7 +341,6 @@ static safety_config tesla_legacy_init(uint16_t param) {
   tesla_hw2 = GET_FLAG(param, TESLA_FLAG_HW2);
   tesla_hw3 = GET_FLAG(param, TESLA_FLAG_HW3);
   tesla_legacy_allow_stock_autopark = GET_FLAG(param, TESLA_FLAG_STOCK_AUTOPARK) && tesla_hw1;
-  tesla_legacy_cars_as_trucks = GET_FLAG(param, TESLA_FLAG_CARS_AS_TRUCKS) && tesla_hw1;
   tesla_legacy_sync_cluster_speed = GET_FLAG(param, TESLA_FLAG_SYNC_CLUSTER_SPEED) && tesla_hw1;
 
   // Initialize state variables

@@ -143,17 +143,6 @@ class Car:
           int(self.params.get("TeslaCoopMaxTorqueCNm", return_default=True) or 250) / 100.0,
           int(self.params.get("TeslaCoopLatAccelCms", return_default=True) or 150) / 100.0)
 
-    # Tesla's 2026.26.1 update left AP1 clusters drawing TRUCK and MOTORCYCLE but not CAR, which
-    # is most of the traffic, so almost nothing appears. Everything upstream of the cluster is
-    # correct, so openpilot re-sends the factory's own object list with the type swapped to one
-    # the cluster still renders. Cars then show up wearing a truck icon.
-    if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaCarsAsTrucks"):
-      self.CP.flags |= TeslaFlags.CARS_AS_TRUCKS.value
-      # Panda has to stop forwarding the factory's copy, or the cluster gets both labels.
-      for cfg in self.CP.safetyConfigs:
-        if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
-          cfg.safetyParam |= TeslaSafetyFlags.CARS_AS_TRUCKS.value
-
     # Cluster MAX speed sync. Writes the cruise stalk, so it stays opt-in and panda restricts the
     # lever field to the four speed steps -- the same field selects gear on this car.
     if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaSyncClusterSpeed"):

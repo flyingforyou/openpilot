@@ -38,15 +38,6 @@ class TeslaCANRaven:
     values["DAS_steeringControlChecksum"] = self.checksum(0x488, data[:3])
     return self.packers[CANBUS.party].make_can_msg("DAS_steeringControl", CANBUS.party, values)
 
-  def create_das_object(self, values):
-    """Re-send one of the factory's DAS_object frames, already relabelled by the caller.
-
-    Values come straight off the factory's own frame, so nothing is computed here and there is no
-    checksum or counter to maintain -- unlike the messages around it, DAS_object carries neither.
-    Sent on the party bus, which is where the cluster listens.
-    """
-    return self.packers[CANBUS.party].make_can_msg("DAS_object", CANBUS.party, values)
-
   def create_stalk_command(self, values, lever):
     """The SCCM's own frame with the cruise lever overridden, counter bumped and CRC redone.
 

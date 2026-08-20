@@ -590,13 +590,11 @@ class CarState(CarStateBase):
     at once. The signals arrive as parallel lists, one entry per frame, so they zip back into
     frames in order.
 
-    Only kept for the sake of re-sending them with the vehicle type substituted; nothing here
-    feeds control.
+    Collected unconditionally. This used to be gated on the cluster workaround, which was the
+    only consumer; the objects are now read for their vehicle type and the factory's own cut-in
+    determination, both of which the radar cannot supply -- it reports every track as unknown.
     """
     self.das_objects.clear()
-
-    if not (self.CP.flags & TeslaFlags.CARS_AS_TRUCKS):
-      return
 
     # These parsers are built with no message list and pick messages up on demand, but only
     # through vl -- that is the one wired for lazy registration. vl_all is a plain dict that

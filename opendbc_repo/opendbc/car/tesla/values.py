@@ -247,7 +247,6 @@ class TeslaSafetyFlags(IntFlag):
   FLAG_HW2 = 16
   FLAG_HW3 = 32
   STOCK_AUTOPARK = 64
-  CARS_AS_TRUCKS = 128
   SYNC_CLUSTER_SPEED = 256
 
 
@@ -258,7 +257,6 @@ class TeslaFlags(IntFlag):
   # 8 rather than the next free bit in this enum: TeslaLegacyParams shares CP.flags and already
   # claims 1, so the two enums have to be read as one bit space.
   COOP_STEER = 8
-  CARS_AS_TRUCKS = 16
   SYNC_CLUSTER_SPEED = 32
 
 

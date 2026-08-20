@@ -7,7 +7,6 @@ from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.tesla.teslacan import TeslaCAN
 from opendbc.car.tesla.teslacan_legacy import TeslaCANRaven
 from opendbc.car.tesla.coop_steering import CoopSteeringCarController
-from opendbc.car.tesla.das_object import substitute_type
 from opendbc.car.tesla.values import CarControllerParams, CANBUS, LEGACY_CARS, CAR, StalkLever, TeslaFlags
 from opendbc.car.vehicle_model import VehicleModel
 
@@ -196,31 +195,11 @@ class CarController(CarControllerBase):
     #
     # Additive rather than a replacement: the factory keeps sending its copy, and only the groups
     # holding a car are re-sent. That keeps the road signs and heading groups, which cannot be
-    # rebuilt from this layout, entirely untouched.
-    # Read the flag now rather than caching it in __init__. card.py builds the interface first and
-    # only then folds the params into CP.flags, so anything latched at construction is latched at
-    # False -- coop steering papers over that by reaching in and setting the attribute afterwards,
-    # and this had no such poke, so it never transmitted a single frame. CarState reads CP.flags
-    # per cycle for the same reason, which is why the objects were being collected for nobody.
-    # Only the legacy cars have the cluster this works around, and only they have the message.
-    cars_as_trucks = bool(self.CP.flags & TeslaFlags.CARS_AS_TRUCKS) and self.CP.carFingerprint in LEGACY_CARS
-    if cars_as_trucks:
-      for values in CS.das_objects.values():
-        # Every frame goes back out, not just the ones that changed. Panda blocks the factory's
-        # DAS_object outright while this is on, so a group we decline to re-send reaches the
-        # cluster not as "nothing there" but as nothing at all -- and the cluster goes on drawing
-        # whatever it last saw. That is what left cars on the display after they were gone: the
-        # slot had emptied, there was no longer a CAR to relabel, and the empty frame that would
-        # have cleared it was the one being dropped. The same applies to the road sign and
-        # heading groups, which have no vehicle type to substitute and were disappearing entirely.
-        relabelled = substitute_type(values)
-        can_sends.append(self.tesla_can.create_das_object(values if relabelled is None else relabelled))
-
     # Cluster MAX speed. DAS_setSpeed does not reach that display -- the DI owns it, publishes it
     # as DI_state.DI_digitalSpeed, and only the cruise stalk moves it. So openpilot presses the
     # stalk the way a driver would, one step at a time, until the number matches what it is
-    # actually driving to. Read the flag here rather than caching it, for the same reason as
-    # cars_as_trucks above.
+    # actually driving to. The flag is read here rather than cached in
+    # __init__, because card.py folds the params into CP.flags only after building the interface.
     if (bool(self.CP.flags & TeslaFlags.SYNC_CLUSTER_SPEED) and self.CP.carFingerprint in LEGACY_CARS
         and CC.enabled and CC.longActive and CS.stw_actn is not None):
       can_sends += self.update_cluster_speed(CC, CS)

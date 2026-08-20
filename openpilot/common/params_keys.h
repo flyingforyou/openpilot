@@ -260,7 +260,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // emulating the cruise stalk. DAS_setSpeed does not reach that display at all -- the DI
     // owns it and only STW_ACTN_RQ moves it. Off by default: it writes the stalk.
     {"TeslaSyncClusterSpeed", {PERSISTENT, BOOL, "0"}},
-    {"TeslaCarsAsTrucks", {PERSISTENT, BOOL, "0"}},
     {"TeslaCoopSteer", {PERSISTENT, BOOL, "0"}},
     {"TeslaLastGapAdjust", {PERSISTENT, INT, "0"}},
     {"TeslaStockAutopark", {PERSISTENT, BOOL, "0"}},

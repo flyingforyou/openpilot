@@ -11,7 +11,6 @@ quietly: registration has to happen, every group in a rotation has to survive on
 values that come back out have to be good enough to pack straight into a frame.
 """
 from opendbc.can import CANPacker, CANParser
-from opendbc.car.tesla.das_object import CAR, LEAD_VEHICLES, RIGHT_VEHICLES, TRUCK, substitute_type
 
 DBC = 'tesla_can'
 ADDR = 777
@@ -92,44 +91,4 @@ class TestDasObjectCapture:
       _, data, _ = packer.make_can_msg('DAS_object', 0, values)
       assert data.hex() == frame, f"{frame} did not survive a round trip"
 
-  def test_an_emptied_slot_still_produces_a_frame(self):
-    """The ghost. When the car ahead goes away the factory says so by sending the slot saturated;
-    with its copy blocked, that emptying only reaches the cluster if we forward it ourselves.
-    substitute_type declines to relabel it -- correctly, there is no vehicle -- so the caller has
-    to send the original rather than treat 'nothing to change' as 'nothing to send'."""
-    parser = CANParser(DBC, [], BUS)
-    parser.vl['DAS_object']
-    feed(parser, ['00ff0ff883ff0700'])
 
-    frames = parser.vl_all['DAS_object']
-    names = list(frames)
-    values = dict(zip(names, next(zip(*[frames[n] for n in names]))))
-
-    assert substitute_type(values, CAR, TRUCK) is None
-    packer = CANPacker(DBC)
-    _, data, _ = packer.make_can_msg('DAS_object', 0, values)
-    assert data.hex() == '00ff0ff883ff0700'
-
-  def test_substitution_on_captured_values(self):
-    """End to end: capture the lead frame, relabel it, and confirm only the type moved."""
-    parser = CANParser(DBC, [], BUS)
-    parser.vl['DAS_object']
-    feed(parser, ROTATION)
-
-    frames = parser.vl_all['DAS_object']
-    names = list(frames)
-    captured = {}
-    for row in zip(*[frames[n] for n in names]):
-      values = dict(zip(names, row))
-      captured[int(values['DAS_objectId'])] = values
-
-    lead = substitute_type(captured[LEAD_VEHICLES], CAR, TRUCK)
-    assert lead is not None and lead['DAS_objVehType'] == TRUCK
-    assert lead['DAS_objVehDx'] == 35.0
-
-    right = substitute_type(captured[RIGHT_VEHICLES], CAR, TRUCK)
-    assert right is not None and right['DAS_objVehDx'] == 17.0
-
-    # the empty groups have nothing to relabel and must not be re-sent
-    assert substitute_type(captured[1], CAR, TRUCK) is None
-    assert substitute_type(captured[3], CAR, TRUCK) is None

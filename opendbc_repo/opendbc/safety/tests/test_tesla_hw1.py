@@ -16,7 +16,6 @@ MSG_DAS_steeringControl = 0x488
 MSG_DAS_Control_HW1 = 0x2b9
 # Display only: the factory's object list, re-sent with the vehicle type relabelled so the
 # cluster draws cars again. Always transmittable; whether the factory's own copy is forwarded
-# alongside it is what TESLA_FLAG_CARS_AS_TRUCKS decides.
 MSG_DAS_object = 0x309
 # The cruise stalk. Also the gear selector on this car, which is the whole reason panda checks
 # the value rather than just the address.
@@ -284,20 +283,6 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
   def test_das_object_forwarded_unless_relabelling(self):
     """Without the flag the factory's object list reaches the cluster untouched."""
     self.assertNotEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_object))
-
-  def test_das_object_blocked_when_relabelling(self):
-    """With it, only openpilot's relabelled copy gets through.
-
-    Both frames on the bus a few ms apart, one saying CAR and one saying TRUCK, leaves which one
-    the cluster draws up to the cluster. Blocking the original is what makes the substitution
-    deterministic -- and it stays transmittable either way, so openpilot always has the channel.
-    """
-    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy,
-                                 int(TeslaSafetyFlags.FLAG_HW1 | TeslaSafetyFlags.LONG_CONTROL |
-                                     TeslaSafetyFlags.CARS_AS_TRUCKS))
-    self.safety.init_tests()
-    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_object))
-    self.assertTrue(self._tx(make_msg(0, MSG_DAS_object, 8)), "openpilot must still own the id")
 
   def _stalk_msg(self, lever):
     return make_msg(0, MSG_STW_ACTN_RQ, 8, dat=bytes([lever & 0x3F, 0, 0, 0, 0, 0, 0, 0]))
