@@ -23,6 +23,12 @@ MAX_DRAW_DISTANCE = 100.0
 # Adjacent-lane markers. The width of one is the vehicle's real width, so it needs a reference:
 # a car, against which a motorcycle draws narrow and a lorry wide.
 SIDE_REFERENCE_HALF_WIDTH = 0.90
+
+# A motorcycle is drawn at 0.44 of a car's width, which is the information -- but scaled straight
+# it also comes out the smallest marker on screen for the vehicle hardest to see in reality. The
+# floor keeps a narrow one legible without flattening the difference: a car still draws wider.
+SIDE_MIN_HALF_PX = 11.0
+SIDE_LINE_PX = 4.0
 SIDE_VEHICLE_COLOR = rl.Color(255, 255, 255, 180)
 SIDE_CUTIN_COLOR = rl.Color(226, 44, 44, 235)
 SIDE_SHADOW_COLOR = rl.Color(0, 0, 0, 190)
@@ -251,11 +257,18 @@ class ModelRenderer(Widget):
       # dasObjects' dy is right-positive, the same sense _map_to_screen is given for a lead
       # (which passes -yRel, and yRel is left-positive). No sign flip here.
       point = self._map_to_screen(veh.d_rel, veh.dy, z + self._path_offset_z)
-      if point is None:
-        continue
       sz = np.clip((25 * 30) / (veh.d_rel / 3 + 30), 15.0, 30.0)
-      half = sz * (veh.half_width / SIDE_REFERENCE_HALF_WIDTH)
-      self._side_vehicles.append((point[0], point[1], half, sz * 0.42, veh.is_cutin, veh.d_rel))
+      half = max(SIDE_MIN_HALF_PX, sz * (veh.half_width / SIDE_REFERENCE_HALF_WIDTH))
+
+      if point is None:
+        # Beside us, or close enough that the road under it projects off the bottom of the frame.
+        # This is exactly when a driver most wants to know, so it does not go unshown: the marker
+        # goes to the edge it is on, at the bottom, where "alongside" reads without a legend.
+        x = half + 4.0 if veh.dy < 0 else self._rect.width - half - 4.0
+        y = self._rect.height - 8.0
+      else:
+        x, y = point[0], min(point[1], self._rect.height - 8.0)
+      self._side_vehicles.append((x, y, half, sz * 0.42, veh.is_cutin, veh.d_rel))
 
   def _update_model(self, lead, path_x_array):
     """Update model visualization data based on model message"""
@@ -455,11 +468,11 @@ class ModelRenderer(Widget):
       for (x0, y0, x1, y1) in ((left, bottom, right, bottom),
                                (left, bottom, left, top),
                                (right, bottom, right, top)):
-        rl.draw_line_ex(rl.Vector2(x0 + 1, y0 + 1), rl.Vector2(x1 + 1, y1 + 1), 3.0, SIDE_SHADOW_COLOR)
+        rl.draw_line_ex(rl.Vector2(x0 + 1, y0 + 1), rl.Vector2(x1 + 1, y1 + 1), SIDE_LINE_PX, SIDE_SHADOW_COLOR)
       for (x0, y0, x1, y1) in ((left, bottom, right, bottom),
                                (left, bottom, left, top),
                                (right, bottom, right, top)):
-        rl.draw_line_ex(rl.Vector2(x0, y0), rl.Vector2(x1, y1), 3.0, colour)
+        rl.draw_line_ex(rl.Vector2(x0, y0), rl.Vector2(x1, y1), SIDE_LINE_PX, colour)
 
       text = f"{d_rel:.0f}"
       font_size = float(np.clip(height * 1.9, 22, 40))
