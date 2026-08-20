@@ -15,10 +15,14 @@ Asking "will this be inside my lane within 1.5 s" only fires once the car is nea
 replayed, that gave a median 0.3 s of warning, which is no warning. Asking instead for *sustained
 progress towards* the lane gives a median 2.1 s (p10 1.1, max 7.1).
 
+Rate alone still cannot tell a merge from a car correcting its own lane position, so a second,
+cumulative gate asks how much ground the track has actually taken -- see MIN_PROGRESS.
+
 The constants below come from sweeping them over three drives rather than from taste. At these
-values it calls 0.24-0.96 times a minute and 73%/80%/54% of those calls are followed by the
+values it calls 0.24-0.92 times a minute and 89%/80%/63% of those calls are followed by the
 followed gap really collapsing -- the low figure is the freeway drive, where the misses are
-adjacent-lane cars on a multi-lane road that never actually merge.
+adjacent-lane cars on a multi-lane road that never actually merge. In false calls per minute
+that is 0.04 / 0.05 / 0.28.
 
 The response deliberately lives elsewhere: this module only decides which track is merging. What
 to do about it is radard's business, and what it does is hand the track to the planner as a
@@ -41,6 +45,20 @@ MIN_VLEAD = 4.0
 # noise, and that is precisely the merge worth catching early.
 RATE_WINDOW_S = 1.0
 MIN_SAMPLES = 3
+
+# ...and rate alone cannot tell a merge from a wobble. A car correcting its own lane position
+# moves inward at a perfectly respectable 0.3 m/s for half a second and then goes back. What it
+# never does is keep the ground it took, so the second gate is cumulative: how far in has this
+# track come from its own recent widest point, which a wobble resets and a merge only grows.
+#
+# There is room to measure it. The lateral estimate is quiet -- frame to frame it moves a p90 of
+# 0.026 m out to 35 m and 0.045 m beyond, so half a metre is more than ten times the noise.
+#
+# Measured over three drives this is free: precision goes 73%->89% and 54%->63%, false calls
+# 0.13->0.04 and 0.44->0.28 per minute, and the warning time does not move (1.7s and 1.3->1.4s).
+# 0.8 m was also tried and starts dropping real merges without buying more precision.
+PROGRESS_WINDOW_S = 3.0
+MIN_PROGRESS = 0.5
 
 # The three gates that make a merge a merge. Every one is tighter than CarrotPilot's equivalent,
 # because this fires a brake: a miss costs comfort, a false call costs trust.
@@ -70,16 +88,21 @@ class CutInDetector:
     self._release: dict[int, int] = {}     # track id -> frames since it last qualified
     self.track_id: int = -1                # the merging track, or -1
 
-  def _closing(self, tid: int, t: float, abs_d_path: float) -> float | None:
-    """Rate at which this track is closing on the lane centre, m/s. None until measurable."""
+  def _motion(self, tid: int, t: float, abs_d_path: float) -> tuple[float, float] | None:
+    """(closing m/s over the last second, ground taken over the last three). None until both
+    are measurable -- one trail serves both, since the rate is just its recent end."""
     trail = self._trail.setdefault(tid, deque())
     trail.append((t, abs_d_path))
-    while trail and t - trail[0][0] > RATE_WINDOW_S:
+    while trail and t - trail[0][0] > PROGRESS_WINDOW_S:
       trail.popleft()
-    span = t - trail[0][0]
-    if len(trail) < MIN_SAMPLES or span < RATE_WINDOW_S * 0.5:
+
+    recent = [(ts, dp) for ts, dp in trail if t - ts <= RATE_WINDOW_S]
+    span = t - recent[0][0] if recent else 0.0
+    if len(recent) < MIN_SAMPLES or span < RATE_WINDOW_S * 0.5:
       return None
-    return (trail[0][1] - abs_d_path) / span
+    closing = (recent[0][1] - abs_d_path) / span
+    progress = max(dp for _, dp in trail) - abs_d_path
+    return closing, progress
 
   def _qualifies(self, track, t: float, lead_d_rel: float) -> bool:
     if not track.measured or not (MIN_DREL < track.dRel < MAX_DREL) or track.vLead < MIN_VLEAD:
@@ -94,8 +117,12 @@ class CutInDetector:
     if not (half < abs_dp < OUTER_LANES * half):
       return False
 
-    closing = self._closing(track.identifier, t, abs_dp)
-    if closing is None or closing <= MIN_CLOSING:
+    motion = self._motion(track.identifier, t, abs_dp)
+    if motion is None:
+      return False
+    closing, progress = motion
+    # Coming in, having actually come in, and due to arrive soon. All three, or it is a wobble.
+    if closing <= MIN_CLOSING or progress <= MIN_PROGRESS:
       return False
     return (abs_dp - half) / closing < MAX_LANE_ENTRY_S
 
