@@ -18,6 +18,22 @@ PARAM_REFRESH_FRAMES = 50
 # alone would let a car that has only just moved out hand over a countdown that already ran.
 BLINDSPOT_REARM_S = 1.0
 
+# How long after committing a lane change the blindspot can still call it off.
+#
+# Once laneChangeStarting is entered there was no way out of it: the state only left when the
+# model said the move was finished, which on route 00000087 segment 13 took 5.6 s. Nothing was
+# re-checked in that time -- not the blindspot, not the target lane's nearest car -- so a vehicle
+# arriving alongside after the start had no way to stop anything. Traced from a real crossing:
+# the driver nudged right while a car in the right lane was moving left into the lane being
+# vacated, and the guard that would have caught it disappeared precisely because that car was
+# crossing (get_side_leads looks in a 1.8-5.4 m band, which a crossing car leaves).
+#
+# Aborting late would be its own hazard -- reversing out of a change already half made is worse
+# than finishing it -- so this only covers the beginning. At 60 mph a lane change takes 4-5 s to
+# cover 3.6 m, so one second in the car has moved about 0.7 m and is still inside its own lane:
+# returning to centre from there costs nothing. After that the move stands.
+LANE_CHANGE_ABORT_S = 1.0
+
 class DesireHelper:
   def __init__(self):
     self.lane_change_state = LaneChangeState.off
@@ -142,7 +158,18 @@ class DesireHelper:
       elif self.lane_change_state == LaneChangeState.laneChangeStarting:
         self.lane_change_timer += DT_MDL
 
-        if lane_change_prob < 0.02 and self.lane_change_timer >= LANE_CHANGE_START_TIME:
+        # Someone arrived alongside after we committed. Early enough that the car has barely
+        # moved, this goes back to waiting rather than carrying on into them.
+        started_blindspot = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
+                             (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
+        if started_blindspot and self.lane_change_timer < LANE_CHANGE_ABORT_S:
+          self.lane_change_state = LaneChangeState.preLaneChange
+          self.lane_change_timer = 0.0
+          # Do not let the abort hand back a countdown that has already run: the automatic start
+          # has to earn its delay again, or it would re-commit the moment the blindspot blinks.
+          self.auto_lane_change_timer = 0.0
+
+        elif lane_change_prob < 0.02 and self.lane_change_timer >= LANE_CHANGE_START_TIME:
           self.lane_change_timer = 0.0
           if one_blinker:
             self.lane_change_state = LaneChangeState.preLaneChange
