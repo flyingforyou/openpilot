@@ -24,6 +24,7 @@ from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
+from openpilot.selfdrive.controls.lib.overtake_block import OvertakeBlock
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, should_stop, smooth_value, get_curvature_from_plan
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.compile_modeld import (make_input_queues, make_split_input_queues,
@@ -469,6 +470,7 @@ def main(demo=False):
   prev_action = log.ModelDataV2.Action()
 
   DH = DesireHelper()
+  OB = OvertakeBlock()
 
   while True:
     # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
@@ -589,7 +591,12 @@ def main(demo=False):
       # is where left and right are already known; DesireHelper only learns the direction from
       # the blinker it is handed.
       lane_side, side_lead = side_evidence(modelv2_send.modelV2, sm['radarState'], sm['carState'])
-      DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, lane_side, side_lead)
+      # A vehicle we have just passed, which the camera has lost and the blind spot has not yet
+      # found. Fed here because this is where carState is already in hand each frame.
+      now = time.monotonic()
+      OB.update(sm['carState'].dasObjects, now, sm['carState'].vEgo)
+      DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, lane_side, side_lead,
+                OB.blocked(now))
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
 

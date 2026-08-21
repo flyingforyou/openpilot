@@ -75,18 +75,33 @@ class DesireHelper:
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
+  @staticmethod
+  def _occupied(carstate, overtaking, direction) -> bool:
+    """Is that side occupied -- seen by the blindspot, or known to be from an overtake."""
+    if direction == LaneChangeDirection.left:
+      return bool(carstate.leftBlindspot or overtaking[0])
+    if direction == LaneChangeDirection.right:
+      return bool(carstate.rightBlindspot or overtaking[1])
+    return False
+
   def _reset_auto(self) -> None:
     self.auto_lane_change_timer = 0.0
     self.auto_blocked_by_brake = False
     self.auto_already_changed = False
 
-  def update(self, carstate, lateral_active, lane_change_prob, lane_side=None, side_lead=None):
+  def update(self, carstate, lateral_active, lane_change_prob, lane_side=None, side_lead=None,
+             overtaking=(False, False)):
     """lane_side and side_lead describe the side the blinker points at, or are None when the
     caller has nothing to say -- in which case those gates simply do not apply.
 
     lane_side is (outer_line_prob, road_edge_distance_m); side_lead is that lane's nearest
     radar lead. Both are looked up by direction by the caller, which is the only place that
     knows left from right before this decides the direction itself.
+
+    `overtaking` is (left, right) from OvertakeBlock: a vehicle we have just passed that nothing
+    can currently see but which has not yet had time to fall behind us. It is treated exactly as
+    a blindspot rather than as its own concept, so both the start gate and the early abort get it
+    without either having to learn a second way of being told the lane is occupied.
     """
     self._read_params()
     v_ego = carstate.vEgo
@@ -120,8 +135,10 @@ class DesireHelper:
                          ((carstate.steeringTorque > 0 and self.lane_change_direction == LaneChangeDirection.left) or
                           (carstate.steeringTorque < 0 and self.lane_change_direction == LaneChangeDirection.right))
 
-        blindspot_detected = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
-                              (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
+        blindspot_detected = ((self._occupied(carstate, overtaking, LaneChangeDirection.left) and
+                               self.lane_change_direction == LaneChangeDirection.left) or
+                              (self._occupied(carstate, overtaking, LaneChangeDirection.right) and
+                               self.lane_change_direction == LaneChangeDirection.right))
 
         # Start on the blinker alone once it has been held long enough and everything the car
         # can see about that side says go. The delay is the core of it: a blinker is also what
@@ -160,8 +177,7 @@ class DesireHelper:
 
         # Someone arrived alongside after we committed. Early enough that the car has barely
         # moved, this goes back to waiting rather than carrying on into them.
-        started_blindspot = ((carstate.leftBlindspot and self.lane_change_direction == LaneChangeDirection.left) or
-                             (carstate.rightBlindspot and self.lane_change_direction == LaneChangeDirection.right))
+        started_blindspot = self._occupied(carstate, overtaking, self.lane_change_direction)
         if started_blindspot and self.lane_change_timer < LANE_CHANGE_ABORT_S:
           self.lane_change_state = LaneChangeState.preLaneChange
           self.lane_change_timer = 0.0
