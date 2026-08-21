@@ -19,9 +19,14 @@ and then ends by itself. It is not accurate -- but the direction it is wrong in 
 Measured over three drives it holds a side for a median 2.2 s, at most 10.2 s, and blocks
 somewhere around 10-14% of the driving time on a road with this much overtaking.
 
-What it cannot do is the other half of the problem. This only knows about vehicles we passed;
-one that overtakes *us* into the same place was never in front to be seen, and the radar is
-forward-only. That case stays invisible and this does not pretend otherwise.
+There is a second, simpler half. While the camera can still see a vehicle in that lane and it is
+close enough to be level with us, no inference is needed at all -- and the first version did not
+hold for it, so on the road the side only locked out once the vehicle had already disappeared,
+which is later than it should be. ALONGSIDE_DX covers that.
+
+What neither half can do is a vehicle that overtakes *us* into the same place. It was never in
+front to be seen, and the radar is forward-only. That case stays invisible and this does not
+pretend otherwise.
 """
 
 # Only vehicles lost close in are ones we are passing rather than ones that drove away ahead.
@@ -43,6 +48,13 @@ MAX_BLOCK_S = 8.0
 # updates. DAS_object gives each group about 6.7 Hz.
 LOST_AFTER_S = 0.6
 
+# Close enough that moving over would be moving into it, while the camera can still see it. The
+# camera stops reporting the next lane at about 4-5 m, so this covers from there to just ahead --
+# and no further, because a vehicle 15 m up the next lane is something you change lanes behind,
+# not into. Measured cost of holding on it: 1.6-7.6% of a drive on the left, 4.3-4.8% on the
+# right, against 5-18% at 15 m and 7-28% at 20 m, which would be refusing ordinary lane changes.
+ALONGSIDE_DX = 10.0
+
 GROUP_LEFT, GROUP_RIGHT = 1, 2
 SIDES = {GROUP_LEFT: 'left', GROUP_RIGHT: 'right'}
 
@@ -53,16 +65,28 @@ class OvertakeBlock:
   def __init__(self) -> None:
     self._seen: dict[tuple[int, int], tuple[float, float, float]] = {}   # key -> (t, dx, vx_rel)
     self._until: dict[str, float] = {'left': 0.0, 'right': 0.0}
+    self._alongside: dict[str, bool] = {'left': False, 'right': False}
 
   def update(self, das_objects, t: float, v_ego: float) -> None:
     if v_ego <= 0.0:
       self.reset()
       return
 
+    self._alongside = {'left': False, 'right': False}
     for obj in das_objects or []:
       group = int(obj.group)
-      if group in SIDES:
-        self._seen[(group, int(obj.objId))] = (t, float(obj.dx), float(obj.vxRel))
+      if group not in SIDES:
+        continue
+      dx = float(obj.dx)
+      self._seen[(group, int(obj.objId))] = (t, dx, float(obj.vxRel))
+      # No inference needed while it is plainly visible and level with us.
+      if 0.0 < dx < ALONGSIDE_DX:
+        side = SIDES[group]
+        self._alongside[side] = True
+        # Carry the hold across the gap between the last sighting and noticing it has gone.
+        # Without this the side comes free for up to LOST_AFTER_S at exactly the wrong moment:
+        # the vehicle has just drawn level, which is when the camera stops reporting it.
+        self._until[side] = max(self._until[side], t + LOST_AFTER_S)
 
     for key in list(self._seen):
       last_t, dx, vx_rel = self._seen[key]
@@ -79,9 +103,11 @@ class OvertakeBlock:
       self._until[side] = max(self._until[side], t + hold)
 
   def blocked(self, t: float) -> tuple[bool, bool]:
-    """(left, right) -- whether a vehicle we passed is still expected to be alongside."""
-    return t < self._until['left'], t < self._until['right']
+    """(left, right) -- a vehicle level with us on that side, seen or inferred."""
+    return (self._alongside['left'] or t < self._until['left'],
+            self._alongside['right'] or t < self._until['right'])
 
   def reset(self) -> None:
     self._seen.clear()
     self._until = {'left': 0.0, 'right': 0.0}
+    self._alongside = {'left': False, 'right': False}

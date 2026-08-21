@@ -14,6 +14,11 @@ in the target lane is invisible to every check here.
 """
 import numpy as np
 
+from openpilot.cereal import log
+
+LaneChangeState = log.LaneChangeState
+LaneChangeDirection = log.LaneChangeDirection
+
 # A lane is ~3.27 m on this car's roads (measured median). Evidence that another one exists on a
 # side: the model draws the line beyond that side's lane line, or the road edge is far enough
 # out to hold one. Either alone is enough -- an exit lane often has no outer paint, and a
@@ -73,3 +78,31 @@ def side_lead_unsafe(lead, v_ego: float) -> bool:
 
   # Something sitting alongside at the same speed still has to be given room.
   return d_rel < min_gap and v_rel < 1.0
+
+
+def target_lane_lead(meta, lead_left, lead_right, lead_two):
+  """The vehicle a lane change is moving in behind, or None to leave the plan alone.
+
+  Until the change completes the target lane's vehicle is not a lead, so nothing anticipates it: a
+  move in behind a lorry is made at the speed we were already doing and braked for afterwards.
+  Measured at the moments lane changes began, 3 of 7 had a slower vehicle ahead in that lane, a
+  median 2 m/s slower at 16-37 m -- a gap that closes in 8-18 s.
+
+  Only while a change is being made or asked for. Outside that the adjacent lane is none of the
+  planner's business, and treating it as one would slow the car for traffic it is not going behind.
+  Returns None unless it is also the more binding of the two, so a nearer cut-in is not displaced.
+  """
+  if meta.laneChangeState == LaneChangeState.off:
+    return None
+  if meta.laneChangeDirection == LaneChangeDirection.left:
+    target = lead_left
+  elif meta.laneChangeDirection == LaneChangeDirection.right:
+    target = lead_right
+  else:
+    return None
+
+  if target is None or not target.present:
+    return None
+  if lead_two is not None and lead_two.present and lead_two.dRel <= target.dRel:
+    return None
+  return target

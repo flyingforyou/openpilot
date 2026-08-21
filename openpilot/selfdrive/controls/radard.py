@@ -13,6 +13,7 @@ from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
 from openpilot.selfdrive.controls.lib.cut_in import DEFAULT_HALF_WIDTH, VEHICLE_HALF_WIDTH, CutInDetector
+from openpilot.selfdrive.controls.lib.lane_change_guards import target_lane_lead
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -714,6 +715,18 @@ class RadarD:
     # them, and the lane change gate wants the nearest vehicle over there whether or not the
     # model has an opinion about it.
     self.radar_state.leadLeft, self.radar_state.leadRight = get_side_leads(self.tracks)
+
+    # Moving in behind something slower should be slowed for on the way over, not after arriving.
+    # Until the change completes the target lane's vehicle is not a lead, so nothing anticipates
+    # it: measured at the moment lane changes began, 3 of 7 had a slower vehicle ahead in that
+    # lane, a median 2 m/s slower at 16-37 m -- a gap that closes in 8-18 s and is then braked for.
+    #
+    # It goes in as leadTwo, the same slot the cut-in detector uses, because that is the one the
+    # MPC already constrains against without disturbing the lead we are still following.
+    target = target_lane_lead(sm['modelV2'].meta, self.radar_state.leadLeft,
+                              self.radar_state.leadRight, self.radar_state.leadTwo)
+    if target is not None:
+      self.radar_state.leadTwo = target
 
   def match_das_objects(self, car_state) -> tuple[dict[int, float], int]:
     """Pair the factory camera's objects with our radar tracks, by distance.

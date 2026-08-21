@@ -7,6 +7,7 @@ precisely because it fired on only 32-66% of overtakes, leaving a gate that neve
 import pytest
 
 from openpilot.selfdrive.controls.lib.overtake_block import (
+  ALONGSIDE_DX,
   CLEAR_DX,
   GROUP_LEFT,
   GROUP_RIGHT,
@@ -102,17 +103,19 @@ class TestDoesNotHold:
     t = pass_and_lose(ob, vx_rel=-(MIN_CLOSING / 2))
     assert ob.blocked(t) == (False, False)
 
-  def test_a_vehicle_still_in_view(self):
-    """Nothing is inferred while the camera can still see it -- it is not alongside yet."""
+  def test_a_vehicle_further_up_the_next_lane(self):
+    """Something you change lanes behind, not into. Holding on this refuses ordinary moves."""
     ob = OvertakeBlock()
     for i in range(40):
-      ob.update([Obj(GROUP_LEFT, 8.0)], i * DT, 25.0)
+      ob.update([Obj(GROUP_LEFT, ALONGSIDE_DX + 5.0)], i * DT, 25.0)
     assert ob.blocked(40 * DT) == (False, False)
 
   def test_a_momentary_dropout_is_not_a_loss(self):
+    """Measured beyond ALONGSIDE_DX, so nothing is holding it on sight -- this is only about the
+    inferred hold, which a gap in reporting must not start."""
     ob = OvertakeBlock()
     for i in range(10):
-      ob.update([Obj(GROUP_LEFT, 8.0)], i * DT, 25.0)
+      ob.update([Obj(GROUP_LEFT, ALONGSIDE_DX + 2.0)], i * DT, 25.0)
     for i in range(10, 10 + int(LOST_AFTER_S / DT) - 2):
       ob.update([], i * DT, 25.0)
     assert ob.blocked(20 * DT) == (False, False)
@@ -121,6 +124,47 @@ class TestDoesNotHold:
     ob = OvertakeBlock()
     t = pass_and_lose(ob, v_ego=0.0)
     assert ob.blocked(t) == (False, False)
+
+
+class TestStillVisible:
+  """The half that needs no inference at all. Without it the side only locked out once the
+  vehicle had vanished from the camera, which on the road meant the hold arrived after the
+  moment it was for."""
+
+  def test_a_vehicle_level_with_us_holds_immediately(self):
+    ob = OvertakeBlock()
+    for i in range(10):
+      ob.update([Obj(GROUP_LEFT, ALONGSIDE_DX - 2.0)], i * DT, 25.0)
+    assert ob.blocked(10 * DT) == (True, False)
+
+  def test_no_waiting_for_it_to_disappear(self):
+    """It holds on the very first frame it is seen that close."""
+    ob = OvertakeBlock()
+    ob.update([Obj(GROUP_RIGHT, 5.0)], 0.0, 25.0)
+    assert ob.blocked(0.0) == (False, True)
+
+  def test_and_releases_when_it_is_gone_and_no_overtake_was_inferred(self):
+    """A vehicle that pulls ahead rather than falling back leaves nothing behind it."""
+    ob = OvertakeBlock()
+    for i in range(10):
+      ob.update([Obj(GROUP_LEFT, 5.0, vx_rel=+3.0)], i * DT, 25.0)
+    t = 10 * DT
+    while t < 10 * DT + LOST_AFTER_S + 0.2:
+      ob.update([], t, 25.0)
+      t += DT
+    assert ob.blocked(t) == (False, False)
+
+  def test_it_hands_over_to_the_inferred_hold(self):
+    """Seen at close range, then lost while being passed: the hold must not lapse in between."""
+    ob = OvertakeBlock()
+    for i in range(10):
+      ob.update([Obj(GROUP_LEFT, 6.0, vx_rel=-3.0)], i * DT, 25.0)
+    assert ob.blocked(10 * DT)[0] is True
+    t = 10 * DT
+    while t < 10 * DT + LOST_AFTER_S + 0.2:
+      ob.update([], t, 25.0)
+      assert ob.blocked(t)[0] is True, f"the side came free at t={t:.2f}"
+      t += DT
 
 
 class TestWindow:
