@@ -94,8 +94,8 @@ def main(paths):
   for key, label in ((GROUP_LEFT, 'left'), (GROUP_RIGHT, 'right')):
     a = np.array(near[key])
     if a.size:
-      print(f"  {label:5} n={a.size:6}  min {a.min():5.1f} m  p1 {np.percentile(a, 1):5.1f}  "
-            f"p10 {np.percentile(a, 10):5.1f}  median {np.median(a):5.1f}")
+      tail = f"p1 {np.percentile(a, 1):5.1f}  p10 {np.percentile(a, 10):5.1f}  median {np.median(a):5.1f}"
+      print(f"  {label:5} n={a.size:6}  min {a.min():5.1f} m  {tail}")
 
   print(f"\nwith a camera-reported vehicle inside {ALONGSIDE_M:.0f} m in that lane:")
   if not rows:

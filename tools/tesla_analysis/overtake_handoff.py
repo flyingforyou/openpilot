@@ -106,22 +106,22 @@ def main(paths):
       misses[side] += 1
 
   print("1. after the camera loses it, does the blind spot fire?")
-  print(f"   {found} of {len(losses)}  ({100 * found / len(losses):.0f}%)"
-        f"   never fired: {dict(misses)}")
+  pct = f"({100 * found / len(losses):.0f}%)"
+  print(f"   {found} of {len(losses)}  {pct}   never fired: {dict(misses)}")
 
   if delays:
     d = np.array(delays)
-    print(f"\n2. how long afterwards")
-    print(f"   median {np.median(d):.1f}s   p10 {np.percentile(d, 10):.1f}   "
-          f"p90 {np.percentile(d, 90):.1f}   max {d.max():.1f}")
+    print("\n2. how long afterwards")
+    spread = f"p10 {np.percentile(d, 10):.1f}   p90 {np.percentile(d, 90):.1f}   max {d.max():.1f}"
+    print(f"   median {np.median(d):.1f}s   {spread}")
 
     p = np.array([pr for pr, (tl, s, _, _) in zip(predicted, losses, strict=True)
                   if any(tl <= e <= tl + WATCH_S for e in edges[s])])
     err = d - p
-    print(f"\n3. does the closing speed predict it?")
+    print("\n3. does the closing speed predict it?")
     print(f"   predicted median {np.median(p):.1f}s against measured {np.median(d):.1f}s")
-    print(f"   error   median {np.median(err):+.1f}s   p10 {np.percentile(err, 10):+.1f}   "
-          f"p90 {np.percentile(err, 90):+.1f}")
+    err_spread = f"p10 {np.percentile(err, 10):+.1f}   p90 {np.percentile(err, 90):+.1f}"
+    print(f"   error   median {np.median(err):+.1f}s   {err_spread}")
     print(f"   within 1s of prediction on {100 * np.mean(np.abs(err) < 1.0):.0f}% of them")
 
   # The other way to use this: do not wait for the blind spot at all. Take the last distance and
@@ -131,13 +131,13 @@ def main(paths):
   print(f"\n-- blocking for as long as it takes the vehicle to clear {abs(CLEAR_DX):.0f} m behind --")
   wins = np.array([(dx - CLEAR_DX) / abs(vx) for (_, _, dx, vx) in losses])
   drive_s = max(e for side in edges.values() for e in side) if any(edges.values()) else 0.0
-  print(f"  window   median {np.median(wins):5.1f}s  p90 {np.percentile(wins, 90):5.1f}  max {wins.max():5.1f}")
+  win_spread = f"p90 {np.percentile(wins, 90):5.1f}  max {wins.max():5.1f}"
+  print(f"  window   median {np.median(wins):5.1f}s  {win_spread}")
   for cap in (5.0, 8.0, 12.0):
     capped = np.minimum(wins, cap)
     over = 100 * np.mean(wins > cap)
-    print(f"  capped at {cap:4.1f}s: median {np.median(capped):4.1f}s  total blocked "
-          f"{capped.sum():6.0f}s over {drive_s / 60:.0f} min  ({100 * capped.sum() / max(drive_s, 1):4.1f}% of the drive)"
-          f"   cap hit on {over:.0f}%")
+    total = f"{capped.sum():6.0f}s over {drive_s / 60:.0f} min  ({100 * capped.sum() / max(drive_s, 1):4.1f}% of the drive)"
+    print(f"  capped at {cap:4.1f}s: median {np.median(capped):4.1f}s  total blocked {total}   cap hit on {over:.0f}%")
 
 
 if __name__ == '__main__':
