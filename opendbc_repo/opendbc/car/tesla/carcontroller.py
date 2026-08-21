@@ -104,7 +104,7 @@ class CarController(CarControllerBase):
 
   @staticmethod
   def _ic_lead(lead, path_c0):
-    if lead is None or not lead.status:
+    if lead is None or not lead.present:
       return None
     return (
       float(np.clip(lead.dRel, 0.0, 126.0)),

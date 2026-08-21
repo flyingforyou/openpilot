@@ -35,17 +35,21 @@ class TeslaCANRaven:
 
   def create_ic_leads(self, lead1, lead2):
     """Create Unity-style display-only group-0 0x309 from openpilot radar leads."""
+    # An unused slot must be SATURATED, not zeroed: the factory pins an empty slot's distance to
+    # the top of its 8-bit range (127.5 m), and that is how the cluster knows the slot holds no
+    # object. Leaving it at 0 draws a phantom car sitting on the bumper. See das_object.py.
+    no_object_dx = 127.5
     values = {
       "DAS_objectId": 0,
       "DAS_objVehType": 0,
       "DAS_objVehRelevantForControl": 0,
-      "DAS_objVehDx": 0,
+      "DAS_objVehDx": no_object_dx,
       "DAS_objVehVxRel": 0,
       "DAS_objVehDy": 0,
       "DAS_objVehId": 0,
       "DAS_objVeh2Type": 0,
       "DAS_objVeh2RelevantForControl": 0,
-      "DAS_objVeh2Dx": 0,
+      "DAS_objVeh2Dx": no_object_dx,
       "DAS_objVeh2VxRel": 0,
       "DAS_objVeh2Dy": 0,
       "DAS_objVeh2Id": 0,
