@@ -595,10 +595,13 @@ def main(demo=False):
       # found. Fed here because this is where carState is already in hand each frame.
       now = time.monotonic()
       OB.update(sm['carState'].dasObjects, now, sm['carState'].vEgo)
+      overtake_hold = OB.blocked(now)
       DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, lane_side, side_lead,
-                OB.blocked(now))
+                overtake_hold)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
+      modelv2_send.modelV2.meta.overtakeHoldLeft = overtake_hold[0]
+      modelv2_send.modelV2.meta.overtakeHoldRight = overtake_hold[1]
 
       fill_driving_model_data(drivingdata_send, modelv2_send)
       fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, extrinsics_calibration_seen)

@@ -1159,6 +1159,12 @@ struct ModelDataV2 {
     laneChangeState @8 :LaneChangeState;
     laneChangeDirection @9 :LaneChangeDirection;
 
+    # A vehicle we have just overtaken that nothing can currently see: past the range the factory
+    # camera reports the next lane at, and not yet far enough back for the blind spot. Inferred
+    # from its last distance and closing speed, so it is a belief rather than a measurement --
+    # published because the lane change is being held on it and the driver is owed the reason.
+    overtakeHoldLeft @10 :Bool;
+    overtakeHoldRight @11 :Bool;
 
     deprecated :group {
       brakeDisengageProb @2 :Float32;

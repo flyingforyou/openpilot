@@ -175,8 +175,12 @@ class ModelRenderer(Widget):
     # Update state
     self._experimental_mode = sm['selfdriveState'].experimentalMode
     car_state = sm['carState'] if sm.valid['carState'] else None
-    self._left_blindspot = bool(car_state and car_state.leftBlindspot)
-    self._right_blindspot = bool(car_state and car_state.rightBlindspot)
+    # An overtake hold is a lane that is occupied as far as the lane change is concerned, so it
+    # flashes the same way. Drawing it differently would ask the driver to learn a second signal
+    # for a side they cannot use either way.
+    meta = sm['modelV2'].meta
+    self._left_blindspot = bool((car_state and car_state.leftBlindspot) or meta.overtakeHoldLeft)
+    self._right_blindspot = bool((car_state and car_state.rightBlindspot) or meta.overtakeHoldRight)
 
     extrinsics_calibration = sm['extrinsicsCalibration']
     self._path_offset_z = extrinsics_calibration.height[0] if extrinsics_calibration.height else HEIGHT_INIT[0]
