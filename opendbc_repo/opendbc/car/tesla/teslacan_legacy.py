@@ -26,6 +26,53 @@ class TeslaCANRaven:
     ret += sum(dat)
     return ret & 0xFF
 
+  def create_ic_lanes(self, base_values, overrides=None):
+    """Clone factory AP1 0x239 and replace only the path/lane fields openpilot owns."""
+    values = dict(base_values)
+    if overrides:
+      values.update(overrides)
+    return self.packers[CANBUS.party].make_can_msg("DAS_lanes", CANBUS.party, values)
+
+  def create_ic_leads(self, lead1, lead2):
+    """Create Unity-style display-only group-0 0x309 from openpilot radar leads."""
+    values = {
+      "DAS_objectId": 0,
+      "DAS_objVehType": 0,
+      "DAS_objVehRelevantForControl": 0,
+      "DAS_objVehDx": 0,
+      "DAS_objVehVxRel": 0,
+      "DAS_objVehDy": 0,
+      "DAS_objVehId": 0,
+      "DAS_objVeh2Type": 0,
+      "DAS_objVeh2RelevantForControl": 0,
+      "DAS_objVeh2Dx": 0,
+      "DAS_objVeh2VxRel": 0,
+      "DAS_objVeh2Dy": 0,
+      "DAS_objVeh2Id": 0,
+    }
+    if lead1 is not None:
+      values.update({"DAS_objVehType": 2, "DAS_objVehDx": lead1[0],
+                     "DAS_objVehVxRel": lead1[1], "DAS_objVehDy": lead1[2], "DAS_objVehId": 1})
+    if lead2 is not None:
+      values.update({"DAS_objVeh2Type": 2, "DAS_objVeh2Dx": lead2[0],
+                     "DAS_objVeh2VxRel": lead2[1], "DAS_objVeh2Dy": lead2[2], "DAS_objVeh2Id": 2})
+    return self.packers[CANBUS.party].make_can_msg("DAS_object", CANBUS.party, values)
+
+  def create_ic_status(self, base_values, active):
+    """Clone factory AP1 0x399, preserve its counter/status bits, and change the IC AP mode.
+
+    When active the IC is switched to ACTIVE_1 (3) -- safer than Unity's old NAV=5. When not
+    active the factory autopilotStatus is left untouched: this is the passthrough re-send that
+    keeps the cluster alive while the feature is off (panda has blocked the factory copy).
+    """
+    values = dict(base_values)
+    if active:
+      values["autopilotStatus"] = 3  # ACTIVE_1
+    values["DAS_statusChecksum"] = 0
+    data = self.packers[CANBUS.party].make_can_msg("AutopilotStatus", CANBUS.party, values)[1]
+    values["DAS_statusChecksum"] = self.checksum(0x399, data[:7])
+    return self.packers[CANBUS.party].make_can_msg("AutopilotStatus", CANBUS.party, values)
+
   def create_steering_control(self, counter, angle, enabled):
     values = {
       "DAS_steeringControlCounter": counter,

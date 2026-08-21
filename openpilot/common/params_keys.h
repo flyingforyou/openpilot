@@ -260,6 +260,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // emulating the cruise stalk. DAS_setSpeed does not reach that display at all -- the DI
     // owns it and only STW_ACTN_RQ moves it. Off by default: it writes the stalk.
     {"TeslaSyncClusterSpeed", {PERSISTENT, BOOL, "0"}},
+    // Tesla Unity-style AP1 instrument-cluster integration (HW1 only). While engaged, openpilot
+    // takes over the factory 0x239 DAS_lanes and 0x399 AutopilotStatus frames -- keeping their
+    // rolling counters -- so the cluster draws openpilot's path in the AP-active view, and adds
+    // its radar leads to the 0x309 object stream. Off by default: it changes cluster-side CAN.
+    {"TeslaICIntegration", {PERSISTENT, BOOL, "0"}},
     {"TeslaCoopSteer", {PERSISTENT, BOOL, "0"}},
     {"TeslaLastGapAdjust", {PERSISTENT, INT, "0"}},
     {"TeslaStockAutopark", {PERSISTENT, BOOL, "0"}},

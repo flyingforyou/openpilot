@@ -257,6 +257,13 @@ class CarState(CarStateBase):
     self.stock_autopark_frames = 0
     self.stock_autopark_offered = False
     self.das_control = None
+    # Factory AP-side visualization frames. When IC integration is enabled, carcontroller
+    # modifies these and panda forwards only the modified copy to the party bus. Keeping the
+    # original counter is important when control hands back to the stock AP.
+    self.autopilot_status = None
+    self.autopilot_status_nanos = 0
+    self.das_lanes = None
+    self.das_lanes_nanos = 0
     # The factory's latest DAS_object frame per group, kept only when the cluster workaround is on.
     # (group, object id) -> [frames since last seen, DasVehicle]
     self.das_vehicles: dict[tuple[int, int], list] = {}
@@ -449,6 +456,16 @@ class CarState(CarStateBase):
     autopark_offered = False
     if self.CP.carFingerprint != CAR.TESLA_MODEL_S_HW3:
       autopilot_status = cp_ap_party.vl["AutopilotStatus"]
+      if self.CP.flags & TeslaFlags.IC_INTEGRATION:
+        status_nanos = cp_ap_party.ts_nanos["AutopilotStatus"]["DAS_statusCounter"]
+        if status_nanos != 0:
+          self.autopilot_status = dict(autopilot_status)
+          self.autopilot_status_nanos = status_nanos
+        lanes = cp_ap_party.vl["DAS_lanes"]  # also lazy-registers 0x239
+        lanes_nanos = cp_ap_party.ts_nanos["DAS_lanes"]["DAS_lanesCounter"]
+        if lanes_nanos != 0:
+          self.das_lanes = dict(lanes)
+          self.das_lanes_nanos = lanes_nanos
       autopark_offered = (int(autopilot_status["DAS_autoparkReady"]) == 1 or
                           int(autopilot_status["DAS_autoparkWaitingForBrake"]) == 1)
 

@@ -248,6 +248,7 @@ class TeslaSafetyFlags(IntFlag):
   FLAG_HW3 = 32
   STOCK_AUTOPARK = 64
   SYNC_CLUSTER_SPEED = 256
+  IC_INTEGRATION = 512
 
 
 class TeslaFlags(IntFlag):
@@ -258,6 +259,7 @@ class TeslaFlags(IntFlag):
   # claims 1, so the two enums have to be read as one bit space.
   COOP_STEER = 8
   SYNC_CLUSTER_SPEED = 32
+  IC_INTEGRATION = 64
 
 
 DBC = CAR.create_dbc_map()

@@ -35,6 +35,11 @@ class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
     self.apply_angle_last = 0
+    self.ic_model = None
+    self.ic_radar = None
+    self.ic_enabled = False
+    self.ic_last_lanes_nanos = 0
+    self.ic_last_status_nanos = 0
     # Follow the driver's hands rather than letting go of the wheel. Off unless opted in.
     self.coop_steering = bool(CP.flags & TeslaFlags.COOP_STEER) and CP.carFingerprint in LEGACY_CARS
     self.coop_steer = CoopSteeringCarController()
@@ -59,6 +64,83 @@ class CarController(CarControllerBase):
       self.tesla_can = TeslaCANRaven(self.packers)
       from opendbc.car.tesla.interface import CarInterface
       self.VM = VehicleModel(CarInterface.get_non_essential_params("TESLA_MODEL_S_HW3"))
+
+  def _ic_lane_overrides(self):
+    """Convert modelV2 path to the AP1 IC cubic used by Tesla Unity."""
+    model = self.ic_model
+    if model is None or len(model.position.x) < 6 or len(model.position.y) < 6:
+      return {}
+
+    x = np.asarray(model.position.x, dtype=float)
+    y = np.asarray(model.position.y, dtype=float)
+    n = min(len(x), len(y))
+    x, y = x[:n], y[:n]
+    valid = np.isfinite(x) & np.isfinite(y) & (x >= 0.0) & (x <= 100.0)
+    if np.count_nonzero(valid) < 6:
+      return {}
+
+    try:
+      coefs = np.polyfit(x[valid], y[valid], 3)
+    except (ValueError, np.linalg.LinAlgError):
+      return {}
+
+    # Unity's IC_LANE_SCALE was 0.5: C2 gets 2^2 and C3 gets 2^3. C1 was
+    # deliberately suppressed to keep the cluster path stable/centered.
+    probs = list(model.laneLineProbs)
+    return {
+      "DAS_leftLaneExists": int(len(probs) > 1 and probs[1] > 0.45),
+      "DAS_rightLaneExists": int(len(probs) > 2 and probs[2] > 0.45),
+      "DAS_virtualLaneWidth": 4.0,
+      "DAS_virtualLaneViewRange": 50.0,
+      "DAS_virtualLaneC0": float(np.clip(coefs[3], -3.5, 3.5)),
+      "DAS_virtualLaneC1": 0.0,
+      "DAS_virtualLaneC2": float(np.clip(coefs[1] * 4.0, -0.0025, 0.0025)),
+      "DAS_virtualLaneC3": float(np.clip(coefs[0] * 8.0, -3.0e-5, 3.0e-5)),
+      "DAS_leftLineUsage": 2 if len(probs) > 1 and probs[1] > 0.45 else 0,
+      "DAS_rightLineUsage": 2 if len(probs) > 2 and probs[2] > 0.45 else 0,
+      "DAS_leftFork": 1 if len(probs) > 0 and probs[0] > 0.25 else 0,
+      "DAS_rightFork": 1 if len(probs) > 3 and probs[3] > 0.25 else 0,
+    }
+
+  @staticmethod
+  def _ic_lead(lead, path_c0):
+    if lead is None or not lead.status:
+      return None
+    return (
+      float(np.clip(lead.dRel, 0.0, 126.0)),
+      float(np.clip(int(lead.vRel), -30, 26)),
+      float(np.clip(path_c0 - lead.yRel, -22.05, 22.4)),
+    )
+
+  def update_ic(self, CC, CS):
+    if not (self.CP.flags & TeslaFlags.IC_INTEGRATION) or not CC.enabled:
+      return []
+    if self.CP.carFingerprint not in (CAR.TESLA_MODEL_S_HW1, CAR.TESLA_MODEL_X_HW1):
+      return []
+
+    # Panda always blocks the factory 0x239/0x399 while engaged, so openpilot must always re-send
+    # them to keep the cluster alive -- even when the feature is off, where it re-sends the factory
+    # content untouched (passthrough). ic_enabled decides only whether the path/status/leads carry
+    # openpilot's data, and it is a live switch so it can be flipped mid-drive from /live.
+    on = self.ic_enabled
+    sends = []
+    new_lane_frame = CS.das_lanes is not None and CS.das_lanes_nanos != self.ic_last_lanes_nanos
+    send_leads = on and self.frame % 10 == 0 and self.ic_radar is not None
+    lane_overrides = self._ic_lane_overrides() if (on and (new_lane_frame or send_leads)) else {}
+
+    if new_lane_frame:
+      sends.append(self.tesla_can.create_ic_lanes(CS.das_lanes, lane_overrides))
+      self.ic_last_lanes_nanos = CS.das_lanes_nanos
+
+    if CS.autopilot_status is not None and CS.autopilot_status_nanos != self.ic_last_status_nanos:
+      sends.append(self.tesla_can.create_ic_status(CS.autopilot_status, on))
+      self.ic_last_status_nanos = CS.autopilot_status_nanos
+
+    if send_leads:
+      path_c0 = float(lane_overrides.get("DAS_virtualLaneC0", 0.0))
+      sends.append(self.tesla_can.create_ic_leads(self._ic_lead(self.ic_radar.leadOne, path_c0),
+                                                  self._ic_lead(self.ic_radar.leadTwo, path_c0)))
+    return sends
 
   def update_cluster_speed(self, CC, CS):
     """Nudge the DI's own setpoint toward the speed openpilot is targeting, via the stalk.
@@ -187,6 +269,12 @@ class CarController(CarControllerBase):
     # frames straight through, so openpilot must stay off the id entirely -- not even a cancel.
     # Interleaving two counters on it is what the car reads as a fault, taking TACC and Autopilot
     # down with it. Cancelling is the driver's job here, via the stalk.
+
+    # Tesla Unity-style IC integration: replace AP-side 0x239/0x399 with copies that keep the
+    # factory rolling counters but carry openpilot's path/AP-active visualization. 0x309 stays
+    # additive, matching the existing cluster-object workaround and preserving factory side cars.
+    if self.CP.flags & TeslaFlags.IC_INTEGRATION:
+      can_sends += self.update_ic(CC, CS)
 
     # Put the cars back on the cluster. Tesla's 2026.26.1 update left AP1 clusters drawing TRUCK
     # and MOTORCYCLE but not CAR, and CAR is most of the traffic, so the display went nearly

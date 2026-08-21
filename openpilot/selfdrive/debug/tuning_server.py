@@ -413,6 +413,22 @@ SETTINGS = {
             "레버를 쓰는 기능이라 직접 켜서 쓰시게 했습니다. panda 재플래시가 필요합니다.",
     "options": [(0, "사용 안 함 (기본)"), (1, "사용")],
   },
+  "TeslaICIntegration": {
+    "label": "계기판 차선·AP 표시 (HW1)", "type": "bool",
+    "help": "engage 중에 openpilot이 계기판을 순정 오토파일럿처럼 그립니다 — 자기 경로를 차선으로, "
+            "AP-활성 화면(점선 차선)으로, 레이더 앞차를 물체로 표시합니다."
+            "<br><br><b>어떻게</b> — 순정 AP가 내보내는 <code>0x239 DAS_lanes</code>와 <code>0x399 "
+            "AutopilotStatus</code> 프레임을 panda가 가로채고, carcontroller가 <b>같은 롤링 카운터</b>를 "
+            "유지한 채 차선 기하는 모델 경로로, 상태는 AP-활성(ACTIVE_1)으로 바꿔 다시 내보냅니다. "
+            "앞차는 <code>0x309 DAS_object</code>에 additive로 얹습니다(순정 물체 유지)."
+            "<br><br>해제하면 panda가 블록을 풀어 순정 화면이 그대로 돌아옵니다. 조향·롱 알고리즘은 "
+            "건드리지 않습니다."
+            "<br><br><b>기본 꺼짐 · HW1 전용</b> — panda 쪽은 HW1에서 항상 켜져 있어(engage 중 openpilot이 "
+            "0x239/0x399를 소유), <b>이 스위치는 재시작·재플래시 없이 즉시 반영</b>됩니다. 끄면 팩토리 "
+            "프레임 내용을 그대로 재송신하므로 계기판은 순정과 동일하게 보입니다(트럭 표시처럼 engage 중엔 "
+            "openpilot 경유). 켜면 차선·상태·앞차를 openpilot 데이터로 바꿔 그립니다.",
+    "options": [(0, "사용 안 함 (기본)"), (1, "사용")],
+  },
   "TeslaStockAutopark": {
     "label": "순정 오토파크 허용", "type": "bool",
     "help": "openpilot이 해제된 동안 순정 자동주차 모듈이 차를 몰 수 있게 버스를 넘겨줍니다. "

@@ -66,7 +66,7 @@ class Car:
 
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
-    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents'])
+    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'modelV2', 'radarState'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'radarTracks'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -150,6 +150,22 @@ class Car:
       for cfg in self.CP.safetyConfigs:
         if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
           cfg.safetyParam |= TeslaSafetyFlags.SYNC_CLUSTER_SPEED.value
+
+    # Tesla Unity-style AP1 instrument-cluster integration (HW1 only). The panda side -- permit
+    # openpilot's cluster frames and block the factory's while engaged -- is set UNCONDITIONALLY
+    # so the feature never needs a reflash or even a restart to flip. Whenever engaged, openpilot
+    # owns 0x239/0x399 and re-sends them keeping the factory rolling counter; whether it rewrites
+    # the path/status (feature on) or re-sends the factory content untouched (off) is the live
+    # TeslaICIntegration switch, read each cycle in controls_update. This mirrors the DAS_object
+    # cluster workaround, which already routes cluster frames through openpilot every drive.
+    if self.CP.brand == "tesla" and not self.CP.passive:
+      for cfg in self.CP.safetyConfigs:
+        if (cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy and
+            cfg.safetyParam & TeslaSafetyFlags.FLAG_HW1.value):
+          cfg.safetyParam |= TeslaSafetyFlags.IC_INTEGRATION.value
+          self.CP.flags |= TeslaFlags.IC_INTEGRATION.value
+    self._ic_frame = 0
+    self._ic_enabled = self.params.get_bool("TeslaICIntegration")
 
     # Let the stock HW1 autopark module drive while openpilot is disengaged. Panda ignores the
     # flag on anything but teslaLegacy HW1, but the toggle is only meaningful there anyway.
@@ -275,6 +291,16 @@ class Car:
       self.params.put_bool("ControlsReady", True)
 
     if self.sm.all_alive(['carControl']):
+      # modelV2/radarState are display-only inputs for the AP1 stock instrument cluster.
+      # Keep them local to the Tesla controller instead of extending CarControl just for HUD data.
+      if self.CP.flags & TeslaFlags.IC_INTEGRATION.value and self.CI.CC is not None:
+        self.CI.CC.ic_model = self.sm['modelV2']
+        self.CI.CC.ic_radar = self.sm['radarState']
+        # Live switch, so it can be toggled from /live without a restart. Re-read at ~2 Hz.
+        self._ic_frame += 1
+        if self._ic_frame % 50 == 0:
+          self._ic_enabled = self.params.get_bool("TeslaICIntegration")
+        self.CI.CC.ic_enabled = self._ic_enabled
       # send car controls over can
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos)
