@@ -149,3 +149,67 @@ PYTHONPATH=. python3 tools/replay/republish_route.py /data/tmp/w.pkl --loop --bl
 Without the trailing offset, `extract_ui_window.py` picks the first window where openpilot is
 engaged *and* has a lead. That is right for checking the chevron and wrong for a traffic light,
 which by definition has no lead — the search runs straight past the moment you wanted.
+
+## Building replay on the device
+
+It is not in the default build here. `SConstruct` puts `tools/replay` behind
+`GetOption('extras')`, which defaults off on comma hardware with no flag to turn it back on --
+only `--minimal` to turn it further off. So:
+
+```bash
+scons --replay -j4 openpilot/tools/replay      # binary lands in tools/replay/replay
+```
+
+The binary predates that option in some checkouts, having been built elsewhere and copied. If it
+is deleted it does not come back without `--replay`, and `scons tools/replay` will cheerfully say
+`is up to date` about a file that is not there — that is the alias for the *output directory*,
+not the program.
+
+**Run it with the venv on PATH.** replay shells out to python for its downloader, and the system
+python3 has no `zstandard`. Without it the TUI still says `STATUS: playing` and sits at
+`SPEED: 0.00 m/s` forever, having failed to read a single log:
+
+```bash
+export PATH=/usr/local/venv/bin:$PATH
+```
+
+**`-b` takes one comma-separated list.** Repeating the flag keeps only the last one, so
+`-b carState -b carParams` blocks carParams alone and leaves replay publishing carState -- which
+then fights whatever you started to own it, and that process dies with
+`MultiplePublishersError`. Write `-b carState,carParams,...`.
+
+**Start replay last.** Bringing up card, the UI and modeld takes 20-30s, and the recording plays
+on while you do it, so the moment you wanted is gone before anything is watching.
+
+## Running a live model over a recording
+
+replay feeds camera frames over VisionIPC, so modeld can run on a recorded drive and produce
+`modelV2` from whatever model is selected. That is how to compare driving models against the same
+road without driving it again.
+
+```bash
+# modeld needs the same realtime stub plannerd does
+cat > /tmp/run_modeld.py <<'EOF'
+import openpilot.common.realtime as rt
+rt.config_realtime_process = lambda *a, **k: None
+from openpilot.selfdrive.modeld.modeld import main
+main()
+EOF
+
+# replay FIRST -- modeld attaches to its VisionIPC server and cannot start before it exists
+tmux new-session -d -s rp '... replay ... -b modelV2,drivingModelData,cameraOdometry <route>'
+sleep 3
+tmux new-session -d -s md '... python3 /tmp/run_modeld.py'
+```
+
+Block all three of modeld's outputs, not just `modelV2`.
+
+**Restarting replay silently kills modeld.** The vision stream goes away and modeld stops
+producing without saying so -- `modelV2` simply goes not-alive. Restart both, in that order.
+
+**Model loading costs 8-13s** and replay is already playing during it, so anything in the first
+~15 seconds of the route cannot be captured this way. Seeking back does not help: `M` sent to the
+TUI moves *forward* despite `shift+m` being documented as -60s. Pick a moment far enough in, or
+start replay at an offset that puts it there once the model is up.
+
+To switch models, write the `DrivingModel` param and restart the pair.
