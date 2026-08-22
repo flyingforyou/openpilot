@@ -108,17 +108,30 @@ class CarController(CarControllerBase):
     # construction; fit to the lane midline it belongs in the pattern with C2 and C3, clipped to
     # the DBC's own signal range (tesla_can.dbc: DAS_virtualLaneC1 [-0.2|0.2] rad) like they are.
     probs = list(model.laneLineProbs)
+    left_trusted = len(probs) > 1 and probs[1] > 0.45
+    right_trusted = len(probs) > 2 and probs[2] > 0.45
+
+    # A logged route showed the factory's own DAS_virtualLaneViewRange is 0 in exactly the
+    # frames where both DAS_leftLineUsage and DAS_rightLineUsage read REJECTED_UNAVAILABLE
+    # (590/590, no exceptions) and non-zero -- reaching a real ceiling around 63-64 rather than
+    # the DBC's full 0-160 range -- whenever either line is trusted. A constant 50 regardless of
+    # either line's state doesn't match that in either direction, and the cluster may be reading
+    # it as a liveness signal it never received before. Zero exactly when neither line is
+    # trusted; otherwise how far this fit's own input points reach, capped at the observed
+    # real-world ceiling.
+    view_range = 0.0 if not (left_trusted or right_trusted) else float(np.clip(lane_xs[valid].max(), 0.0, 64.0))
+
     return {
-      "DAS_leftLaneExists": int(len(probs) > 1 and probs[1] > 0.45),
-      "DAS_rightLaneExists": int(len(probs) > 2 and probs[2] > 0.45),
+      "DAS_leftLaneExists": int(left_trusted),
+      "DAS_rightLaneExists": int(right_trusted),
       "DAS_virtualLaneWidth": lane_width,
-      "DAS_virtualLaneViewRange": 50.0,
+      "DAS_virtualLaneViewRange": view_range,
       "DAS_virtualLaneC0": float(np.clip(coefs[3], -3.5, 3.5)),
       "DAS_virtualLaneC1": float(np.clip(coefs[2] * 2.0, -0.2, 0.2)),
       "DAS_virtualLaneC2": float(np.clip(coefs[1] * 4.0, -0.0025, 0.0025)),
       "DAS_virtualLaneC3": float(np.clip(coefs[0] * 8.0, -3.0e-5, 3.0e-5)),
-      "DAS_leftLineUsage": 2 if len(probs) > 1 and probs[1] > 0.45 else 0,
-      "DAS_rightLineUsage": 2 if len(probs) > 2 and probs[2] > 0.45 else 0,
+      "DAS_leftLineUsage": 2 if left_trusted else 0,
+      "DAS_rightLineUsage": 2 if right_trusted else 0,
       # Not leftFork/rightFork. A logged route with the stock AP1 IC genuinely showing both
       # lanes at once decoded to leftFork=rightFork=0 in every one of 8408 real DAS_lanes
       # frames, including all 578 where leftLaneExists and rightLaneExists were both true --
