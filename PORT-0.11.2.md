@@ -41,11 +41,12 @@ ssh comma@<ip>
 cd /data/openpilot
 git fetch origin tesla-hw1-carrot-0.11.2 && git reset --hard origin/tesla-hw1-carrot-0.11.2
 export PATH=/usr/comma/shims:$PATH          # matters, see below
+source scripts/setup-device.sh              # not `uv sync`/`uv run` by hand -- see below
 uv run scons -j4
 sudo systemctl restart comma
 ```
 
-Two device facts that are not guessable:
+Three device facts that are not guessable:
 
 - **`/usr/comma/shims/uv` is a wrapper.** It remounts `/` read-write and runs the real uv under
   `sudo -E`, then remounts read-only. Boot puts it first on `PATH`, so everything at boot runs as
@@ -57,6 +58,15 @@ Two device facts that are not guessable:
   `.venv/bin/python3` is missing, so a fresh checkout builds its own venv without anyone
   intervening. It must never reach for the network — see
   [the eigen mistake](#the-eigen-mistake).
+- **Always `source scripts/setup-device.sh` before touching `uv` by hand — never bare `uv sync`
+  or `uv run` over ssh.** uv's python install and cache default to `$HOME`, a 100MB overlay on
+  AGNOS that does not survive a reboot; the script points `UV_PYTHON_INSTALL_DIR` and
+  `UV_CACHE_DIR` at `/data` instead. A bare `uv sync`/`uv run` skips that, and the device comes
+  back from a reboot unable to import `capnp` (or `zmq`, or missing `comma-deps-ncurses` if
+  `--all-extras` was also skipped) with no sign anything is wrong until the next restart. Hit
+  three times in one session before it was worth writing down: `source`, not `bash` or a fresh
+  `export` block copied from memory — sourcing is what keeps the script's exports alive for the
+  `uv run scons` that follows, on the *same* line, in the *same* shell.
 
 ---
 

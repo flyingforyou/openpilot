@@ -62,20 +62,33 @@ class TeslaCANRaven:
                      "DAS_objVeh2VxRel": lead2[1], "DAS_objVeh2Dy": lead2[2], "DAS_objVeh2Id": 2})
     return self.packers[CANBUS.party].make_can_msg("DAS_object", CANBUS.party, values)
 
-  def create_ic_status(self, base_values, active):
-    """Clone factory AP1 0x399, preserve its counter/status bits, and change the IC AP mode.
+  def create_ic_status(self, base_values, active, left_blindspot=False, right_blindspot=False):
+    """Clone factory AP1 0x399 for its counter/checksum machinery, but when active rebuild the
+    status-adjacent signals instead of leaving the factory's own values sitting next to them.
 
-    When active the IC is switched to Unity's own NAV=5, to get the NoA route-line rendering on
-    the cluster -- ACTIVE_1 (3) was used first as the more conservative choice and is still what
-    to fall back to if 5 turns out to drive anything beyond the cluster's own display (nothing
-    downstream is known to key off this signal, but the factory copy is fully replaced while
-    engaged, not just the cluster's view of it). When not active the factory autopilotStatus is
-    left untouched: this is the passthrough re-send that keeps the cluster alive while the
-    feature is off (panda has blocked the factory copy).
+    NAV (5) alone did not produce the NoA route-line rendering on the car. Unity's
+    create_das_status, the source this whole feature is ported from, never patches one field on
+    a cloned frame -- it builds DAS_status from scratch every time, autopilotStatus=5 alongside
+    DAS_autopilotHandsOnState/DAS_autoLaneChangeState/DAS_laneDepartureWarning/
+    DAS_forwardCollisionWarning all zeroed (unity/selfdrive/car/tesla/teslacan.py,
+    create_das_status). Cloning the factory frame instead means those fields keep whatever the
+    factory module's own idle state has -- it isn't the one driving, openpilot is, so they never
+    describe an active-nav condition -- while only autopilotStatus said "active_nav". That
+    mismatch is the likely reason the cluster accepted the frame but did not render the line.
+    Rebuilding just this cluster here (not the summon/autopark/heater fields Unity also zeros,
+    which nothing suggests are related) matches Unity's frame for the signals that plausibly are.
     """
     values = dict(base_values)
     if active:
-      values["autopilotStatus"] = 5  # NAV
+      values.update({
+        "autopilotStatus": 5,  # NAV / active_nav, Unity's default while engaged
+        "DAS_autopilotHandsOnState": 0,
+        "DAS_autoLaneChangeState": 0,
+        "DAS_laneDepartureWarning": 0,
+        "DAS_forwardCollisionWarning": 0,
+        "DAS_blindSpotRearLeft": 1 if left_blindspot else 0,
+        "DAS_blindSpotRearRight": 1 if right_blindspot else 0,
+      })
     values["DAS_statusChecksum"] = 0
     data = self.packers[CANBUS.party].make_can_msg("AutopilotStatus", CANBUS.party, values)[1]
     values["DAS_statusChecksum"] = self.checksum(0x399, data[:7])
