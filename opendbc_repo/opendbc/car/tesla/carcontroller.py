@@ -73,7 +73,7 @@ class CarController(CarControllerBase):
       from opendbc.car.tesla.interface import CarInterface
       self.VM = VehicleModel(CarInterface.get_non_essential_params("TESLA_MODEL_S_HW3"))
 
-  def _ic_lane_overrides(self):
+  def _ic_lane_overrides(self, v_ego: float):
     """Convert the ego lane's own boundaries (laneLines[1]/[2], not the driving path) to the
     AP1 IC cubic used by Tesla Unity. The path in model.position is where the planner intends to
     go -- it cuts curves and leans toward a lane change in progress -- so fitting that put the
@@ -111,15 +111,21 @@ class CarController(CarControllerBase):
     left_trusted = len(probs) > 1 and probs[1] > 0.45
     right_trusted = len(probs) > 2 and probs[2] > 0.45
 
-    # A logged route showed the factory's own DAS_virtualLaneViewRange is 0 in exactly the
-    # frames where both DAS_leftLineUsage and DAS_rightLineUsage read REJECTED_UNAVAILABLE
-    # (590/590, no exceptions) and non-zero -- reaching a real ceiling around 63-64 rather than
-    # the DBC's full 0-160 range -- whenever either line is trusted. A constant 50 regardless of
-    # either line's state doesn't match that in either direction, and the cluster may be reading
-    # it as a liveness signal it never received before. Zero exactly when neither line is
-    # trusted; otherwise how far this fit's own input points reach, capped at the observed
-    # real-world ceiling.
-    view_range = 0.0 if not (left_trusted or right_trusted) else float(np.clip(lane_xs[valid].max(), 0.0, 64.0))
+    # DAS_virtualLaneViewRange reaches a real ceiling around 63-64 rather than the DBC's full
+    # 0-160 range. It also has an occasional real 0, but that didn't correlate cleanly with
+    # either line's trust state or with v_ego when checked against a logged route -- a constant
+    # 50 regardless of anything was worse than either, so this is the fit's own reach and
+    # nothing more; the rare true-zero condition is still unknown.
+    view_range = float(np.clip(lane_xs[valid].max(), 0.0, 64.0))
+
+    # C1/C2/C3 read as their DBC-declared min/min/max (not a physical zero -- see the DBC
+    # comment on each) in about half of all real frames, and that half is not random: a logged
+    # route showed it happens almost entirely below v_ego=0.5 m/s (C1 sentinel in 80% of frames
+    # there, versus under 11% at any tested speed above it) -- no forward motion, no curvature
+    # the factory trusts enough to report. Below that speed this sends the same sentinels rather
+    # than a fitted curve computed from however few valid points a stopped car's lane lines
+    # give, which line up with real curvature only by accident at a standstill anyway.
+    stopped = v_ego < 0.5
 
     return {
       "DAS_leftLaneExists": int(left_trusted),
@@ -127,9 +133,9 @@ class CarController(CarControllerBase):
       "DAS_virtualLaneWidth": lane_width,
       "DAS_virtualLaneViewRange": view_range,
       "DAS_virtualLaneC0": float(np.clip(coefs[3], -3.5, 3.5)),
-      "DAS_virtualLaneC1": float(np.clip(coefs[2] * 2.0, -0.2, 0.2)),
-      "DAS_virtualLaneC2": float(np.clip(coefs[1] * 4.0, -0.0025, 0.0025)),
-      "DAS_virtualLaneC3": float(np.clip(coefs[0] * 8.0, -3.0e-5, 3.0e-5)),
+      "DAS_virtualLaneC1": -0.2 if stopped else float(np.clip(coefs[2] * 2.0, -0.2, 0.2)),
+      "DAS_virtualLaneC2": -0.0025 if stopped else float(np.clip(coefs[1] * 4.0, -0.0025, 0.0025)),
+      "DAS_virtualLaneC3": 3.0e-5 if stopped else float(np.clip(coefs[0] * 8.0, -3.0e-5, 3.0e-5)),
       "DAS_leftLineUsage": 2 if left_trusted else 0,
       "DAS_rightLineUsage": 2 if right_trusted else 0,
       # Not leftFork/rightFork. A logged route with the stock AP1 IC genuinely showing both
@@ -190,7 +196,7 @@ class CarController(CarControllerBase):
     sends = []
     new_lane_frame = CS.das_lanes is not None and CS.das_lanes_nanos != self.ic_last_lanes_nanos
     send_leads = on and self.frame % 10 == 0 and self.ic_radar is not None
-    lane_overrides = self._ic_lane_overrides() if (on and (new_lane_frame or send_leads)) else {}
+    lane_overrides = self._ic_lane_overrides(CS.out.vEgo) if (on and (new_lane_frame or send_leads)) else {}
 
     if new_lane_frame:
       sends.append(self.tesla_can.create_ic_lanes(CS.das_lanes, lane_overrides))
