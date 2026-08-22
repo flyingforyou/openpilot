@@ -372,6 +372,15 @@ CARROT_SETTINGS = {
 }
 
 SETTINGS = {
+  "TeslaLogOnly": {
+    "label": "로깅 전용 (engage 안 됨)", "type": "bool",
+    "help": "openpilot이 조향·가속·제동 어느 것도 절대 실행하지 않습니다 -- panda 안전 모델이 "
+            "noOutput으로 강제되는 건 OpenpilotEnabledToggle을 끌 때와 같은 경로라 앱 레벨이 "
+            "아니라 panda에서 막힙니다. 카메라·CAN 로깅·모델은 평소처럼 다 돕니다. 순정 "
+            "오토파일럿(스토크 더블스트로크)만 켜고 몰면서 그때 나오는 실제 DAS_lanes/"
+            "AutopilotStatus 신호를 그대로 로그에 남기고 싶을 때 씁니다. 재시작해야 반영됩니다.",
+    "options": [(0, "평소대로 (기본)"), (1, "로깅만, engage 안 됨")],
+  },
   "TeslaStockLong": {
     "label": "순정 ACC 사용", "type": "bool",
     "help": "속도 제어를 차의 순정 ACC에 맡기고 openpilot은 조향만 합니다. 순정 ACC는 이미 "

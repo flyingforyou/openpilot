@@ -269,4 +269,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TeslaLastGapAdjust", {PERSISTENT, INT, "0"}},
     {"TeslaStockAutopark", {PERSISTENT, BOOL, "0"}},
     {"TeslaStockLong", {PERSISTENT, BOOL, "0"}},
+    // Blocks openpilot from ever actuating -- same mechanism OpenpilotEnabledToggle/dashcamOnly
+    // already use (CarParams.passive: panda safetyModel forced to noOutput, card.py skips
+    // controls_update), so it is enforced at the panda level, not just the app. Camera, CAN
+    // logging, modeld and radard keep running exactly as normal; only the actuation path is cut.
+    // For driving with the car's own stock Autopilot engaged instead, to log what its real
+    // DAS_lanes/AutopilotStatus frames look like. Set at init, so a restart is required.
+    {"TeslaLogOnly", {PERSISTENT, BOOL, "0"}},
 };
