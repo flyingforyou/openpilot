@@ -119,8 +119,14 @@ class CarController(CarControllerBase):
       "DAS_virtualLaneC3": float(np.clip(coefs[0] * 8.0, -3.0e-5, 3.0e-5)),
       "DAS_leftLineUsage": 2 if len(probs) > 1 and probs[1] > 0.45 else 0,
       "DAS_rightLineUsage": 2 if len(probs) > 2 and probs[2] > 0.45 else 0,
-      "DAS_leftFork": 1 if len(probs) > 0 and probs[0] > 0.25 else 0,
-      "DAS_rightFork": 1 if len(probs) > 3 and probs[3] > 0.25 else 0,
+      # Not leftFork/rightFork. A logged route with the stock AP1 IC genuinely showing both
+      # lanes at once decoded to leftFork=rightFork=0 in every one of 8408 real DAS_lanes
+      # frames, including all 578 where leftLaneExists and rightLaneExists were both true --
+      # Fork never left 0 regardless. Unity's create_lane_message sets it from
+      # laneLineProbs[0]/[3] the same way this code used to, but the real signal shows that was
+      # never what drew the second lane; leftLaneExists/rightLaneExists alone was. Sending a
+      # nonzero Fork -- a real DBC value (LEFT_FORK_AVAILABLE) unrelated to lane display -- was
+      # an unforced departure from what a genuine frame ever contains, so it is left at 0.
     }
 
   @staticmethod
@@ -178,8 +184,7 @@ class CarController(CarControllerBase):
       self.ic_last_lanes_nanos = CS.das_lanes_nanos
 
     if CS.autopilot_status is not None and CS.autopilot_status_nanos != self.ic_last_status_nanos:
-      sends.append(self.tesla_can.create_ic_status(CS.autopilot_status, on,
-                                                   CS.out.leftBlindspot, CS.out.rightBlindspot))
+      sends.append(self.tesla_can.create_ic_status(CS.autopilot_status, on))
       self.ic_last_status_nanos = CS.autopilot_status_nanos
 
     if send_leads:

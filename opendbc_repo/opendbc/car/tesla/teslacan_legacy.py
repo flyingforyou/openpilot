@@ -62,33 +62,28 @@ class TeslaCANRaven:
                      "DAS_objVeh2VxRel": lead2[1], "DAS_objVeh2Dy": lead2[2], "DAS_objVeh2Id": 2})
     return self.packers[CANBUS.party].make_can_msg("DAS_object", CANBUS.party, values)
 
-  def create_ic_status(self, base_values, active, left_blindspot=False, right_blindspot=False):
-    """Clone factory AP1 0x399 for its counter/checksum machinery, but when active rebuild the
-    status-adjacent signals instead of leaving the factory's own values sitting next to them.
+  def create_ic_status(self, base_values, active):
+    """Clone factory AP1 0x399, preserve its counter/status bits, and change the IC AP mode.
 
-    NAV (5) alone did not produce the NoA route-line rendering on the car. Unity's
-    create_das_status, the source this whole feature is ported from, never patches one field on
-    a cloned frame -- it builds DAS_status from scratch every time, autopilotStatus=5 alongside
-    DAS_autopilotHandsOnState/DAS_autoLaneChangeState/DAS_laneDepartureWarning/
-    DAS_forwardCollisionWarning all zeroed (unity/selfdrive/car/tesla/teslacan.py,
-    create_das_status). Cloning the factory frame instead means those fields keep whatever the
-    factory module's own idle state has -- it isn't the one driving, openpilot is, so they never
-    describe an active-nav condition -- while only autopilotStatus said "active_nav". That
-    mismatch is the likely reason the cluster accepted the frame but did not render the line.
-    Rebuilding just this cluster here (not the summon/autopark/heater fields Unity also zeros,
-    which nothing suggests are related) matches Unity's frame for the signals that plausibly are.
+    A logged route with the stock IC genuinely showing both lanes had autopilotStatus=3
+    (ACTIVE_1) throughout -- never 5 (NAV). NAV was tried, on the theory that it was the
+    "correct" active state and 3 just the conservative fallback, and reverted: it did not
+    produce the NoA route-line display, and 3 is what real frames use for this rendering anyway.
+
+    autopilotStatus is the only field patched. The same route showed DAS_autoLaneChangeState,
+    DAS_autopilotHandsOnState and DAS_laneDepartureWarning changing continuously and
+    meaningfully in the factory's own frames -- real lane-change availability, hands-on state,
+    solid-line blocks -- none of it something openpilot has an equivalent source for. An earlier
+    version of this zeroed those fields to build a frame from scratch the way Unity's
+    create_das_status does; the logged route is what shows that was the wrong call here; cloning
+    lets the factory's own live perception state keep describing itself, which openpilot did not
+    take away from it by taking over actuation. When not active the factory autopilotStatus is
+    left untouched too: this is the passthrough re-send that keeps the cluster alive while the
+    feature is off (panda has blocked the factory copy).
     """
     values = dict(base_values)
     if active:
-      values.update({
-        "autopilotStatus": 5,  # NAV / active_nav, Unity's default while engaged
-        "DAS_autopilotHandsOnState": 0,
-        "DAS_autoLaneChangeState": 0,
-        "DAS_laneDepartureWarning": 0,
-        "DAS_forwardCollisionWarning": 0,
-        "DAS_blindSpotRearLeft": 1 if left_blindspot else 0,
-        "DAS_blindSpotRearRight": 1 if right_blindspot else 0,
-      })
+      values["autopilotStatus"] = 3  # ACTIVE_1
     values["DAS_statusChecksum"] = 0
     data = self.packers[CANBUS.party].make_can_msg("AutopilotStatus", CANBUS.party, values)[1]
     values["DAS_statusChecksum"] = self.checksum(0x399, data[:7])
