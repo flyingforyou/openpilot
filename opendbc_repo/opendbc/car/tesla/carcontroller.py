@@ -7,8 +7,16 @@ from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.tesla.teslacan import TeslaCAN
 from opendbc.car.tesla.teslacan_legacy import TeslaCANRaven
 from opendbc.car.tesla.coop_steering import CoopSteeringCarController
+from opendbc.car.tesla.das_object import LEAD_VEHICLES
 from opendbc.car.tesla.values import CarControllerParams, CANBUS, LEGACY_CARS, CAR, StalkLever, TeslaFlags
 from opendbc.car.vehicle_model import VehicleModel
+
+# Same distance-only match radard.match_das_objects uses (DAS_MATCH_MAX_DREL there): the factory
+# camera and this car's radar agree on distance to well under a metre and disagree on lateral
+# position (see that function's docstring in radard.py), so dx alone is what says whether the
+# factory's own group-0 stream -- the one Unity's IC also reads -- already has an object for a
+# radar lead openpilot is about to inject.
+IC_LEAD_MATCH_MAX_DREL = 2.0
 
 
 # The carcontroller runs at 100Hz. Hold a press long enough for the SCCM's own frames not to be
@@ -66,34 +74,47 @@ class CarController(CarControllerBase):
       self.VM = VehicleModel(CarInterface.get_non_essential_params("TESLA_MODEL_S_HW3"))
 
   def _ic_lane_overrides(self):
-    """Convert modelV2 path to the AP1 IC cubic used by Tesla Unity."""
+    """Convert the ego lane's own boundaries (laneLines[1]/[2], not the driving path) to the
+    AP1 IC cubic used by Tesla Unity. The path in model.position is where the planner intends to
+    go -- it cuts curves and leans toward a lane change in progress -- so fitting that put the
+    cluster's lane visibly off the painted lines. The lane boundaries are what the cluster is
+    actually meant to show, and their midline still tracks a curve properly.
+    """
     model = self.ic_model
-    if model is None or len(model.position.x) < 6 or len(model.position.y) < 6:
+    if model is None or len(model.laneLines) < 3:
       return {}
 
-    x = np.asarray(model.position.x, dtype=float)
-    y = np.asarray(model.position.y, dtype=float)
-    n = min(len(x), len(y))
-    x, y = x[:n], y[:n]
-    valid = np.isfinite(x) & np.isfinite(y) & (x >= 0.0) & (x <= 100.0)
+    lane_xs = np.asarray(model.laneLines[1].x, dtype=float)
+    left_ys = np.asarray(model.laneLines[1].y, dtype=float)
+    right_ys = np.asarray(model.laneLines[2].y, dtype=float)
+    n = min(len(lane_xs), len(left_ys), len(right_ys))
+    lane_xs, left_ys, right_ys = lane_xs[:n], left_ys[:n], right_ys[:n]
+    valid = np.isfinite(lane_xs) & np.isfinite(left_ys) & np.isfinite(right_ys) & (lane_xs >= 0.0) & (lane_xs <= 100.0)
     if np.count_nonzero(valid) < 6:
       return {}
 
+    center_ys = (left_ys + right_ys) / 2.0
     try:
-      coefs = np.polyfit(x[valid], y[valid], 3)
+      coefs = np.polyfit(lane_xs[valid], center_ys[valid], 3)
     except (ValueError, np.linalg.LinAlgError):
       return {}
 
-    # Unity's IC_LANE_SCALE was 0.5: C2 gets 2^2 and C3 gets 2^3. C1 was
-    # deliberately suppressed to keep the cluster path stable/centered.
+    # The two lines' own spacing, not a constant -- a highway lane and a residential one are not
+    # the same width, and the factory display uses this to scale how far apart it draws them.
+    lane_width = float(np.clip(np.mean(np.abs(right_ys[valid] - left_ys[valid])), 2.5, 4.5))
+
+    # Unity's IC_LANE_SCALE was 0.5: each polynomial degree n is scaled by (1/0.5)^n = 2^n. C1
+    # was deliberately left at 0 as a first cut, for a path that could be off-center by
+    # construction; fit to the lane midline it belongs in the pattern with C2 and C3, clipped to
+    # the DBC's own signal range (tesla_can.dbc: DAS_virtualLaneC1 [-0.2|0.2] rad) like they are.
     probs = list(model.laneLineProbs)
     return {
       "DAS_leftLaneExists": int(len(probs) > 1 and probs[1] > 0.45),
       "DAS_rightLaneExists": int(len(probs) > 2 and probs[2] > 0.45),
-      "DAS_virtualLaneWidth": 4.0,
+      "DAS_virtualLaneWidth": lane_width,
       "DAS_virtualLaneViewRange": 50.0,
       "DAS_virtualLaneC0": float(np.clip(coefs[3], -3.5, 3.5)),
-      "DAS_virtualLaneC1": 0.0,
+      "DAS_virtualLaneC1": float(np.clip(coefs[2] * 2.0, -0.2, 0.2)),
       "DAS_virtualLaneC2": float(np.clip(coefs[1] * 4.0, -0.0025, 0.0025)),
       "DAS_virtualLaneC3": float(np.clip(coefs[0] * 8.0, -3.0e-5, 3.0e-5)),
       "DAS_leftLineUsage": 2 if len(probs) > 1 and probs[1] > 0.45 else 0,
@@ -111,6 +132,30 @@ class CarController(CarControllerBase):
       float(np.clip(int(lead.vRel), -30, 26)),
       float(np.clip(path_c0 - lead.yRel, -22.05, 22.4)),
     )
+
+  @staticmethod
+  def _same_lead(lead1, lead2):
+    """radard's leadOne/leadTwo are both in-path tracks at different distances, not a left/right
+    pair -- two tracks this close in both distance and lateral offset are radar splitting one
+    car into two, not a second car essentially touching the first. Left alone, that draws two
+    Unity objects for one physical car, and toggles as the split comes and goes flicker the
+    second one on and off every send.
+    """
+    return (lead1.present and lead2.present
+           and abs(lead2.dRel - lead1.dRel) < 5.0
+           and abs(lead2.yRel - lead1.yRel) < 1.5)
+
+  @staticmethod
+  def _factory_already_shows(das_vehicles, dRel):
+    """Is the factory's own group-0 (LEAD_VEHICLES) object stream already carrying a car near
+    this radar lead? DAS_object is never blocked -- see tesla_legacy.h's TX message comment on
+    why not, it stays additive because openpilot also reads it for cut-in control -- so whatever
+    openpilot injects sits on the bus alongside whatever the factory is already sending. Without
+    this, the same physical car shows up as the factory's own object and openpilot's injected one
+    at once, i.e. exactly the two-car/flicker symptom this exists to prevent.
+    """
+    return any(group == LEAD_VEHICLES and abs(veh.dx - dRel) < IC_LEAD_MATCH_MAX_DREL
+              for (group, _obj_id), (_age, veh) in das_vehicles.items())
 
   def update_ic(self, CC, CS):
     if not (self.CP.flags & TeslaFlags.IC_INTEGRATION) or not CC.enabled:
@@ -138,8 +183,15 @@ class CarController(CarControllerBase):
 
     if send_leads:
       path_c0 = float(lane_overrides.get("DAS_virtualLaneC0", 0.0))
-      sends.append(self.tesla_can.create_ic_leads(self._ic_lead(self.ic_radar.leadOne, path_c0),
-                                                  self._ic_lead(self.ic_radar.leadTwo, path_c0)))
+      lead1, lead2 = self.ic_radar.leadOne, self.ic_radar.leadTwo
+      if self._same_lead(lead1, lead2):
+        lead2 = None
+      if lead1.present and self._factory_already_shows(CS.das_vehicles, lead1.dRel):
+        lead1 = None
+      if lead2 is not None and lead2.present and self._factory_already_shows(CS.das_vehicles, lead2.dRel):
+        lead2 = None
+      sends.append(self.tesla_can.create_ic_leads(self._ic_lead(lead1, path_c0),
+                                                  self._ic_lead(lead2, path_c0)))
     return sends
 
   def update_cluster_speed(self, CC, CS):

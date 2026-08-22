@@ -65,13 +65,17 @@ class TeslaCANRaven:
   def create_ic_status(self, base_values, active):
     """Clone factory AP1 0x399, preserve its counter/status bits, and change the IC AP mode.
 
-    When active the IC is switched to ACTIVE_1 (3) -- safer than Unity's old NAV=5. When not
-    active the factory autopilotStatus is left untouched: this is the passthrough re-send that
-    keeps the cluster alive while the feature is off (panda has blocked the factory copy).
+    When active the IC is switched to Unity's own NAV=5, to get the NoA route-line rendering on
+    the cluster -- ACTIVE_1 (3) was used first as the more conservative choice and is still what
+    to fall back to if 5 turns out to drive anything beyond the cluster's own display (nothing
+    downstream is known to key off this signal, but the factory copy is fully replaced while
+    engaged, not just the cluster's view of it). When not active the factory autopilotStatus is
+    left untouched: this is the passthrough re-send that keeps the cluster alive while the
+    feature is off (panda has blocked the factory copy).
     """
     values = dict(base_values)
     if active:
-      values["autopilotStatus"] = 3  # ACTIVE_1
+      values["autopilotStatus"] = 5  # NAV
     values["DAS_statusChecksum"] = 0
     data = self.packers[CANBUS.party].make_can_msg("AutopilotStatus", CANBUS.party, values)[1]
     values["DAS_statusChecksum"] = self.checksum(0x399, data[:7])
