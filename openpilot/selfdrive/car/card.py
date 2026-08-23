@@ -66,7 +66,7 @@ class Car:
 
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
-    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'modelV2', 'radarState'])
+    self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents', 'radarState'])
     self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'radarTracks'])
 
     self.can_rcv_cum_timeout_counter = 0
@@ -317,10 +317,9 @@ class Car:
       self.params.put_bool("ControlsReady", True)
 
     if self.sm.all_alive(['carControl']):
-      # modelV2/radarState are display-only inputs for the AP1 stock instrument cluster.
-      # Keep them local to the Tesla controller instead of extending CarControl just for HUD data.
+      # radarState is a display-only input for the AP1 stock instrument cluster's lead icons. Kept
+      # local to the Tesla controller instead of extending CarControl just for HUD data.
       if self.CP.flags & TeslaFlags.IC_INTEGRATION.value and self.CI.CC is not None:
-        self.CI.CC.ic_model = self.sm['modelV2']
         self.CI.CC.ic_radar = self.sm['radarState']
         # Live switch, so it can be toggled from /live without a restart. Re-read at ~2 Hz.
         self._ic_frame += 1

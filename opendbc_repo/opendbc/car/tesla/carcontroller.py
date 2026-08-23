@@ -43,7 +43,6 @@ class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
     self.apply_angle_last = 0
-    self.ic_model = None
     self.ic_radar = None
     self.ic_enabled = False
     self.ic_last_lanes_nanos = 0
@@ -72,87 +71,6 @@ class CarController(CarControllerBase):
       self.tesla_can = TeslaCANRaven(self.packers)
       from opendbc.car.tesla.interface import CarInterface
       self.VM = VehicleModel(CarInterface.get_non_essential_params("TESLA_MODEL_S_HW3"))
-
-  def _ic_lane_overrides(self, v_ego: float):
-    """Convert the ego lane's own boundaries (laneLines[1]/[2], not the driving path) to the
-    AP1 IC cubic used by Tesla Unity. The path in model.position is where the planner intends to
-    go -- it cuts curves and leans toward a lane change in progress -- so fitting that put the
-    cluster's lane visibly off the painted lines. The lane boundaries are what the cluster is
-    actually meant to show, and their midline still tracks a curve properly.
-    """
-    model = self.ic_model
-    if model is None or len(model.laneLines) < 3:
-      return {}
-
-    lane_xs = np.asarray(model.laneLines[1].x, dtype=float)
-    left_ys = np.asarray(model.laneLines[1].y, dtype=float)
-    right_ys = np.asarray(model.laneLines[2].y, dtype=float)
-    n = min(len(lane_xs), len(left_ys), len(right_ys))
-    lane_xs, left_ys, right_ys = lane_xs[:n], left_ys[:n], right_ys[:n]
-    valid = np.isfinite(lane_xs) & np.isfinite(left_ys) & np.isfinite(right_ys) & (lane_xs >= 0.0) & (lane_xs <= 100.0)
-    if np.count_nonzero(valid) < 6:
-      return {}
-
-    center_ys = (left_ys + right_ys) / 2.0
-    try:
-      coefs = np.polyfit(lane_xs[valid], center_ys[valid], 3)
-    except (ValueError, np.linalg.LinAlgError):
-      return {}
-
-    # The two lines' own spacing, not a constant -- a highway lane and a residential one are not
-    # the same width, and the factory display uses this to scale how far apart it draws them.
-    lane_width = float(np.clip(np.mean(np.abs(right_ys[valid] - left_ys[valid])), 2.5, 4.5))
-
-    # Unity's IC_LANE_SCALE was 0.5: each polynomial degree n is scaled by (1/0.5)^n = 2^n. C1
-    # was deliberately left at 0 as a first cut, for a path that could be off-center by
-    # construction; fit to the lane midline it belongs in the pattern with C2 and C3, clipped to
-    # the DBC's own signal range (tesla_can.dbc: DAS_virtualLaneC1 [-0.2|0.2] rad) like they are.
-    probs = list(model.laneLineProbs)
-    left_trusted = len(probs) > 1 and probs[1] > 0.45
-    right_trusted = len(probs) > 2 and probs[2] > 0.45
-
-    # DAS_virtualLaneViewRange reaches up to 124 during genuine Active_nominal in a logged route
-    # (avg 85, vs avg 65/max 122 during TACC-only) -- the earlier 63-64 ceiling was measured on a
-    # route that never drove far enough for the fit to reach past it, not a real signal ceiling.
-    # It also has an occasional real 0, but that didn't correlate cleanly with either line's
-    # trust state or with v_ego -- the rare true-zero condition is still unknown.
-    view_range = float(np.clip(lane_xs[valid].max(), 0.0, 124.0))
-
-    # C1/C2/C3 read as their DBC-declared min/min/max (not a physical zero -- see the DBC
-    # comment on each) in about half of all real frames, and that half is not random: a logged
-    # route showed it happens almost entirely below v_ego=0.5 m/s (C1 sentinel in 80% of frames
-    # there, versus under 11% at any tested speed above it) -- no forward motion, no curvature
-    # the factory trusts enough to report. Below that speed this sends the same sentinels rather
-    # than a fitted curve computed from however few valid points a stopped car's lane lines
-    # give, which line up with real curvature only by accident at a standstill anyway.
-    stopped = v_ego < 0.5
-
-    return {
-      "DAS_leftLaneExists": int(left_trusted),
-      "DAS_rightLaneExists": int(right_trusted),
-      "DAS_virtualLaneWidth": lane_width,
-      "DAS_virtualLaneViewRange": view_range,
-      "DAS_virtualLaneC0": float(np.clip(coefs[3], -3.5, 3.5)),
-      "DAS_virtualLaneC1": -0.2 if stopped else float(np.clip(coefs[2] * 2.0, -0.2, 0.2)),
-      "DAS_virtualLaneC2": -0.0025 if stopped else float(np.clip(coefs[1] * 4.0, -0.0025, 0.0025)),
-      "DAS_virtualLaneC3": 3.0e-5 if stopped else float(np.clip(coefs[0] * 8.0, -3.0e-5, 3.0e-5)),
-      # Not gated on left_trusted/right_trusted like exists is. A same-road TACC-vs-Active_nominal
-      # comparison (matched windows around real state transitions, controlling for road type)
-      # showed usage sits at 2 almost unconditionally once cruise is on at all -- 2 in ~66-84% of
-      # frames even when that same frame's own LaneExists was 0. It tracks whether cruise is
-      # active, not per-frame line confidence, so it is sent as a constant here: this function
-      # only runs while the override is active in the first place.
-      "DAS_leftLineUsage": 2,
-      "DAS_rightLineUsage": 2,
-      # Not leftFork/rightFork. A logged route with the stock AP1 IC genuinely showing both
-      # lanes at once decoded to leftFork=rightFork=0 in every one of 8408 real DAS_lanes
-      # frames, including all 578 where leftLaneExists and rightLaneExists were both true --
-      # Fork never left 0 regardless. Unity's create_lane_message sets it from
-      # laneLineProbs[0]/[3] the same way this code used to, but the real signal shows that was
-      # never what drew the second lane; leftLaneExists/rightLaneExists alone was. Sending a
-      # nonzero Fork -- a real DBC value (LEFT_FORK_AVAILABLE) unrelated to lane display -- was
-      # an unforced departure from what a genuine frame ever contains, so it is left at 0.
-    }
 
   @staticmethod
   def _ic_lead(lead, path_c0):
@@ -195,17 +113,20 @@ class CarController(CarControllerBase):
       return []
 
     # Panda always blocks the factory 0x239/0x399 while engaged, so openpilot must always re-send
-    # them to keep the cluster alive -- even when the feature is off, where it re-sends the factory
-    # content untouched (passthrough). ic_enabled decides only whether the path/status/leads carry
-    # openpilot's data, and it is a live switch so it can be flipped mid-drive from /live.
+    # them to keep the cluster alive. DAS_lanes goes out as a pure clone of the factory's own last
+    # frame -- untouched, not fitted from our model -- on the theory that the factory's own lane
+    # data is fine on its own and AutopilotStatus is the only thing gating whether the cluster
+    # draws it: a same-road TACC-vs-Active_nominal comparison found DAS_lanes content barely
+    # differs between the two, while AutopilotStatus is the one clean, always-binary signal.
+    # ic_enabled decides only whether status/leads carry openpilot's data, and it is a live switch
+    # so it can be flipped mid-drive from /live.
     on = self.ic_enabled
     sends = []
     new_lane_frame = CS.das_lanes is not None and CS.das_lanes_nanos != self.ic_last_lanes_nanos
     send_leads = on and self.frame % 10 == 0 and self.ic_radar is not None
-    lane_overrides = self._ic_lane_overrides(CS.out.vEgo) if (on and (new_lane_frame or send_leads)) else {}
 
     if new_lane_frame:
-      sends.append(self.tesla_can.create_ic_lanes(CS.das_lanes, lane_overrides))
+      sends.append(self.tesla_can.create_ic_lanes(CS.das_lanes, {}))
       self.ic_last_lanes_nanos = CS.das_lanes_nanos
 
     if CS.autopilot_status is not None and CS.autopilot_status_nanos != self.ic_last_status_nanos:
@@ -213,7 +134,7 @@ class CarController(CarControllerBase):
       self.ic_last_status_nanos = CS.autopilot_status_nanos
 
     if send_leads:
-      path_c0 = float(lane_overrides.get("DAS_virtualLaneC0", 0.0))
+      path_c0 = float((CS.das_lanes or {}).get("DAS_virtualLaneC0", 0.0))
       lead1, lead2 = self.ic_radar.leadOne, self.ic_radar.leadTwo
       if self._same_lead(lead1, lead2):
         lead2 = None
