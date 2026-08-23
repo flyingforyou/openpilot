@@ -130,7 +130,7 @@ class CarController(CarControllerBase):
       self.ic_last_lanes_nanos = CS.das_lanes_nanos
 
     if CS.autopilot_status is not None and CS.autopilot_status_nanos != self.ic_last_status_nanos:
-      sends.append(self.tesla_can.create_ic_status(CS.autopilot_status, on))
+      sends.append(self.tesla_can.create_ic_status(CS.autopilot_status, on, CS.hands_on_level))
       self.ic_last_status_nanos = CS.autopilot_status_nanos
 
     if send_leads:

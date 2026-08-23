@@ -62,7 +62,7 @@ class TeslaCANRaven:
                      "DAS_objVeh2VxRel": lead2[1], "DAS_objVeh2Dy": lead2[2], "DAS_objVeh2Id": 2})
     return self.packers[CANBUS.party].make_can_msg("DAS_object", CANBUS.party, values)
 
-  def create_ic_status(self, base_values, active):
+  def create_ic_status(self, base_values, active, hands_on_level=0):
     """Clone factory AP1 0x399, preserve its counter/status bits, and change the IC AP mode.
 
     A logged route with the stock IC genuinely showing both lanes had autopilotStatus=3
@@ -70,20 +70,32 @@ class TeslaCANRaven:
     "correct" active state and 3 just the conservative fallback, and reverted: it did not
     produce the NoA route-line display, and 3 is what real frames use for this rendering anyway.
 
-    autopilotStatus is the only field patched. The same route showed DAS_autoLaneChangeState,
-    DAS_autopilotHandsOnState and DAS_laneDepartureWarning changing continuously and
-    meaningfully in the factory's own frames -- real lane-change availability, hands-on state,
-    solid-line blocks -- none of it something openpilot has an equivalent source for. An earlier
-    version of this zeroed those fields to build a frame from scratch the way Unity's
-    create_das_status does; the logged route is what shows that was the wrong call here; cloning
-    lets the factory's own live perception state keep describing itself, which openpilot did not
-    take away from it by taking over actuation. When not active the factory autopilotStatus is
-    left untouched too: this is the passthrough re-send that keeps the cluster alive while the
-    feature is off (panda has blocked the factory copy).
+    autopilotStatus used to be the only field patched, cloning DAS_autoLaneChangeState,
+    DAS_autopilotHandsOnState and DAS_laneDepartureWarning from the factory's own live frame on
+    the theory that its perception state should keep describing itself. That produced a
+    self-contradicting frame: base_values always comes from a moment the factory itself was not
+    Active (openpilot's own torque keeps it pinned in Unavailable/Available -- see
+    DAS_activationFailureStatus), and at status 1/2 DAS_autopilotHandsOnState is 0
+    (LC_HANDS_ON_NOT_REQD) in 100% of a logged route's frames while DAS_autoLaneChangeState is 0
+    (ALC_UNAVAILABLE_DISABLED) in the large majority. A logged route of genuine status=3 never
+    shows either at 0 -- hands-on state is 1/2/3 (REQD_DETECTED/REQD_NOT_DETECTED/REQD_VISUAL) and
+    lane-change state is one of the *_AVAILABLE_*/*_IN_PROGRESS_* values. Asserting
+    autopilotStatus=3 while those two fields still read as if autosteer were off is exactly the
+    kind of combination that never occurs in a genuine frame, so both are patched here too.
+    DAS_laneDepartureWarning is left alone -- it was 0 in every status=3 frame in that same route,
+    so cloning it already produces a genuine-looking value.
     """
     values = dict(base_values)
     if active:
       values["autopilotStatus"] = 3  # ACTIVE_1
+      # REQD_DETECTED when hands are clearly on (the same low end of hands_on_level that keeps
+      # lat_active true), REQD_NOT_DETECTED otherwise -- both are real states genuine Active uses
+      # depending on the driver, unlike NOT_REQD which genuine Active never sends.
+      values["DAS_autopilotHandsOnState"] = 1 if hands_on_level < 1 else 2
+      # ALC_AVAILABLE_BOTH: openpilot has no lane-change-availability model of its own to drive
+      # this from, but any *_AVAILABLE_*/*_IN_PROGRESS_* value is closer to a genuine Active frame
+      # than the ALC_UNAVAILABLE_DISABLED the clone would otherwise carry over.
+      values["DAS_autoLaneChangeState"] = 8
     values["DAS_statusChecksum"] = 0
     data = self.packers[CANBUS.party].make_can_msg("AutopilotStatus", CANBUS.party, values)[1]
     values["DAS_statusChecksum"] = self.checksum(0x399, data[:7])
