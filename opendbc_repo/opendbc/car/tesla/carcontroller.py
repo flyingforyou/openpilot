@@ -111,12 +111,12 @@ class CarController(CarControllerBase):
     left_trusted = len(probs) > 1 and probs[1] > 0.45
     right_trusted = len(probs) > 2 and probs[2] > 0.45
 
-    # DAS_virtualLaneViewRange reaches a real ceiling around 63-64 rather than the DBC's full
-    # 0-160 range. It also has an occasional real 0, but that didn't correlate cleanly with
-    # either line's trust state or with v_ego when checked against a logged route -- a constant
-    # 50 regardless of anything was worse than either, so this is the fit's own reach and
-    # nothing more; the rare true-zero condition is still unknown.
-    view_range = float(np.clip(lane_xs[valid].max(), 0.0, 64.0))
+    # DAS_virtualLaneViewRange reaches up to 124 during genuine Active_nominal in a logged route
+    # (avg 85, vs avg 65/max 122 during TACC-only) -- the earlier 63-64 ceiling was measured on a
+    # route that never drove far enough for the fit to reach past it, not a real signal ceiling.
+    # It also has an occasional real 0, but that didn't correlate cleanly with either line's
+    # trust state or with v_ego -- the rare true-zero condition is still unknown.
+    view_range = float(np.clip(lane_xs[valid].max(), 0.0, 124.0))
 
     # C1/C2/C3 read as their DBC-declared min/min/max (not a physical zero -- see the DBC
     # comment on each) in about half of all real frames, and that half is not random: a logged
@@ -136,8 +136,14 @@ class CarController(CarControllerBase):
       "DAS_virtualLaneC1": -0.2 if stopped else float(np.clip(coefs[2] * 2.0, -0.2, 0.2)),
       "DAS_virtualLaneC2": -0.0025 if stopped else float(np.clip(coefs[1] * 4.0, -0.0025, 0.0025)),
       "DAS_virtualLaneC3": 3.0e-5 if stopped else float(np.clip(coefs[0] * 8.0, -3.0e-5, 3.0e-5)),
-      "DAS_leftLineUsage": 2 if left_trusted else 0,
-      "DAS_rightLineUsage": 2 if right_trusted else 0,
+      # Not gated on left_trusted/right_trusted like exists is. A same-road TACC-vs-Active_nominal
+      # comparison (matched windows around real state transitions, controlling for road type)
+      # showed usage sits at 2 almost unconditionally once cruise is on at all -- 2 in ~66-84% of
+      # frames even when that same frame's own LaneExists was 0. It tracks whether cruise is
+      # active, not per-frame line confidence, so it is sent as a constant here: this function
+      # only runs while the override is active in the first place.
+      "DAS_leftLineUsage": 2,
+      "DAS_rightLineUsage": 2,
       # Not leftFork/rightFork. A logged route with the stock AP1 IC genuinely showing both
       # lanes at once decoded to leftFork=rightFork=0 in every one of 8408 real DAS_lanes
       # frames, including all 578 where leftLaneExists and rightLaneExists were both true --
