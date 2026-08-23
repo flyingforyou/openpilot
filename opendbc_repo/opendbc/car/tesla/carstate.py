@@ -262,6 +262,9 @@ class CarState(CarStateBase):
     # original counter is important when control hands back to the stock AP.
     self.autopilot_status = None
     self.autopilot_status_nanos = 0
+    # Genuine (never overridden by our own clone) bus2 autopilotStatus == Active_nominal(3), read
+    # independently of IC_INTEGRATION for WAIT_FOR_STOCK_AP to gate on.
+    self.genuine_ap_active = False
     self.das_lanes = None
     self.das_lanes_nanos = 0
     # The factory's latest DAS_object frame per group, kept only when the cluster workaround is on.
@@ -463,6 +466,8 @@ class CarState(CarStateBase):
     autopark_offered = False
     if self.CP.carFingerprint != CAR.TESLA_MODEL_S_HW3:
       autopilot_status = cp_ap_party.vl["AutopilotStatus"]
+      if self.CP.flags & TeslaFlags.WAIT_FOR_STOCK_AP:
+        self.genuine_ap_active = int(autopilot_status["autopilotStatus"]) == 3
       if self.CP.flags & TeslaFlags.IC_INTEGRATION:
         status_nanos = cp_ap_party.ts_nanos["AutopilotStatus"]["DAS_statusCounter"]
         if status_nanos != 0:

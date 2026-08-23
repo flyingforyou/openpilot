@@ -181,6 +181,18 @@ class Car:
             cfg.safetyParam & TeslaSafetyFlags.FLAG_HW1.value):
           self.CP.flags |= TeslaFlags.DOUBLE_STROKE_OVERRIDE.value
 
+    # Experiment: hold our own steering correction at zero until the genuine AP1 computer reports
+    # Active_nominal on its own (see WAIT_FOR_STOCK_AP in values.py). Meant to be combined with
+    # TeslaDoubleStrokeOverride above -- that one keeps openpilot from faulting on the double
+    # stroke, this one keeps our torque out of the way while the stock computer decides whether to
+    # arm.
+    if (self.CP.brand == "tesla" and not self.CP.passive and
+        self.params.get_bool("TeslaWaitForStockAP")):
+      for cfg in self.CP.safetyConfigs:
+        if (cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy and
+            cfg.safetyParam & TeslaSafetyFlags.FLAG_HW1.value):
+          self.CP.flags |= TeslaFlags.WAIT_FOR_STOCK_AP.value
+
     # Let the stock HW1 autopark module drive while openpilot is disengaged. Panda ignores the
     # flag on anything but teslaLegacy HW1, but the toggle is only meaningful there anyway.
     if not self.CP.passive and self.params.get_bool("TeslaStockAutopark"):

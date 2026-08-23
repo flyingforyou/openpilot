@@ -390,6 +390,15 @@ SETTINGS = {
             "때문에 openpilot이 스스로 engage를 막던 것만 풀어줍니다. 재시작해야 반영됩니다.",
     "options": [(0, "평소대로 (기본)"), (1, "더블스트로크 무시")],
   },
+  "TeslaWaitForStockAP": {
+    "label": "순정 오토파일럿 Active 될 때까지 조향 대기", "type": "bool",
+    "help": "engage 상태여도 진짜(순정) bus2 autopilotStatus가 Active_nominal(3)이 될 때까지 "
+            "openpilot이 조향 보정을 0으로 유지합니다(각도 명령 고정, 토크 없음). 순정 오토파일럿이 "
+            "스스로 Active까지 올라간 뒤에야 openpilot이 조향을 시작합니다. AP1 컴퓨터가 활성화를 "
+            "거부하는 게 진입 시점 체크인지 상시 감시인지 확인하기 위한 실험입니다. "
+            "TeslaDoubleStrokeOverride와 같이 켜는 걸 염두에 두고 만들었습니다. 재시작해야 반영됩니다.",
+    "options": [(0, "평소대로 (기본)"), (1, "순정 Active 대기")],
+  },
   "TeslaStockLong": {
     "label": "순정 ACC 사용", "type": "bool",
     "help": "속도 제어를 차의 순정 ACC에 맡기고 openpilot은 조향만 합니다. 순정 ACC는 이미 "

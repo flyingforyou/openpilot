@@ -261,6 +261,12 @@ class TeslaFlags(IntFlag):
   SYNC_CLUSTER_SPEED = 32
   IC_INTEGRATION = 64
   DOUBLE_STROKE_OVERRIDE = 128
+  # Hold our own steering correction at zero until the genuine (unspoofed) bus2 autopilotStatus
+  # reports Active_nominal(3) on its own, then start actuating. Tests whether the AP1 computer's
+  # continuous DAS_activationFailureStatus=1 rejection is an entry-time check (triggered only by
+  # something present when it tries to arm) or an ongoing one (triggered by our torque appearing
+  # at any time, including after it already latched Active on its own).
+  WAIT_FOR_STOCK_AP = 256
 
 
 DBC = CAR.create_dbc_map()

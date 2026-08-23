@@ -285,4 +285,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // own "I'm autosteering" signal or ignores it. Off by default. Set at init, so a restart is
     // required.
     {"TeslaDoubleStrokeOverride", {PERSISTENT, BOOL, "0"}},
+
+    // Experiment: hold openpilot's own steering correction at zero (angle command frozen, no
+    // lateral torque) until the genuine bus2 autopilotStatus reports Active_nominal(3) on its
+    // own, then start actuating. Tests whether the AP1 computer's DAS_activationFailureStatus
+    // rejection is an entry-time check or an ongoing one. Meant to be combined with
+    // TeslaDoubleStrokeOverride, which keeps openpilot from faulting on the double stroke itself.
+    // Off by default. Set at init, so a restart is required.
+    {"TeslaWaitForStockAP", {PERSISTENT, BOOL, "0"}},
 };

@@ -294,6 +294,11 @@ class CarController(CarControllerBase):
     # this gate, so a takeover should never get as far as handsOnLevel 3. This stays as the
     # backstop for one that does.
     lat_active = CC.latActive and CS.hands_on_level < 3 and not CS.high_angle_rate_safety
+    # Experiment: let a double-stroke reach genuine Active_nominal on its own -- our own torque
+    # never appears until it does, so nothing of ours is present for the AP1 computer's activation
+    # check to react to. See WAIT_FOR_STOCK_AP in values.py.
+    if self.CP.flags & TeslaFlags.WAIT_FOR_STOCK_AP:
+      lat_active = lat_active and CS.genuine_ap_active
 
     # Stock autopark drives the car through the same two message ids openpilot uses. Panda opens
     # the forwarding gate for the maneuver, but that is not enough on its own: openpilot sends
