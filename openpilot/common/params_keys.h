@@ -276,4 +276,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // For driving with the car's own stock Autopilot engaged instead, to log what its real
     // DAS_lanes/AutopilotStatus frames look like. Set at init, so a restart is required.
     {"TeslaLogOnly", {PERSISTENT, BOOL, "0"}},
+    // Stops a double-stroke of the cruise stalk (the gesture that turns on the factory's own
+    // Autosteer) from blocking openpilot's own engagement. Safe to do because panda already
+    // blocks the factory's DAS_steeringControl (0x488) from ever reaching EPAS unconditionally
+    // -- see tesla_legacy.h's fwd_hook, the block has no controls_allowed term at all -- so the
+    // factory's steering commands never actually reach the car regardless of this toggle; only
+    // whether openpilot's software-side invalidLkasSetting NO_ENTRY gate honours the factory's
+    // own "I'm autosteering" signal or ignores it. Off by default. Set at init, so a restart is
+    // required.
+    {"TeslaDoubleStrokeOverride", {PERSISTENT, BOOL, "0"}},
 };

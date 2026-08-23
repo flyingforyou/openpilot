@@ -381,6 +381,15 @@ SETTINGS = {
             "AutopilotStatus 신호를 그대로 로그에 남기고 싶을 때 씁니다. 재시작해야 반영됩니다.",
     "options": [(0, "평소대로 (기본)"), (1, "로깅만, engage 안 됨")],
   },
+  "TeslaDoubleStrokeOverride": {
+    "label": "더블스트로크 무시하고 계속 engage", "type": "bool",
+    "help": "스탈크를 더블스트로크해서 팩토리 오토스티어가 켜져도 openpilot이 engage를 거부하지 "
+            "않습니다. panda가 팩토리의 조향 명령(0x488)을 항상 원천 차단하므로(engage 여부와 "
+            "무관하게) 더블스트로크해도 실제 조향은 계속 openpilot이 합니다 -- 이 옵션은 "
+            "그때 팩토리가 \"나 지금 오토스티어 중\"이라고 보내는 신호(DAS_autosteerEnabled) "
+            "때문에 openpilot이 스스로 engage를 막던 것만 풀어줍니다. 재시작해야 반영됩니다.",
+    "options": [(0, "평소대로 (기본)"), (1, "더블스트로크 무시")],
+  },
   "TeslaStockLong": {
     "label": "순정 ACC 사용", "type": "bool",
     "help": "속도 제어를 차의 순정 ACC에 맡기고 openpilot은 조향만 합니다. 순정 ACC는 이미 "

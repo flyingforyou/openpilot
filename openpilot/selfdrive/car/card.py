@@ -168,6 +168,19 @@ class Car:
     self._ic_frame = 0
     self._ic_enabled = self.params.get_bool("TeslaICIntegration")
 
+    # No panda-side change needed: tesla_legacy.h already blocks the factory's own
+    # DAS_steeringControl (0x488) from reaching EPAS unconditionally (see the fwd_hook comment
+    # there), so a double-stroke can never actually hand steering to the factory regardless of
+    # this flag. All this does is stop carstate's invalidLkasSetting -- driven by the factory's
+    # own DAS_autosteerEnabled -- from refusing openpilot's engagement (NO_ENTRY) just because
+    # the factory also thinks it's autosteering.
+    if (self.CP.brand == "tesla" and not self.CP.passive and
+        self.params.get_bool("TeslaDoubleStrokeOverride")):
+      for cfg in self.CP.safetyConfigs:
+        if (cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy and
+            cfg.safetyParam & TeslaSafetyFlags.FLAG_HW1.value):
+          self.CP.flags |= TeslaFlags.DOUBLE_STROKE_OVERRIDE.value
+
     # Let the stock HW1 autopark module drive while openpilot is disengaged. Panda ignores the
     # flag on anything but teslaLegacy HW1, but the toggle is only meaningful there anyway.
     if not self.CP.passive and self.params.get_bool("TeslaStockAutopark"):

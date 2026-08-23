@@ -399,6 +399,13 @@ class CarState(CarStateBase):
           carlog.error("FSD 14 detected, but FW not in FSD_14_FW set")
           self.fsd14_error_logged = True
 
+      # TeslaDoubleStrokeOverride: the diagnostic state above (suspected_fsd14 included) still
+      # runs and still logs -- only the NO_ENTRY-triggering value is suppressed. Safe because
+      # panda already refuses the factory's own DAS_steeringControl unconditionally regardless
+      # of what this reads; see card.py's DOUBLE_STROKE_OVERRIDE wiring.
+      if self.CP.flags & TeslaFlags.DOUBLE_STROKE_OVERRIDE:
+        ret.invalidLkasSetting = False
+
     # Buttons # ToDo: add Gap adjust button
 
     # Messages needed by carcontroller

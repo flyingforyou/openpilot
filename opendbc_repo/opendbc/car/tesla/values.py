@@ -260,6 +260,7 @@ class TeslaFlags(IntFlag):
   COOP_STEER = 8
   SYNC_CLUSTER_SPEED = 32
   IC_INTEGRATION = 64
+  DOUBLE_STROKE_OVERRIDE = 128
 
 
 DBC = CAR.create_dbc_map()
