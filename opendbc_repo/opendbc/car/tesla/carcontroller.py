@@ -118,7 +118,16 @@ class CarController(CarControllerBase):
       self.ic_last_lanes_nanos = CS.das_lanes_nanos
 
     if CS.autopilot_status is not None and CS.autopilot_status_nanos != self.ic_last_status_nanos:
-      sends.append(self.tesla_can.create_ic_status(CS.autopilot_status, on, CS.hands_on_level))
+      # Fade the outer (adjacent-lane) lines the way stock does: hold Active only while both lane
+      # lines exist, from the same DAS_lanes clone the cluster is reading. And drive the dashed
+      # crossed-line animation from openpilot's own lane change.
+      lanes = CS.das_lanes or {}
+      both_lanes = bool(lanes.get("DAS_leftLaneExists")) and bool(lanes.get("DAS_rightLaneExists"))
+      lane_change = 0
+      if self.ic_model is not None and str(self.ic_model.meta.laneChangeState) in ("laneChangeStarting", "laneChangeFinishing"):
+        direction = str(self.ic_model.meta.laneChangeDirection)
+        lane_change = -1 if direction == "left" else 1 if direction == "right" else 0
+      sends.append(self.tesla_can.create_ic_status(CS.autopilot_status, on, CS.hands_on_level, both_lanes, lane_change))
       self.ic_last_status_nanos = CS.autopilot_status_nanos
 
     if send_leads:
