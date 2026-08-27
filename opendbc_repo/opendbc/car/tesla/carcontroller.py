@@ -83,18 +83,6 @@ class CarController(CarControllerBase):
     )
 
   @staticmethod
-  def _same_lead(lead1, lead2):
-    """radard's leadOne/leadTwo are both in-path tracks at different distances, not a left/right
-    pair -- two tracks this close in both distance and lateral offset are radar splitting one
-    car into two, not a second car essentially touching the first. Left alone, that draws two
-    Unity objects for one physical car, and toggles as the split comes and goes flicker the
-    second one on and off every send.
-    """
-    return (lead1.present and lead2.present
-           and abs(lead2.dRel - lead1.dRel) < 5.0
-           and abs(lead2.yRel - lead1.yRel) < 1.5)
-
-  @staticmethod
   def _factory_already_shows(das_vehicles, dRel):
     """Is the factory's own group-0 (LEAD_VEHICLES) object stream already carrying a car near
     this radar lead? DAS_object is never blocked -- see tesla_legacy.h's TX message comment on
@@ -135,15 +123,13 @@ class CarController(CarControllerBase):
 
     if send_leads:
       path_c0 = float((CS.das_lanes or {}).get("DAS_virtualLaneC0", 0.0))
-      lead1, lead2 = self.ic_radar.leadOne, self.ic_radar.leadTwo
-      if self._same_lead(lead1, lead2):
-        lead2 = None
+      # Only the primary lead is drawn. leadTwo is a second in-path car at a different distance,
+      # and injecting it too drew the lead as two cars through a lead handoff -- the closer one
+      # white, the farther one grey -- which read as the lead doubling as it switched.
+      lead1 = self.ic_radar.leadOne
       if lead1.present and self._factory_already_shows(CS.das_vehicles, lead1.dRel):
         lead1 = None
-      if lead2 is not None and lead2.present and self._factory_already_shows(CS.das_vehicles, lead2.dRel):
-        lead2 = None
-      sends.append(self.tesla_can.create_ic_leads(self._ic_lead(lead1, path_c0),
-                                                  self._ic_lead(lead2, path_c0)))
+      sends.append(self.tesla_can.create_ic_leads(self._ic_lead(lead1, path_c0), None))
     return sends
 
   def update_cluster_speed(self, CC, CS):

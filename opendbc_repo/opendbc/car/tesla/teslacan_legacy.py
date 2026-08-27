@@ -54,11 +54,15 @@ class TeslaCANRaven:
       "DAS_objVeh2Dy": 0,
       "DAS_objVeh2Id": 0,
     }
+    # RelevantForControl is the cluster's draw/highlight gate: the factory sets it 1 for a lead it
+    # is acting on and 0 otherwise, and an object at 0 renders faint or not at all -- which is why
+    # our injected cars came out grey next to the factory's white one, and why far ones did not
+    # draw. openpilot's leadOne is exactly a car it is controlling to, so mark it relevant.
     if lead1 is not None:
-      values.update({"DAS_objVehType": 2, "DAS_objVehDx": lead1[0],
+      values.update({"DAS_objVehType": 2, "DAS_objVehRelevantForControl": 1, "DAS_objVehDx": lead1[0],
                      "DAS_objVehVxRel": lead1[1], "DAS_objVehDy": lead1[2], "DAS_objVehId": 1})
     if lead2 is not None:
-      values.update({"DAS_objVeh2Type": 2, "DAS_objVeh2Dx": lead2[0],
+      values.update({"DAS_objVeh2Type": 2, "DAS_objVeh2RelevantForControl": 1, "DAS_objVeh2Dx": lead2[0],
                      "DAS_objVeh2VxRel": lead2[1], "DAS_objVeh2Dy": lead2[2], "DAS_objVeh2Id": 2})
     return self.packers[CANBUS.party].make_can_msg("DAS_object", CANBUS.party, values)
 
