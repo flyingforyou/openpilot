@@ -152,21 +152,21 @@ class Car:
         if cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy:
           cfg.safetyParam |= TeslaSafetyFlags.SYNC_CLUSTER_SPEED.value
 
-    # Tesla Unity-style AP1 instrument-cluster integration (HW1 only). The panda side -- permit
-    # openpilot's cluster frames and block the factory's while engaged -- is set UNCONDITIONALLY
-    # so the feature never needs a reflash or even a restart to flip. Whenever engaged, openpilot
-    # owns 0x239/0x399 and re-sends them keeping the factory rolling counter; whether it rewrites
-    # the path/status (feature on) or re-sends the factory content untouched (off) is the live
-    # TeslaICIntegration switch, read each cycle in controls_update. This mirrors the DAS_object
-    # cluster workaround, which already routes cluster frames through openpilot every drive.
-    if self.CP.brand == "tesla" and not self.CP.passive:
+    # Tesla Unity-style AP1 instrument-cluster integration (HW1 only). Only wire it up when the
+    # feature is actually enabled -- it was UNCONDITIONAL, so the panda blocked the factory's own
+    # 0x239/0x399 (AutopilotStatus, which carries blindspot/FCW and a counter the DI validates)
+    # the moment openpilot engaged, and our re-send did not reproduce that stream cleanly. Measured:
+    # 0x399 vanished off the party bus through the engaged window and the DI faulted its own TACC
+    # 0.4 s later, on every drive, even with the switch off (passthrough). Gating on the param means
+    # a disabled feature blocks nothing and the factory frames flow untouched. Restart to toggle.
+    self._ic_frame = 0
+    self._ic_enabled = self.params.get_bool("TeslaICIntegration")
+    if self.CP.brand == "tesla" and not self.CP.passive and self._ic_enabled:
       for cfg in self.CP.safetyConfigs:
         if (cfg.safetyModel == structs.CarParams.SafetyModel.teslaLegacy and
             cfg.safetyParam & TeslaSafetyFlags.FLAG_HW1.value):
           cfg.safetyParam |= TeslaSafetyFlags.IC_INTEGRATION.value
           self.CP.flags |= TeslaFlags.IC_INTEGRATION.value
-    self._ic_frame = 0
-    self._ic_enabled = self.params.get_bool("TeslaICIntegration")
 
     # No panda-side change needed: tesla_legacy.h already blocks the factory's own
     # DAS_steeringControl (0x488) from reaching EPAS unconditionally (see the fwd_hook comment
