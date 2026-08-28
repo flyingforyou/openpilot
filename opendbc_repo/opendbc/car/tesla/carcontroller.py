@@ -43,6 +43,7 @@ class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
     self.apply_angle_last = 0
+    self.ic_model = None  # set by card only when modelV2 is plumbed; update_ic guards on None
     self.ic_radar = None
     self.ic_enabled = False
     self.ic_last_lanes_nanos = 0
