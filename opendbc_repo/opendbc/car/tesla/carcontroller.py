@@ -255,10 +255,18 @@ class CarController(CarControllerBase):
       CS.stock_autopark_offered or
       (not CC.enabled and CS.out.gearShifter != structs.CarState.GearShifter.drive))
 
+    # When the car's own TACC has faulted, stop asserting ACC_ON. openpilot cannot engage a DI
+    # that is already in FAULT, and continuing to request cruise from it appears to hold the fault
+    # latched until a key cycle -- a logged power-on that came up FAULT stayed faulted through
+    # 1083/1083 frames of ACC_ON openpilot kept sending while never engaging. Send the silent
+    # cancel instead so openpilot lets go of a dead ACC channel. Kept off the autopark path for
+    # the same reason cancel is (the park module borrows the channel).
+    acc_faulted = CS.out.accFaulted and not CS.stock_autopark_offered
+
     # Longitudinal control
     if self.CP.openpilotLongitudinalControl:
       if self.frame % 4 == 0:
-        state = 13 if cancel else 4  # 4=ACC_ON, 13=ACC_CANCEL_GENERIC_SILENT
+        state = 13 if (cancel or acc_faulted) else 4  # 4=ACC_ON, 13=ACC_CANCEL_GENERIC_SILENT
         accel = float(np.clip(actuators.accel, self.CP.minAccel, CarControllerParams.ACCEL_MAX))
         cntr = (self.frame // 4) % 8
         can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive, CS.out.gasPressed,
