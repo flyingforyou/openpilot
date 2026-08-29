@@ -66,7 +66,7 @@ class TeslaCANRaven:
                      "DAS_objVeh2VxRel": lead2[1], "DAS_objVeh2Dy": lead2[2], "DAS_objVeh2Id": 2})
     return self.packers[CANBUS.party].make_can_msg("DAS_object", CANBUS.party, values)
 
-  def create_ic_status(self, base_values, active, hands_on_level=0, both_lanes=True, lane_change=0):
+  def create_ic_status(self, base_values, active, hands_on_level=0, lane_change=0):
     """Clone factory AP1 0x399, preserve its counter/status bits, and change the IC AP mode.
 
     A logged route with the stock IC genuinely showing both lanes had autopilotStatus=3
@@ -88,31 +88,24 @@ class TeslaCANRaven:
     kind of combination that never occurs in a genuine frame, so both are patched here too.
     DAS_laneDepartureWarning is left alone -- it was 0 in every status=3 frame in that same route,
     so cloning it already produces a genuine-looking value.
+
+    Stays pinned at 3 the whole time openpilot is active, full stop -- an earlier version dropped
+    to 2 (AVAILABLE) whenever DAS_lanes' own leftLaneExists/rightLaneExists didn't both read true,
+    to mirror a coupling stock itself has. Since DAS_lanes here is a pure clone of whatever the
+    factory's perception momentarily reports, that made this status flicker 2/3 continuously
+    instead of holding steady. Outer-line fade is DAS_leftLaneExists/rightLaneExists' job, not
+    this message's.
     """
     values = dict(base_values)
     if active:
-      # The cluster draws the two outer (adjacent-lane) lines only while the frame reads fully
-      # Active. Genuine stock only ever sends autopilotStatus=3 with both lane lines present
-      # (measured leftLaneExists 98% / rightLaneExists 91% across an ACTIVE_1 route); when a line
-      # drops it falls to AVAILABLE(2) and the cluster fades that line. Pinning 3 regardless is
-      # what left our outer lines always lit, so mirror the coupling: 3 only when both lanes
-      # exist (or a lane change is running), else 2 so the missing side fades. A lane change forces
-      # 3 so the manoeuvre still renders.
-      if lane_change or both_lanes:
-        values["autopilotStatus"] = 3  # ACTIVE_1
-        # REQD_DETECTED when hands are clearly on (the same low end of hands_on_level that keeps
-        # lat_active true), REQD_NOT_DETECTED otherwise -- both are real states genuine Active uses.
-        values["DAS_autopilotHandsOnState"] = 1 if hands_on_level < 1 else 2
-        # IN_PROGRESS_L/R while openpilot is changing lanes -- the state the stock IC animates the
-        # crossed line dashed from (seen as ALC_IN_PROGRESS_L through a logged stock lane change);
-        # otherwise ALC_AVAILABLE_BOTH, a genuine-Active value openpilot has no model to refine.
-        values["DAS_autoLaneChangeState"] = 9 if lane_change < 0 else 10 if lane_change > 0 else 8
-      else:
-        # AVAILABLE, with the hands/lane-change fields at the values a genuine status-2 frame uses
-        # (both 0) so the frame stays self-consistent and the cluster honours the exists flags.
-        values["autopilotStatus"] = 2  # AVAILABLE
-        values["DAS_autopilotHandsOnState"] = 0
-        values["DAS_autoLaneChangeState"] = 0
+      values["autopilotStatus"] = 3  # ACTIVE_1
+      # REQD_DETECTED when hands are clearly on (the same low end of hands_on_level that keeps
+      # lat_active true), REQD_NOT_DETECTED otherwise -- both are real states genuine Active uses.
+      values["DAS_autopilotHandsOnState"] = 1 if hands_on_level < 1 else 2
+      # IN_PROGRESS_L/R while openpilot is changing lanes -- the state the stock IC animates the
+      # crossed line dashed from (seen as ALC_IN_PROGRESS_L through a logged stock lane change);
+      # otherwise ALC_AVAILABLE_BOTH, a genuine-Active value openpilot has no model to refine.
+      values["DAS_autoLaneChangeState"] = 9 if lane_change < 0 else 10 if lane_change > 0 else 8
     values["DAS_statusChecksum"] = 0
     data = self.packers[CANBUS.party].make_can_msg("AutopilotStatus", CANBUS.party, values)[1]
     values["DAS_statusChecksum"] = self.checksum(0x399, data[:7])
