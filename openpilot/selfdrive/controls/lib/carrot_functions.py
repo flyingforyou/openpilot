@@ -186,8 +186,6 @@ class CarrotPlanner:
     self.dynamicTFollow = 0.0
     self.dynamicTFollowLC = 0.0
     self.enableSpeedTF = 0
-    self.tFollowDecelBoost = 0.0
-    self._tf_decel_extra = 0.0
     self.personality = 1
 
     self.cruiseMaxVals0 = 1.6
@@ -265,7 +263,6 @@ class CarrotPlanner:
       self.dynamicTFollow = self.params.get_float("DynamicTFollow") / 100.
       self.dynamicTFollowLC = self.params.get_float("DynamicTFollowLC") / 100.
       self.enableSpeedTF = self.params.get_int("EnableSpeedTF")
-      self.tFollowDecelBoost = self.params.get_float("TFollowDecelBoost") / 100.
     elif self.params_count == 30:
       self.cruiseMaxVals0 = self.params.get_float("CruiseMaxVals0") / 100.
       self.cruiseMaxVals1 = self.params.get_float("CruiseMaxVals1") / 100.
@@ -359,43 +356,22 @@ class CarrotPlanner:
     return float(tf_target)
 
 
-  def _apply_decel_hold_and_boost_t_follow(self, tf_target, a_ego):
-    if not hasattr(self, "_tf_applied") or self._tf_applied <= 0.0:
-      self._tf_applied = float(tf_target)
-
-    DECEL_HOLD_A = -0.2  # m/s^2
-    self._tf_decel_extra = 0.0
-
-    # 감속 중에는 t_follow 축소를 막음
-    if a_ego <= DECEL_HOLD_A and tf_target < self._tf_applied:
-      tf_held = float(self._tf_applied)
-    else:
-      tf_held = float(tf_target)
-
-    # 감속 중에는 속도 감소로 실제 거리 여유가 줄 수 있으므로 약간 추가 확보
-    # a_ego = -0.2 부근에서는 거의 0, 더 강한 감속일수록 boost 증가
-    decel_boost = float(np.interp(a_ego, [-2.5, -1.0, -0.3, 0.0],
-                                  [0.50, 0.25, 0.06, 0.0]))
-    self._tf_decel_extra = decel_boost * self.tFollowDecelBoost
-
-    return float(tf_held + self._tf_decel_extra)
-
-
   def _clip_t_follow(self, t_follow):
     # Over all seven, so the clamp range always matches the table the base came from. Keying it
     # off four while the base came from seven would quietly flatten the top of the knob.
     tf_min = float(min(self.tFollowGaps))
-    tf_max = float(max(self.tFollowGaps))
-    tf_max = min(2.0, tf_max + max(0.0, self._tf_decel_extra))
+    tf_max = min(2.0, float(max(self.tFollowGaps)))
     return float(np.clip(t_follow, max(0.3, tf_min), tf_max))
 
   def get_T_FOLLOW(self, personality=log.LongitudinalPersonality.standard, v_ego=0.0, a_ego=0.0):
+    # a_ego is accepted for call-site compatibility but no longer used: the decel-driven t_follow
+    # boost/hold was removed. It keyed the follow gap off the ego car's own deceleration, which is a
+    # positive-feedback loop (brake -> wider gap -> brake harder) with no restoring force, and made
+    # openpilot brake from far away against leads that weren't even closing. See git history.
     tf_base = self._get_base_t_follow(personality, v_ego)
     tf_target = self._apply_speed_t_follow_scale(tf_base, v_ego)
-    tf_adjusted = self._apply_decel_hold_and_boost_t_follow(tf_target, a_ego)
-    tf_safe = float(tf_adjusted * self.mySafeFactor)
+    tf_safe = float(tf_target * self.mySafeFactor)
     tf_final = self._clip_t_follow(tf_safe)
-    self._tf_applied = float(tf_final)
     return self.apply_t_follow(tf_final)
 
 
@@ -448,7 +424,7 @@ class CarrotPlanner:
   def apply_t_follow(self, t_follow, adjust_t_follow=0.0):
     # t_follow가 급격히 증가하면 목표거리도 급격히 증가하여 강한 감속을 유도할 수 있으므로
     # 증가 방향만 천천히 반영
-    t_follow = ramp_t_follow(t_follow, self.t_follow_last, self._tf_decel_extra, DT_MDL)
+    t_follow = ramp_t_follow(t_follow, self.t_follow_last, DT_MDL)
 
     self.t_follow_last = float(t_follow)
     return float(t_follow + adjust_t_follow)
