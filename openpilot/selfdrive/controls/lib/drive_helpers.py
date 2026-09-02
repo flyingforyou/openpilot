@@ -34,6 +34,38 @@ def smooth_value(val, prev_val, tau, dt=DT_MDL):
   alpha = 1 - np.exp(-dt/tau) if tau > 0 else 1
   return alpha * val + (1 - alpha) * prev_val
 
+
+# Optional lateral smoothing (modeld's LatSmoothSec), ported from CarrotPilot. Upstream already
+# runs this same low-pass on the longitudinal action (LONG_SMOOTH_SECONDS = 0.3) and leaves the
+# lateral one at 0.0; carrot turns the lateral one on and adds an extra term for when the model is
+# unsure where the path is. See modeld.py for why the low-speed wheel shake needs it.
+#
+# Carrot reads the uncertainty as plan_stds[0, 10, Plan.POSITION, 1] -- four indices into a 3-D
+# (batch, IDX_N, PLAN_WIDTH) array, which raises IndexError, gets swallowed by its own try/except,
+# and leaves the extra silently always zero. Indexed correctly here: Plan.POSITION is x,y,z at
+# 0,1,2, so the lateral std is feature 1.
+LAT_SMOOTH_SECONDS_MAX = 0.60          # ceiling on the total, as carrot has
+LAT_SMOOTH_Y_STD_RANGE = (0.15, 0.25)  # m of 1s lateral std over which the extra ramps in
+LAT_SMOOTH_T_IDX_1S = 10               # ModelConstants.T_IDXS[10] = 0.977 s
+
+
+def get_lat_smooth_seconds_dynamic(model_output, base: float) -> tuple[float, float]:
+  """Base lateral smoothing, plus more of it while the model is unsure where the path is.
+
+  Returns (tau, y_std_1s). base <= 0 disables the feature entirely, which is the default.
+  """
+  if base <= 0.0:
+    return 0.0, 0.0
+  try:
+    y_std_1s = float(model_output['plan_stds'][0, LAT_SMOOTH_T_IDX_1S, 1])
+  except (KeyError, IndexError, TypeError):
+    # Fall back to the plain base rather than silently disabling what the driver asked for.
+    return base, 0.0
+  if not np.isfinite(y_std_1s):
+    return base, 0.0
+  extra = float(np.interp(y_std_1s, LAT_SMOOTH_Y_STD_RANGE, [0.0, base * 2.0]))
+  return float(np.clip(base + extra, 0.0, LAT_SMOOTH_SECONDS_MAX)), y_std_1s
+
 def clip_curvature(v_ego, prev_curvature, new_curvature, roll) -> tuple[float, bool]:
   # This function respects ISO lateral jerk and acceleration limits + a max curvature
   v_ego = max(v_ego, MIN_SPEED)

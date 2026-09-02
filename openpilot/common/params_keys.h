@@ -162,6 +162,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // ships 100; half is the point where a wide line through a bend still gets pulled in.
     {"LaneCenteringE2EAuthority", {PERSISTENT, INT, "50"}},
     {"LaneCenterOffset", {PERSISTENT, INT, "0"}},
+    // Centiseconds of low-pass on the model's desired curvature; 0 = off (upstream's default).
+    // Carrot ships 13. Off here so it stays an opt-in option -- see modeld.py's note on why the
+    // low-speed wheel shake is what it is for.
+    {"LatSmoothSec", {PERSISTENT, INT, "0"}},
     // These two carrot reads from params where this tree takes them from the car port. The
     // defaults are the port's values for this car, not carrot's generic 20/50: vEgoStopping is
     // set to 0.1 in the Tesla interface specifically, and 0.5 would have the car decide it has

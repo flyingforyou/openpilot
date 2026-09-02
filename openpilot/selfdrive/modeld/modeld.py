@@ -25,7 +25,8 @@ from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.overtake_block import OvertakeBlock
-from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, should_stop, smooth_value, get_curvature_from_plan
+from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, should_stop, smooth_value, get_curvature_from_plan, \
+                                                           get_lat_smooth_seconds_dynamic
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
 from openpilot.selfdrive.modeld.compile_modeld import (make_input_queues, make_split_input_queues,
                                                        WARP_INPUTS, LEGACY_WARP_INPUTS, POLICY_INPUTS)
@@ -43,6 +44,25 @@ LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
 BIG_MODEL_TIMEOUT = 60
 
+# Optional lateral smoothing, off unless LatSmoothSec is set. Ported from CarrotPilot, which turns
+# on the same low-pass upstream already runs on the longitudinal side (LONG_SMOOTH_SECONDS) and
+# leaves at 0.0 for lateral, and adds an extra term for when the model is unsure of the path.
+#
+# Why it is wanted here: the model emits curvature*v^2 and modeld divides by v^2 (see
+# get_action_from_model), so the same action noise becomes 1/v^2 more curvature noise as the car
+# slows. Measured over two drives, the per-sample curvature jitter at 3-7 km/h is 13-17x the
+# highway figure, and coming to a stop behind a lead the command asked for up to 1341 deg/s of
+# steering against a 250 deg/s rate limit -- which is the wheel shaking at ~2 Hz, worst (4.8 deg
+# peak-to-peak) between 1 and 3 m/s. A low-pass is the right tool because it leaves the
+# steady-state curvature alone, so low-speed turn authority is untouched; only the jitter goes.
+#
+# The extra term keys off the model's own 1s lateral position uncertainty. Carrot's version reads
+# it as plan_stds[0, 10, Plan.POSITION, 1] -- four indices into a 3-D (batch, IDX_N, PLAN_WIDTH)
+# array, so it raises IndexError, gets swallowed by its try/except, and the extra is silently
+# always 0. Indexed correctly here: POSITION is x,y,z at 0,1,2, so y is feature 1.
+# The helper itself lives in drive_helpers next to smooth_value, whose tau it computes, so it can
+# be unit tested without pulling in the model runtime.
+
 # The built-in artifact declares no model_type; the ones that do say which of the two layouts
 # they use. A split artifact runs vision and one or more policies as separate graphs and
 # publishes a metadata block per graph, so its outputs arrive as several tensors.
@@ -58,7 +78,8 @@ SUPPLIED_NPY_INPUTS = ('traffic_convention', 'action_t', 'prev_action')
 
 
 def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.ModelDataV2.Action,
-                          lat_action_t: float, long_action_t: float, v_ego: float) -> log.ModelDataV2.Action:
+                          lat_action_t: float, long_action_t: float, v_ego: float,
+                          lat_smooth_seconds: float = LAT_SMOOTH_SECONDS) -> log.ModelDataV2.Action:
   if 'action' not in model_output:
     plan = model_output['plan'][0]
     desired_accel = get_accel_from_plan(plan[:,Plan.VELOCITY][:,0],
@@ -76,7 +97,7 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
   stop = should_stop(v_ego, desired_accel)
   desired_accel = smooth_value(desired_accel, prev_action.desiredAcceleration, LONG_SMOOTH_SECONDS)
   if v_ego > MIN_LAT_CONTROL_SPEED:
-    desired_curvature = smooth_value(desired_curvature, prev_action.desiredCurvature, LAT_SMOOTH_SECONDS)
+    desired_curvature = smooth_value(desired_curvature, prev_action.desiredCurvature, lat_smooth_seconds)
   else:
     desired_curvature = prev_action.desiredCurvature
 
@@ -472,7 +493,22 @@ def main(demo=False):
   DH = DesireHelper()
   OB = OvertakeBlock()
 
+  # Optional lateral smoothing (LatSmoothSec, centiseconds; 0 = off). Re-read periodically so it
+  # can be turned on mid-drive from /live. lat_smooth_dynamic is what actually got applied on the
+  # previous frame, and it feeds lat_delay so the model is asked to look far enough ahead to pay
+  # for the filter's own lag -- the same compensation upstream does with the LAT_SMOOTH_SECONDS
+  # constant, just following a value that moves.
+  model_frame = 0
+  lat_smooth_seconds = LAT_SMOOTH_SECONDS
+  lat_smooth_dynamic = LAT_SMOOTH_SECONDS
+
   while True:
+    model_frame += 1
+    if model_frame % 100 == 0:
+      try:
+        lat_smooth_seconds = params.get_float("LatSmoothSec") * 0.01
+      except Exception:
+        lat_smooth_seconds = LAT_SMOOTH_SECONDS
     # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
     while meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
       buf_main = vipc_client_main.recv()
@@ -510,7 +546,7 @@ def main(demo=False):
     is_rhd = sm["driverMonitoringState"].isRHD
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
-    lat_delay = sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+    lat_delay = sm["lateralDelay"].lateralDelay + lat_smooth_dynamic
     if sm.updated["extrinsicsCalibration"] and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["extrinsicsCalibration"].rpyCalib, dtype=np.float32)
       dc = DEVICE_CAMERAS[(str(sm['deviceState'].deviceType), str(sm['narrowRoadCameraState'].sensor))]
@@ -576,7 +612,9 @@ def main(demo=False):
       drivingdata_send = messaging.new_message('drivingModelData')
       posenet_send = messaging.new_message('cameraOdometry')
 
-      action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+      lat_smooth_dynamic, _y_std_1s = get_lat_smooth_seconds_dynamic(model_output, lat_smooth_seconds)
+      action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
+                                     lat_smooth_dynamic)
       prev_action = action
       fill_model_msg(modelv2_send, model_output, action,
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
