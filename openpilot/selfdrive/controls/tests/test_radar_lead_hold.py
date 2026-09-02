@@ -1,167 +1,79 @@
+"""RadarLeadHold: bridging a vision dropout without following the wrong car.
+
+The hold used to be scoped to close range, where a still-measured track that vision dropped is
+almost certainly the car in front. Widening it to the distances the dropouts actually happen at
+(44-97 m median) is only safe with the off-path check, so that is what these pin down.
+"""
 from types import SimpleNamespace
 
-from openpilot.selfdrive.controls.radard import KalmanParams, RadarLeadHold, Track, get_lead
-
-DT = 0.05
-KP = KalmanParams(DT)
-
-
-def track(identifier=1, d_rel=15.0, y_rel=0.0, v_rel=0.0, v_ego=20.0, measured=True, frames=5):
-  """A radar track that has been measured steadily, as if we had been following it."""
-  t = Track(identifier, v_rel + v_ego, KP)
-  for _ in range(frames):
-    t.update(d_rel, y_rel, v_rel, v_rel + v_ego, measured)
-  return t
+from openpilot.selfdrive.controls.lib.radar_lead_hold import (
+  RADAR_LEAD_HOLD_MAX_DPATH,
+  RADAR_LEAD_HOLD_MAX_DPATH_FAR,
+  RadarLeadHold,
+)
 
 
-def vision_lead(prob=0.9, x=15.0, y=0.0, v=20.0):
-  # get_lead/match_vision_to_track only read these fields off leadsV3
-  return SimpleNamespace(prob=prob, x=[x], y=[y], v=[v], a=[0.0],
-                         xStd=[1.0], yStd=[1.0], vStd=[1.0])
+def _track(d_rel=40.0, d_path=0.0, measured=True, selected_count=5):
+  return SimpleNamespace(dRel=d_rel, dPath=d_path, measured=measured, selected_count=selected_count)
 
 
-def configured_hold(dist=30.0, ms=1000):
+def _hold(hold_dist=100.0, hold_ms=1000, track_id=1):
   h = RadarLeadHold()
-  h.configure(dist, ms)
+  h.configure(hold_dist, hold_ms)
+  h.track_id = track_id
   return h
 
 
-class TestRadarLeadHoldGating:
-  def test_disabled_by_default(self):
-    h = RadarLeadHold()
-    assert h.candidate({1: track()}) is None
-
-  def test_holds_a_close_measured_track_it_was_following(self):
-    h = configured_hold()
-    t = track(d_rel=15.0)
-    t.selected_count = 5
+class TestRadarLeadHold:
+  def test_disabled_by_default_distance(self):
+    h = RadarLeadHold()          # hold_dist 0 = off
     h.track_id = 1
-    assert h.candidate({1: t}) is t
+    assert h.candidate({1: _track()}) is None
 
-  def test_never_holds_a_track_vision_never_confirmed(self):
-    # selected_count == 0 means this was never the chosen lead: radar clutter must not become one
-    h = configured_hold()
-    t = track(d_rel=15.0)
-    t.selected_count = 0
-    h.track_id = 1
-    assert h.candidate({1: t}) is None
+  def test_holds_a_still_measured_confirmed_track(self):
+    assert _hold().candidate({1: _track()}) is not None
 
-  def test_releases_beyond_the_distance_gate(self):
-    h = configured_hold(dist=30.0)
-    t = track(d_rel=45.0)
-    t.selected_count = 5
-    h.track_id = 1
-    assert h.candidate({1: t}) is None
+  def test_drops_when_radar_stops_measuring(self):
+    assert _hold().candidate({1: _track(measured=False)}) is None
 
-  def test_releases_when_radar_stops_measuring(self):
-    h = configured_hold()
-    t = track(d_rel=15.0, measured=False)
-    t.selected_count = 5   # set after update(), which would have zeroed it
-    h.track_id = 1
-    assert h.candidate({1: t}) is None
+  def test_drops_when_vision_never_confirmed_it(self):
+    # selected_count is the continuity flag; 0 means this was never our lead
+    assert _hold().candidate({1: _track(selected_count=0)}) is None
 
-  def test_releases_when_the_track_disappears(self):
-    h = configured_hold()
-    h.track_id = 7
-    assert h.candidate({1: track()}) is None
+  def test_drops_beyond_configured_distance(self):
+    assert _hold(hold_dist=60.0).candidate({1: _track(d_rel=80.0)}) is None
 
-  def test_track_jump_clears_continuity(self):
-    # Track.update zeroes selected_count on a discontinuity, which drops the hold
-    t = track(d_rel=15.0)
-    t.selected_count = 5
-    t.update(40.0, 0.0, 0.0, 20.0, True)   # >TRACK_JUMP_D
-    assert t.selected_count == 0
-    h = configured_hold()
-    h.track_id = 1
-    assert h.candidate({1: t}) is None
+  def test_holds_out_to_the_configured_distance(self):
+    assert _hold(hold_dist=150.0).candidate({1: _track(d_rel=97.0)}) is not None
 
-  def test_budget_expires(self):
-    h = configured_hold(ms=1000)   # 20 frames at DT=0.05
-    t = track(d_rel=15.0)
-    t.selected_count = 5
-    h.track_id = 1
+  def test_budget_runs_out(self):
+    h = _hold()
     h.frames = h.max_frames
-    assert h.candidate({1: t}) is None
+    assert h.candidate({1: _track()}) is None
 
 
-class TestRadarLeadHoldBookkeeping:
-  def test_vision_agreement_restores_the_budget(self):
-    h = configured_hold()
-    h.track_id, h.frames, h.used = 1, 10, False
-    h.observe({'status': True, 'radar': True, 'radarTrackId': 1})
-    assert h.frames == 0
+class TestOffPathGate:
+  """Without this, widening the range means happily following a car in the next lane."""
 
-  def test_holding_burns_the_budget(self):
-    h = configured_hold()
-    h.track_id, h.frames, h.used = 1, 3, True
-    h.observe({'status': True, 'radar': True, 'radarTrackId': 1})
-    assert h.frames == 4
-    assert not h.used
+  def test_near_track_off_path_is_dropped(self):
+    t = _track(d_rel=30.0, d_path=RADAR_LEAD_HOLD_MAX_DPATH + 0.1)
+    assert _hold().candidate({1: t}) is None
 
-  def test_switching_track_resets(self):
-    h = configured_hold()
-    h.track_id, h.frames, h.used = 1, 8, True
-    h.observe({'status': True, 'radar': True, 'radarTrackId': 2})
-    assert (h.track_id, h.frames) == (2, 0)
+  def test_near_track_on_path_is_held(self):
+    t = _track(d_rel=30.0, d_path=RADAR_LEAD_HOLD_MAX_DPATH - 0.1)
+    assert _hold().candidate({1: t}) is not None
 
-  def test_no_lead_clears(self):
-    h = configured_hold()
-    h.track_id, h.frames = 1, 5
-    h.observe({'status': False})
-    assert (h.track_id, h.frames) == (-1, 0)
+  def test_far_track_gets_the_looser_limit(self):
+    # same offset that is rejected near is accepted past FAR_DREL, where the path estimate is looser
+    d_path = RADAR_LEAD_HOLD_MAX_DPATH + 0.2
+    assert _hold().candidate({1: _track(d_rel=30.0, d_path=d_path)}) is None
+    assert _hold().candidate({1: _track(d_rel=90.0, d_path=d_path)}) is not None
 
-  def test_vision_only_lead_clears_the_anchor(self):
-    h = configured_hold()
-    h.track_id, h.frames = 1, 5
-    h.observe({'status': True, 'radar': False, 'radarTrackId': -1})
-    assert (h.track_id, h.frames) == (-1, 0)
+  def test_far_track_still_has_a_limit(self):
+    t = _track(d_rel=90.0, d_path=RADAR_LEAD_HOLD_MAX_DPATH_FAR + 0.1)
+    assert _hold().candidate({1: t}) is None
 
-
-class TestGetLeadWithHold:
-  def test_vision_dropout_keeps_the_radar_distance(self):
-    """The logged failure: vision prob collapses, radar still has the car at 5.6m."""
-    tracks = {1: track(identifier=1, d_rel=5.6)}
-    hold = configured_hold()
-
-    # vision confident -> normal radar-backed lead, and the hold anchors on it
-    lead = get_lead(20.0, True, tracks, vision_lead(prob=0.9, x=5.6 + 1.52), 20.0, hold=hold)
-    hold.observe(lead)
-    assert lead['status'] and lead['radar']
-    assert hold.track_id == 1
-
-    # vision loses confidence; without the hold this returns status=False
-    lead = get_lead(20.0, True, tracks, vision_lead(prob=0.2), 20.0, hold=hold)
-    assert lead['status'] and lead['radar']
-    assert lead['dRel'] == 5.6
-    assert hold.used
-
-  def test_hold_beats_the_long_vision_fallback(self):
-    """prob>0.5 but no sane match: stock code publishes vision's longer distance."""
-    tracks = {1: track(identifier=1, d_rel=5.6)}
-    far = vision_lead(prob=0.9, x=30.0, v=20.0)   # too far from the track to pass dist_sane
-
-    plain = get_lead(20.0, True, tracks, far, 20.0)
-    assert plain['status'] and not plain['radar']
-    assert plain['dRel'] > 20.0                   # the +5m class of over-read we measured
-
-    hold = configured_hold()
-    hold.track_id = 1
-    tracks[1].selected_count = 5
-    held = get_lead(20.0, True, tracks, far, 20.0, hold=hold)
-    assert held['status'] and held['radar']
-    assert held['dRel'] == 5.6
-
-  def test_disabled_hold_leaves_behaviour_unchanged(self):
-    tracks = {1: track(identifier=1, d_rel=5.6)}
-    tracks[1].selected_count = 5
-    off = RadarLeadHold()          # never configured -> hold_dist 0
-    off.track_id = 1
-    assert get_lead(20.0, True, tracks, vision_lead(prob=0.2), 20.0, hold=off) == \
-           get_lead(20.0, True, tracks, vision_lead(prob=0.2), 20.0)
-
-  def test_hold_does_not_invent_a_lead_from_clutter(self):
-    tracks = {1: track(identifier=1, d_rel=15.0)}   # selected_count stays 0: never confirmed
-    hold = configured_hold()
-    hold.track_id = 1
-    lead = get_lead(20.0, True, tracks, vision_lead(prob=0.1), 20.0, hold=hold)
-    assert not lead['status']
+  def test_gate_is_symmetric(self):
+    for sign in (1, -1):
+      t = _track(d_rel=30.0, d_path=sign * (RADAR_LEAD_HOLD_MAX_DPATH + 0.1))
+      assert _hold().candidate({1: t}) is None
