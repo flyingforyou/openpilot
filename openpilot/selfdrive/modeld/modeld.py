@@ -498,17 +498,24 @@ def main(demo=False):
   # previous frame, and it feeds lat_delay so the model is asked to look far enough ahead to pay
   # for the filter's own lag -- the same compensation upstream does with the LAT_SMOOTH_SECONDS
   # constant, just following a value that moves.
+  # Plain Params has no get_float/get_int (that is carrot's TypedParams wrapper); get() already
+  # returns an int for an INT key. A silent except here is what left carrot's own version of this
+  # feature quietly doing nothing, so say so once rather than just falling back to off.
   model_frame = 0
   lat_smooth_seconds = LAT_SMOOTH_SECONDS
   lat_smooth_dynamic = LAT_SMOOTH_SECONDS
+  lat_smooth_read_failed = False
 
   while True:
     model_frame += 1
     if model_frame % 100 == 0:
       try:
-        lat_smooth_seconds = params.get_float("LatSmoothSec") * 0.01
+        lat_smooth_seconds = (params.get("LatSmoothSec") or 0) * 0.01
       except Exception:
         lat_smooth_seconds = LAT_SMOOTH_SECONDS
+        if not lat_smooth_read_failed:
+          lat_smooth_read_failed = True
+          cloudlog.exception("LatSmoothSec unreadable, lateral smoothing stays off")
     # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
     while meta_main.timestamp_sof < meta_extra.timestamp_sof + 25000000:
       buf_main = vipc_client_main.recv()
