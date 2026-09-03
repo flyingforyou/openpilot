@@ -43,7 +43,8 @@ class CarController(CarControllerBase):
   def __init__(self, dbc_names, CP):
     super().__init__(dbc_names, CP)
     self.apply_angle_last = 0
-    self.ic_model = None  # set by card only when modelV2 is plumbed; update_ic guards on None
+    # No ic_model: the lane-change state the cluster needs comes off CarControl's blinkers instead
+    # of modelV2, so nothing here has to be plumbed by card. See update_ic.
     # Floor for the braking jerk handed to the DI, m/s^3; 0 keeps the full JERK_LIMIT_MIN.
     # Set by card from TeslaBrakeJerk so it can be changed without a rebuild.
     self.brake_jerk_base = 0.0
@@ -128,10 +129,20 @@ class CarController(CarControllerBase):
       # perception momentarily reports. The outer-line fade belongs to DAS_leftLaneExists/
       # DAS_rightLaneExists themselves (see create_ic_lanes, already a pure clone of that), not to
       # AutopilotStatus. Drive the dashed crossed-line animation from openpilot's own lane change.
-      lane_change = 0
-      if self.ic_model is not None and str(self.ic_model.meta.laneChangeState) in ("laneChangeStarting", "laneChangeFinishing"):
-        direction = str(self.ic_model.meta.laneChangeDirection)
-        lane_change = -1 if direction == "left" else 1 if direction == "right" else 0
+      # Dashed crossed line during a lane change. A stock capture (0000009f, seg 1 t+56.5s) shows
+      # the factory doing exactly this: DAS_autoLaneChangeState 7 -> 9 (ALC_IN_PROGRESS_L) held for
+      # the ~6 s of the manoeuvre with the left blinker on, autopilotStatus staying 3 and
+      # handsOnState staying 2 throughout -- so only this one field moves.
+      #
+      # Driven off CarControl's blinkers rather than modelV2: controlsd sets them only while a lane
+      # change is running and puts the direction in them (see its "Enable blinkers while lane
+      # changing"), CarControl is already subscribed by card, and a fresh CarControl each cycle
+      # means they cannot latch. Reading modelV2 instead would mean deserialising the model message
+      # inside the 100Hz control loop for one enum -- which is why that plumbing was dropped.
+      #
+      # Known difference from stock: openpilot's blinkers go true at preLaneChange, so the line
+      # goes dashed when the driver signals rather than when the car starts moving over.
+      lane_change = -1 if CC.leftBlinker else 1 if CC.rightBlinker else 0
       sends.append(self.tesla_can.create_ic_status(CS.autopilot_status, on, CS.hands_on_level, lane_change))
       self.ic_last_status_nanos = CS.autopilot_status_nanos
 
