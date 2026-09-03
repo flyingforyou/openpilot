@@ -234,6 +234,28 @@ class CarControllerParams:
   JERK_LIMIT_MIN = -4.9  # m/s^3, ACC faults at 5.0
   JERK_RAMP_RATE = JERK_LIMIT_MAX * 0.002  # m/s^3 per control step, for smooth gas override
 
+  # Braking jerk authority (DAS_jerkMin). Pinned at the fault limit, the DI grabs the brakes far
+  # harder than openpilot is actually asking for: measured over the 09-02 and 09-03 routes with the
+  # driver's pedals excluded, commanded jerk ran a median 0.41 m/s^3 (p90 1.07) while the car
+  # delivered a median 0.97 (p90 3.5) and exceeded 4.9 on ~5% of braking samples. That 2.4x
+  # over-response, and the pressure cycling it implies, is the juddering heard when it grabs at
+  # speed. So hand out authority in proportion to the jerk being asked for instead of a blanket
+  # maximum. Off unless TeslaBrakeJerk is set, and the cap stays JERK_LIMIT_MIN either way.
+  #
+  # Carrot solves the same problem for Hyundai (HyundaiJerk.make_jerk) with a 1.2 floor opened by
+  # `2.0 * max(0, -accel - 2.8)`. That opening term is useless here -- this car's commanded accel
+  # reached -2.8 on 0.0% of today's braking samples -- so the demand signal is the commanded jerk
+  # rather than the commanded accel.
+  JERK_BRAKE_GAIN = 2.0        # authority granted per unit of commanded jerk
+  JERK_BRAKE_DT = 0.04         # s; create_longitudinal_command runs at 25Hz
+  JERK_BRAKE_DECAY = 0.05      # how fast remembered demand relaxes once it stops rising
+  # Opening the authority is itself ramped. The case this feature exists for -- a stopped car
+  # recognised late, where the planner steps the accel command -- is exactly the case where an
+  # instant jump to the full limit reproduces the grab it is meant to remove. Spread it over
+  # ~0.3 s instead: the floor (TeslaBrakeJerk) still applies throughout, so the car can always
+  # keep building deceleration while the ceiling lifts.
+  JERK_BRAKE_OPEN_RATE = 0.4   # m/s^3 per 25Hz frame -> base to full in ~0.3 s
+
 
 class TeslaLegacyParams(IntFlag):
   NO_SDM1 = 1

@@ -44,6 +44,9 @@ class CarController(CarControllerBase):
     super().__init__(dbc_names, CP)
     self.apply_angle_last = 0
     self.ic_model = None  # set by card only when modelV2 is plumbed; update_ic guards on None
+    # Floor for the braking jerk handed to the DI, m/s^3; 0 keeps the full JERK_LIMIT_MIN.
+    # Set by card from TeslaBrakeJerk so it can be changed without a rebuild.
+    self.brake_jerk_base = 0.0
     self.ic_radar = None
     self.ic_enabled = False
     self.ic_last_lanes_nanos = 0
@@ -264,7 +267,7 @@ class CarController(CarControllerBase):
         accel = float(np.clip(actuators.accel, self.CP.minAccel, CarControllerParams.ACCEL_MAX))
         cntr = (self.frame // 4) % 8
         can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive, CS.out.gasPressed,
-                                                                     CC.hudControl.setSpeed))
+                                                                     CC.hudControl.setSpeed, self.brake_jerk_base))
 
     elif self.CP.carFingerprint not in LEGACY_CARS:
       # Increment counter so cancel is prioritized even without openpilot longitudinal

@@ -144,6 +144,12 @@ class Car:
           int(self.params.get("TeslaCoopMaxTorqueCNm", return_default=True) or 250) / 100.0,
           int(self.params.get("TeslaCoopLatAccelCms", return_default=True) or 150) / 100.0)
 
+    # Braking jerk authority floor, m/s^3 (param is in 0.1 m/s^3 steps). 0 leaves DAS_jerkMin at
+    # the fault limit, which is what makes the car grab harder than the command asks for -- see
+    # CarControllerParams.JERK_BRAKE_GAIN. Read here because the car port has no access to params.
+    if self.CP.brand == "tesla" and self.CI.CC is not None and hasattr(self.CI.CC, "brake_jerk_base"):
+      self.CI.CC.brake_jerk_base = (self.params.get("TeslaBrakeJerk", return_default=True) or 0) / 10.0
+
     # Cluster MAX speed sync. Writes the cruise stalk, so it stays opt-in and panda restricts the
     # lever field to the four speed steps -- the same field selects gear on this car.
     if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaSyncClusterSpeed"):

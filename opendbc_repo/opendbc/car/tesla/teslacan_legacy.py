@@ -19,6 +19,9 @@ class TeslaCANRaven:
     self.CCP = CarControllerParams
     self.jerk_upper = self.CCP.JERK_LIMIT_MAX
     self.jerk_lower = self.CCP.JERK_LIMIT_MIN
+    self.accel_last = 0.0
+    self.cmd_jerk = 0.0
+    self.jerk_brake_cap = self.CCP.JERK_LIMIT_MIN
 
   @staticmethod
   def checksum(msg_id, dat):
@@ -141,7 +144,35 @@ class TeslaCANRaven:
     values["CRC_STW_ACTN_RQ"] = j1850_crc(data[:7])
     return self.packers[CANBUS.party].make_can_msg("STW_ACTN_RQ", CANBUS.party, values)
 
-  def create_longitudinal_command(self, acc_state, accel, counter, v_ego, active, gas_pressed, hud_set_speed=0.0):
+  def _brake_jerk_limit(self, accel, active, base):
+    """How much braking jerk to let the DI use, in proportion to what we are asking for.
+
+    base <= 0 keeps the old behaviour: the full JERK_LIMIT_MIN, which lets the car change
+    deceleration ~2.4x faster than the command ever asks for. Authority opens immediately when
+    demand rises and relaxes slowly, so tightening it can never lag a real demand for brakes.
+    """
+    if not active:
+      self.accel_last = accel
+      self.cmd_jerk = 0.0
+      return self.CCP.JERK_LIMIT_MIN
+
+    # Remembering more demand than could ever be granted just makes a single glitch -- or the step
+    # from accel_last on the first active frame -- hold authority wide open while it decays.
+    max_useful = abs(self.CCP.JERK_LIMIT_MIN) / self.CCP.JERK_BRAKE_GAIN
+    cmd_jerk = min(abs(accel - self.accel_last) / self.CCP.JERK_BRAKE_DT, max_useful)
+    self.accel_last = accel
+    if cmd_jerk > self.cmd_jerk:
+      self.cmd_jerk = cmd_jerk
+    else:
+      self.cmd_jerk += (cmd_jerk - self.cmd_jerk) * self.CCP.JERK_BRAKE_DECAY
+
+    if base <= 0.0:
+      return self.CCP.JERK_LIMIT_MIN
+    granted = max(base, self.CCP.JERK_BRAKE_GAIN * self.cmd_jerk)
+    return -min(granted, abs(self.CCP.JERK_LIMIT_MIN))
+
+  def create_longitudinal_command(self, acc_state, accel, counter, v_ego, active, gas_pressed,
+                                  hud_set_speed=0.0, brake_jerk_base=0.0):
     set_speed = max(v_ego * CV.MS_TO_KPH, 0)
     if active:
       # Zero is how this car is told to slow down, not a placeholder for a display value: the DI
@@ -157,17 +188,37 @@ class TeslaCANRaven:
       else:
         set_speed = V_CRUISE_MAX
 
+    # The gas-override envelope is untouched: it still ramps back to the full limit after the
+    # driver lifts off, at its own slow rate.
     if gas_pressed:
       self.jerk_upper = self.jerk_lower = 0.0
     else:
       self.jerk_lower = max(self.jerk_lower - self.CCP.JERK_RAMP_RATE, self.CCP.JERK_LIMIT_MIN)
       self.jerk_upper = min(self.jerk_upper + self.CCP.JERK_RAMP_RATE, self.CCP.JERK_LIMIT_MAX)
 
+    # Then cap braking authority to what is actually being asked for. Applied to the value sent
+    # rather than to the envelope, so it can only ever hand out LESS than before, it opens the
+    # instant demand rises (no rate limit to lag an emergency), and with the feature off the
+    # frame is bit-for-bit what it always was.
+    jerk_min = self.jerk_lower
+    demand_cap = self._brake_jerk_limit(accel, active, brake_jerk_base)
+    if brake_jerk_base > 0.0 and active:
+      # Opening is ramped, closing follows the demand straight down (it already decays slowly).
+      # Without the ramp a late-seen stopped car steps the command, demand spikes, and the ceiling
+      # jumps to the fault limit in one frame -- which is the grab this exists to remove.
+      if demand_cap < self.jerk_brake_cap:
+        self.jerk_brake_cap = max(demand_cap, self.jerk_brake_cap - self.CCP.JERK_BRAKE_OPEN_RATE)
+      else:
+        self.jerk_brake_cap = demand_cap
+      jerk_min = max(jerk_min, self.jerk_brake_cap)  # both negative; less negative is tighter
+    else:
+      self.jerk_brake_cap = -brake_jerk_base if brake_jerk_base > 0.0 else self.CCP.JERK_LIMIT_MIN
+
     values = {
       "DAS_setSpeed": set_speed,
       "DAS_accState": acc_state,
       "DAS_aebEvent": 0,
-      "DAS_jerkMin": self.jerk_lower,
+      "DAS_jerkMin": jerk_min,
       "DAS_jerkMax": self.jerk_upper,
       "DAS_accelMin": accel,
       "DAS_accelMax": max(accel, 0),

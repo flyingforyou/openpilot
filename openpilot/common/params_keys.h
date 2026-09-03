@@ -256,6 +256,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Hand a car that is merging in front to the planner as a second obstacle, before the gap
     // has collapsed. Replayed over three drives it warns a median 2.1s early; a wrong call costs
     // a little room given to a real car in the next lane.
+    // Braking jerk floor handed to the DI, in 0.1 m/s^3 steps; 0 = off (full JERK_LIMIT_MIN,
+    // the shipped behaviour). See CarControllerParams.JERK_BRAKE_GAIN for why.
+    {"TeslaBrakeJerk", {PERSISTENT, INT, "0"}},
     {"TeslaCutInLead", {PERSISTENT, BOOL, "1"}},
     {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "150"}},
     {"TeslaCoopMaxTorqueCNm", {PERSISTENT, INT, "250"}},
