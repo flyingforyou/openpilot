@@ -144,7 +144,7 @@ class TeslaCANRaven:
     values["CRC_STW_ACTN_RQ"] = j1850_crc(data[:7])
     return self.packers[CANBUS.party].make_can_msg("STW_ACTN_RQ", CANBUS.party, values)
 
-  def _brake_jerk_limit(self, accel, active, base):
+  def _brake_jerk_limit(self, accel, active, base, ceiling=0.0):
     """How much braking jerk to let the DI use, in proportion to what we are asking for.
 
     base <= 0 keeps the old behaviour: the full JERK_LIMIT_MIN, which lets the car change
@@ -158,7 +158,10 @@ class TeslaCANRaven:
 
     # Remembering more demand than could ever be granted just makes a single glitch -- or the step
     # from accel_last on the first active frame -- hold authority wide open while it decays.
-    max_useful = abs(self.CCP.JERK_LIMIT_MIN) / self.CCP.JERK_BRAKE_GAIN
+    # Clamped to the fault limit regardless of what was asked for: the ACC faults at 5.0, so a
+    # ceiling above JERK_LIMIT_MIN must not become a way to exceed it.
+    top = min(ceiling, abs(self.CCP.JERK_LIMIT_MIN)) if ceiling > 0.0 else abs(self.CCP.JERK_LIMIT_MIN)
+    max_useful = top / self.CCP.JERK_BRAKE_GAIN
     # Only movement toward braking counts. Taking abs() here let an acceleration transient -- the
     # command easing off the brakes, or opening up once a lead pulled away -- hand out BRAKING
     # authority, so the cap could already be wide open at the moment a hard stop began. Backwards
@@ -173,11 +176,15 @@ class TeslaCANRaven:
 
     if base <= 0.0:
       return self.CCP.JERK_LIMIT_MIN
+    # The ceiling is the lever for hard braking, where the floor is not: measured at floor 0.8,
+    # ordinary braking sat right on it (median -0.80) but hard braking still opened to -4.4 at p10
+    # and -4.8 at worst on 15% of frames. Lowering the floor cannot touch that; capping how far
+    # demand may open it can. Unlike the floor this does bite during a real stop.
     granted = max(base, self.CCP.JERK_BRAKE_GAIN * self.cmd_jerk)
-    return -min(granted, abs(self.CCP.JERK_LIMIT_MIN))
+    return -min(granted, top)
 
   def create_longitudinal_command(self, acc_state, accel, counter, v_ego, active, gas_pressed,
-                                  hud_set_speed=0.0, brake_jerk_base=0.0):
+                                  hud_set_speed=0.0, brake_jerk_base=0.0, brake_jerk_ceiling=0.0):
     set_speed = max(v_ego * CV.MS_TO_KPH, 0)
     if active:
       # Zero is how this car is told to slow down, not a placeholder for a display value: the DI
@@ -206,7 +213,7 @@ class TeslaCANRaven:
     # instant demand rises (no rate limit to lag an emergency), and with the feature off the
     # frame is bit-for-bit what it always was.
     jerk_min = self.jerk_lower
-    demand_cap = self._brake_jerk_limit(accel, active, brake_jerk_base)
+    demand_cap = self._brake_jerk_limit(accel, active, brake_jerk_base, brake_jerk_ceiling)
     if brake_jerk_base > 0.0 and active:
       # Opening is ramped, closing follows the demand straight down (it already decays slowly).
       # Without the ramp a late-seen stopped car steps the command, demand spikes, and the ceiling

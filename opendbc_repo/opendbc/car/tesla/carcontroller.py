@@ -52,6 +52,9 @@ class CarController(CarControllerBase):
     # Floor for the braking jerk handed to the DI, m/s^3; 0 keeps the full JERK_LIMIT_MIN.
     # Set by card from TeslaBrakeJerk so it can be changed without a rebuild.
     self.brake_jerk_base = 0.0
+    # Ceiling on that authority, m/s^3; 0 = the full JERK_LIMIT_MIN. Set by card from
+    # TeslaBrakeJerkMax. This one does limit real hard braking -- see _brake_jerk_limit.
+    self.brake_jerk_ceiling = 0.0
     # Metres to pull a distant lead in to on the cluster only; 0 leaves it truthful.
     # Set by card from TeslaICLeadMaxM. See _ic_lead.
     self.ic_lead_display_max = 0.0
@@ -310,7 +313,8 @@ class CarController(CarControllerBase):
         accel = float(np.clip(actuators.accel, self.CP.minAccel, CarControllerParams.ACCEL_MAX))
         cntr = (self.frame // 4) % 8
         can_sends.append(self.tesla_can.create_longitudinal_command(state, accel, cntr, CS.out.vEgo, CC.longActive, CS.out.gasPressed,
-                                                                     CC.hudControl.setSpeed, self.brake_jerk_base))
+                                                                     CC.hudControl.setSpeed, self.brake_jerk_base,
+                                                                     self.brake_jerk_ceiling))
 
     elif self.CP.carFingerprint not in LEGACY_CARS:
       # Increment counter so cancel is prioritized even without openpilot longitudinal

@@ -149,6 +149,7 @@ class Car:
     # CarControllerParams.JERK_BRAKE_GAIN. Read here because the car port has no access to params.
     if self.CP.brand == "tesla" and self.CI.CC is not None and hasattr(self.CI.CC, "brake_jerk_base"):
       self.CI.CC.brake_jerk_base = (self.params.get("TeslaBrakeJerk", return_default=True) or 0) / 10.0
+      self.CI.CC.brake_jerk_ceiling = (self.params.get("TeslaBrakeJerkMax", return_default=True) or 0) / 10.0
 
     # Cluster-only distance clamp for a far lead, metres; 0 leaves it truthful. See _ic_lead.
     if self.CP.brand == "tesla" and self.CI.CC is not None and hasattr(self.CI.CC, "ic_lead_display_max"):

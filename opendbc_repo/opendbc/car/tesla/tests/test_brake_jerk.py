@@ -157,3 +157,37 @@ class TestMessageStillValid:
         can.create_longitudinal_command(4, -2.0, 0, 20.0, True, False, 0.0, BASE)
         moved = abs(can.jerk_lower - 0.0)
         assert moved <= CarControllerParams.JERK_RAMP_RATE + 1e-9, "must not step in one frame"
+
+
+class TestCeiling:
+    """The floor governs ordinary braking; the ceiling is the only thing that governs a hard stop.
+    Measured at floor 0.8, hard braking still opened to -4.37 at p10 because demand lifted it."""
+
+    def test_off_reaches_the_full_limit(self):
+        can = _can()
+        limit = _limit(can, [-4.0 * DT * i for i in range(30)], BASE)
+        assert abs(limit - CarControllerParams.JERK_LIMIT_MIN) < 0.2
+
+    def test_ceiling_caps_hard_demand(self):
+        can = _can()
+        can._brake_jerk_limit(0.0, False, BASE, 3.0)
+        limit = None
+        for i in range(30):
+            limit = can._brake_jerk_limit(-4.0 * DT * i, True, BASE, 3.0)
+        assert limit == -3.0
+
+    def test_ceiling_does_not_raise_the_floor(self):
+        can = _can()
+        can._brake_jerk_limit(-1.0, False, BASE, 3.0)
+        limit = None
+        for _ in range(50):
+            limit = can._brake_jerk_limit(-1.0, True, BASE, 3.0)
+        assert limit == -BASE, "steady command must still sit on the floor"
+
+    def test_ceiling_never_exceeds_the_fault_limit(self):
+        can = _can()
+        can._brake_jerk_limit(0.0, False, BASE, 99.0)
+        limit = None
+        for i in range(30):
+            limit = can._brake_jerk_limit(-4.0 * DT * i, True, BASE, 99.0)
+        assert limit >= CarControllerParams.JERK_LIMIT_MIN
