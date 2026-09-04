@@ -159,7 +159,12 @@ class TeslaCANRaven:
     # Remembering more demand than could ever be granted just makes a single glitch -- or the step
     # from accel_last on the first active frame -- hold authority wide open while it decays.
     max_useful = abs(self.CCP.JERK_LIMIT_MIN) / self.CCP.JERK_BRAKE_GAIN
-    cmd_jerk = min(abs(accel - self.accel_last) / self.CCP.JERK_BRAKE_DT, max_useful)
+    # Only movement toward braking counts. Taking abs() here let an acceleration transient -- the
+    # command easing off the brakes, or opening up once a lead pulled away -- hand out BRAKING
+    # authority, so the cap could already be wide open at the moment a hard stop began. Backwards
+    # on its face, and it is what left some grab audible at hard stops with the feature on.
+    toward_braking = max(self.accel_last - accel, 0.0)
+    cmd_jerk = min(toward_braking / self.CCP.JERK_BRAKE_DT, max_useful)
     self.accel_last = accel
     if cmd_jerk > self.cmd_jerk:
       self.cmd_jerk = cmd_jerk

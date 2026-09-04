@@ -73,6 +73,36 @@ class TestAuthorityTracksDemand:
         assert can.cmd_jerk > 0.5 * opened, "but not collapse in a few frames"
 
 
+class TestOnlyBrakingDemandCounts:
+    """Demand is directional. Taking abs() of the command delta let an acceleration transient hand
+    out BRAKING authority, so the cap could already be wide open when a hard stop began -- which is
+    what left some grab audible with the feature on."""
+
+    def test_easing_off_the_brakes_does_not_open_authority(self):
+        can = _can()
+        # command relaxing from hard braking back toward zero: big |delta|, but no braking demand
+        limit = _limit(can, [-3.0 + 4.0 * DT * i for i in range(20)], BASE)
+        assert limit == -BASE
+
+    def test_accelerating_does_not_open_authority(self):
+        can = _can()
+        limit = _limit(can, [4.0 * DT * i for i in range(20)], BASE)
+        assert limit == -BASE
+
+    def test_braking_demand_still_opens_it(self):
+        can = _can()
+        limit = _limit(can, [-4.0 * DT * i for i in range(20)], BASE)
+        assert limit < -BASE
+
+    def test_acceleration_leaves_no_carried_over_demand(self):
+        """A stretch of acceleration must leave the remembered demand empty, so it contributes
+        nothing to whatever braking comes next. (The step INTO braking is real demand and does
+        open the cap -- spreading that is the open-ramp's job, not this one's.)"""
+        can = _can()
+        _limit(can, [4.0 * DT * i for i in range(25)], BASE)
+        assert can.cmd_jerk < 0.05, "acceleration was remembered as braking demand"
+
+
 class TestStoppedCarRamp:
     """The case this exists for: a stopped car seen late, so the planner steps the accel command.
     Opening the ceiling in one frame there just reproduces the grab, so it has to be spread out."""
