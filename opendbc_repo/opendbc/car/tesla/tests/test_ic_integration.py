@@ -132,7 +132,14 @@ class TestFarLeadDisplayClamp:
     assert CarController._ic_lead(self._lead(100.0), 0.0, 0.0)[0] == 100.0
 
   def test_far_lead_is_pulled_in(self):
-    assert CarController._ic_lead(self._lead(100.0), 0.0, 75.0)[0] == 75.0
+    shown = CarController._ic_lead(self._lead(100.0), 0.0, 75.0)[0]
+    assert 75.0 < shown < 100.0, "pulled in, but not parked on the threshold"
+
+  def test_far_leads_keep_approaching(self):
+    """A hard clamp put every far lead on exactly the threshold, so the car sat frozen there.
+    Compressed distances must still shrink as the real one does."""
+    shown = [CarController._ic_lead(self._lead(d), 0.0, 75.0)[0] for d in (120.0, 100.0, 90.0, 80.0)]
+    assert shown == sorted(shown, reverse=True) and len(set(shown)) == 4
 
   def test_near_lead_is_untouched(self):
     assert CarController._ic_lead(self._lead(40.0), 0.0, 75.0)[0] == 40.0
@@ -148,3 +155,29 @@ class TestFarLeadDisplayClamp:
   def test_field_range_is_respected(self):
     # DAS_objVehDx tops out at 127.5 and 127.5 is the "no object" saturation value
     assert CarController._ic_lead(self._lead(200.0), 0.0, 0.0)[0] <= 126.0
+
+
+class TestNoEmptyLeadFrames:
+  """DAS_object is shared with the factory, which is never blocked on it. An empty frame from us
+  is not neutral -- it contradicts a car the factory is drawing -- so we stay quiet when we have
+  nothing to add."""
+
+  @pytest.mark.parametrize("fingerprint", HW1)
+  def test_silent_when_no_lead(self, fingerprint):
+    cc = _carcontroller(fingerprint)
+    cc.ic_enabled = True
+    cc.frame = 10
+    cc.ic_radar = SimpleNamespace(leadOne=SimpleNamespace(present=False, dRel=0.0, vRel=0.0, yRel=0.0),
+                                  leadTwo=SimpleNamespace(present=False, dRel=0.0, vRel=0.0, yRel=0.0))
+    sends = cc.update_ic(_cc(), _carstate())
+    assert not any(addr == 0x309 for addr, _dat, _bus in sends), "sent an empty object frame"
+
+  @pytest.mark.parametrize("fingerprint", HW1)
+  def test_speaks_when_it_has_a_lead(self, fingerprint):
+    cc = _carcontroller(fingerprint)
+    cc.ic_enabled = True
+    cc.frame = 10
+    cc.ic_radar = SimpleNamespace(leadOne=SimpleNamespace(present=True, dRel=45.0, vRel=-1.0, yRel=0.0),
+                                  leadTwo=SimpleNamespace(present=False, dRel=0.0, vRel=0.0, yRel=0.0))
+    sends = cc.update_ic(_cc(), _carstate())
+    assert any(addr == 0x309 for addr, _dat, _bus in sends)

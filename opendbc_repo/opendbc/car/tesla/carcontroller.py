@@ -18,6 +18,10 @@ from opendbc.car.vehicle_model import VehicleModel
 # radar lead openpilot is about to inject.
 IC_LEAD_MATCH_MAX_DREL = 2.0
 
+# How much of the distance past TeslaICLeadMaxM survives on the cluster. 0.25 keeps a far lead
+# visibly approaching (80 m stays 80, 100 -> 85, 120 -> 90) instead of parking it on the threshold.
+IC_LEAD_FAR_COMPRESS = 0.25
+
 
 # The carcontroller runs at 100Hz. Hold a press long enough for the SCCM's own frames not to be
 # the only thing the DI sees in that window, then wait out its response before judging the error
@@ -96,8 +100,12 @@ class CarController(CarControllerBase):
     if lead is None or not lead.present:
       return None
     d_rel = float(np.clip(lead.dRel, 0.0, 126.0))
-    if display_max > 0.0:
-      d_rel = min(d_rel, display_max)
+    if display_max > 0.0 and d_rel > display_max:
+      # Compressed, not clamped. A hard min() pinned every far lead to exactly the threshold --
+      # measured over a drive at 80 m, all 67 injected objects came out at 80.0 m -- so the car sat
+      # frozen there until it came inside the threshold and only then started moving. Squeezing the
+      # tail instead keeps it approaching, which is the part that reads as real.
+      d_rel = min(display_max + (d_rel - display_max) * IC_LEAD_FAR_COMPRESS, 126.0)
     return (
       d_rel,
       float(np.clip(int(lead.vRel), -30, 26)),
@@ -171,7 +179,14 @@ class CarController(CarControllerBase):
       lead1 = self.ic_radar.leadOne
       if lead1.present and self._factory_already_shows(CS.das_vehicles, lead1.dRel):
         lead1 = None
-      sends.append(self.tesla_can.create_ic_leads(self._ic_lead(lead1, path_c0, self.ic_lead_display_max), None))
+      # Say nothing rather than saying "no object". DAS_object is shared -- the factory keeps
+      # publishing its own objects on this id at ~31Hz and is never blocked -- so an empty frame
+      # from us is not neutral, it actively contradicts a car the factory is drawing. Over a drive
+      # 96.9% of our frames (2090/2157) were empty ones sent straight into that stream. We only
+      # have something to add when we hold a lead the factory is not already showing.
+      injected = self._ic_lead(lead1, path_c0, self.ic_lead_display_max)
+      if injected is not None:
+        sends.append(self.tesla_can.create_ic_leads(injected, None))
     return sends
 
   def update_cluster_speed(self, CC, CS):
