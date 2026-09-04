@@ -299,9 +299,7 @@ CARROT_SETTINGS = {
             "<b>제동 저크 천장</b>을 쓰세요."
             "<br><br><b>⚠ 이번 변경 중 안전에 가장 민감합니다.</b> 2.0 부터 시작해 보시고, 평상시 "
             "제동을 더 부드럽게 하고 싶으면 1.2 → 0.8 로 내려보세요.",
-    "options": [(0, "사용 안 함 (기본)"), (5, "0.5 최대한 강하게"), (6, "0.6"), (8, "0.8"), (10, "1.0"),
-                (12, "1.2 (carrot 값)"), (15, "1.5"), (20, "2.0 (권장 시작점)"), (25, "2.5"),
-                (30, "3.0"), (40, "4.0 거의 지금과 같음")],
+    "range": (0, 40, 1), "scale": 10, "unit": " m/s³", "zero_label": "사용 안 함",
   },
   "TeslaBrakeJerkMax": {
     "label": "└ 제동 저크 천장 (급정거 소음)", "type": "int",
@@ -324,8 +322,7 @@ CARROT_SETTINGS = {
             "</table>"
             "<b>4.0 부터 시작하세요</b> — 최대 저크를 4.9→4.0 으로 18% 낮추면서 실주행 추가거리는 "
             "0.3m 입니다. 부족하면 3.5. <b>3.0 아래로는 비용이 빠르게 커지니</b> 권하지 않습니다.",
-    "options": [(0, "제한 없음 (기본)"), (40, "4.0 (권장 시작점)"), (35, "3.5"), (30, "3.0"),
-                (25, "2.5"), (20, "2.0 (비용 큼)")],
+    "range": (0, 49, 1), "scale": 10, "unit": " m/s³", "zero_label": "제한 없음",
   },
   "TeslaICLeadMaxM": {
     "label": "먼 앞차 계기판 표시 (거리 당김)", "type": "int",
@@ -753,8 +750,17 @@ class Handler(BaseHTTPRequestHandler):
             v = int(bool(v)) if cfg['type'] == 'bool' else int(v)
           except Exception:
             v = None
-          out[k] = {'value': v, 'label': cfg['label'], 'help': cfg['help'],
-                    'options': [{'v': ov, 'label': ol} for ov, ol in cfg['options']]}
+          entry = {'value': v, 'label': cfg['label'], 'help': cfg['help']}
+          if 'range' in cfg:
+            # A continuous knob. lo/hi/step are in the param's own integer units, and scale/unit
+            # only say how to write it next to the slider.
+            lo, hi, step = cfg['range']
+            entry['range'] = {'lo': lo, 'hi': hi, 'step': step,
+                              'scale': cfg.get('scale', 1), 'unit': cfg.get('unit', ''),
+                              'zero': cfg.get('zero_label', '')}
+          else:
+            entry['options'] = [{'v': ov, 'label': ol} for ov, ol in cfg['options']]
+          out[k] = entry
         return out
       return self._send(200, json.dumps({
         'settings': pack(SETTINGS),
@@ -924,7 +930,11 @@ class Handler(BaseHTTPRequestHandler):
 
     for key, value in changes.items():
       cfg = known[key]
-      if value not in [v for v, _ in cfg['options']]:
+      if 'range' in cfg:
+        lo, hi, step = cfg['range']
+        if not (lo <= value <= hi) or (value - lo) % step:
+          return self._send(400, json.dumps({'error': f'{cfg["label"]}: 허용되지 않은 값'}))
+      elif value not in [v for v, _ in cfg['options']]:
         return self._send(400, json.dumps({'error': f'{cfg["label"]}: 허용되지 않은 값'}))
       try:
         # Params is typed: BOOL wants a real bool and INT a real int, not their string forms
@@ -1091,6 +1101,10 @@ select{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-
 padding:9px 10px;font-size:13.5px;font-family:inherit;max-width:190px}
 select:focus-visible{outline:2px solid var(--radar);outline-offset:1px}
 select.dirty{border-color:var(--hot,#F5B942)}
+.slider{display:flex;align-items:center;gap:10px;min-width:230px}
+.slider input[type=range]{flex:1}
+.slider .sv{min-width:74px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600}
+.slider.dirty .sv{color:#e8a33d}
 .applybar{position:sticky;bottom:0;background:var(--bg);padding:12px 0 4px;
 display:flex;gap:10px;align-items:center}
 button.apply{flex:1;background:var(--ok);color:#04140c;border:0;border-radius:10px;
@@ -1351,9 +1365,28 @@ function renderInto(box, table){
     const left=document.createElement('div');
     left.innerHTML=`<div class="lab">${c.label}</div><div class="hlp">${c.help}</div>`;
     row.appendChild(left);
+    const cur=(k in staged)?staged[k]:c.value;
+    if(c.range){
+      const wrap=document.createElement('div');wrap.className='slider';
+      const sl=document.createElement('input');
+      sl.type='range';sl.min=c.range.lo;sl.max=c.range.hi;sl.step=c.range.step;sl.value=cur;
+      sl.setAttribute('aria-label',c.label);
+      const out=document.createElement('span');out.className='sv';
+      const fmt=v=>(c.range.zero&&v==0)?c.range.zero
+                  :(c.range.scale>1?(v/c.range.scale).toFixed(1):String(v))+c.range.unit;
+      out.textContent=fmt(cur);
+      if(k in staged && staged[k]!==c.value) wrap.classList.add('dirty');
+      sl.oninput=()=>{out.textContent=fmt(parseInt(sl.value,10));};
+      sl.onchange=()=>{
+        const v=parseInt(sl.value,10);
+        if(v===c.value) delete staged[k]; else staged[k]=v;
+        renderSettings();updateApply();
+      };
+      wrap.appendChild(sl);wrap.appendChild(out);
+      row.appendChild(wrap);
+    }else{
     const sel=document.createElement('select');
     sel.setAttribute('aria-label',c.label);
-    const cur=(k in staged)?staged[k]:c.value;
     c.options.forEach(o=>{
       const op=document.createElement('option');
       op.value=o.v;op.textContent=o.label;op.selected=(o.v===cur);
@@ -1366,6 +1399,7 @@ function renderInto(box, table){
       renderSettings();updateApply();
     };
     row.appendChild(sel);
+    }
     box.appendChild(row);
   }
 }
