@@ -259,6 +259,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Braking jerk floor handed to the DI, in 0.1 m/s^3 steps; 0 = off (full JERK_LIMIT_MIN,
     // the shipped behaviour). See CarControllerParams.JERK_BRAKE_GAIN for why.
     {"TeslaBrakeJerk", {PERSISTENT, INT, "0"}},
+    // Metres to pull a distant lead in to on the instrument cluster only; 0 = truthful.
+    // Display-only experiment to find where the IC stops drawing objects. See _ic_lead.
+    {"TeslaICLeadMaxM", {PERSISTENT, INT, "0"}},
     {"TeslaCutInLead", {PERSISTENT, BOOL, "1"}},
     {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "150"}},
     {"TeslaCoopMaxTorqueCNm", {PERSISTENT, INT, "250"}},

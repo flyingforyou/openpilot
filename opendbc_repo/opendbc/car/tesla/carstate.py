@@ -267,6 +267,9 @@ class CarState(CarStateBase):
     self.genuine_ap_active = False
     self.das_lanes = None
     self.das_lanes_nanos = 0
+    # AP1 camera's lane marker classification (type/colour/quality). Captured for decoding; see
+    # where it is filled in for why nothing consumes it yet.
+    self.das_telemetry: dict | None = None
     # The factory's latest DAS_object frame per group, kept only when the cluster workaround is on.
     # (group, object id) -> [frames since last seen, DasVehicle]
     self.das_vehicles: dict[tuple[int, int], list] = {}
@@ -478,6 +481,16 @@ class CarState(CarStateBase):
         if lanes_nanos != 0:
           self.das_lanes = dict(lanes)
           self.das_lanes_nanos = lanes_nanos
+        # The AP1 camera classifies each lane marker's type, colour and quality and broadcasts it
+        # here -- 3062 frames of it in a stock capture, all six fields varying. openpilot has no
+        # such classifier, so this is information we cannot otherwise get (whether the line beside
+        # us is solid, which is what says a lane change is legal).
+        #
+        # Captured only. The DBC carries no VAL_ table for these, so the encoding is still unknown
+        # -- observed telLeftLaneType values are 0,1,3,4,5,6 with 3 dominant -- and gating a lane
+        # change on an enum we have not decoded would be guessing. Decode it from real drives
+        # first, then use it.
+        self.das_telemetry = dict(cp_ap_party.vl["DAS_telemetry"])  # lazy-registers 0x3a9
       autopark_offered = (int(autopilot_status["DAS_autoparkReady"]) == 1 or
                           int(autopilot_status["DAS_autoparkWaitingForBrake"]) == 1)
 

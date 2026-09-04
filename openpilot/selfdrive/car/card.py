@@ -150,6 +150,10 @@ class Car:
     if self.CP.brand == "tesla" and self.CI.CC is not None and hasattr(self.CI.CC, "brake_jerk_base"):
       self.CI.CC.brake_jerk_base = (self.params.get("TeslaBrakeJerk", return_default=True) or 0) / 10.0
 
+    # Cluster-only distance clamp for a far lead, metres; 0 leaves it truthful. See _ic_lead.
+    if self.CP.brand == "tesla" and self.CI.CC is not None and hasattr(self.CI.CC, "ic_lead_display_max"):
+      self.CI.CC.ic_lead_display_max = float(self.params.get("TeslaICLeadMaxM", return_default=True) or 0)
+
     # Cluster MAX speed sync. Writes the cruise stalk, so it stays opt-in and panda restricts the
     # lever field to the four speed steps -- the same field selects gear on this car.
     if self.CP.brand == "tesla" and not self.CP.passive and self.params.get_bool("TeslaSyncClusterSpeed"):

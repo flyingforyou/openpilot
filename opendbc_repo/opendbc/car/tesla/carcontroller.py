@@ -48,6 +48,9 @@ class CarController(CarControllerBase):
     # Floor for the braking jerk handed to the DI, m/s^3; 0 keeps the full JERK_LIMIT_MIN.
     # Set by card from TeslaBrakeJerk so it can be changed without a rebuild.
     self.brake_jerk_base = 0.0
+    # Metres to pull a distant lead in to on the cluster only; 0 leaves it truthful.
+    # Set by card from TeslaICLeadMaxM. See _ic_lead.
+    self.ic_lead_display_max = 0.0
     self.ic_radar = None
     self.ic_enabled = False
     self.ic_last_lanes_nanos = 0
@@ -78,11 +81,25 @@ class CarController(CarControllerBase):
       self.VM = VehicleModel(CarInterface.get_non_essential_params("TESLA_MODEL_S_HW3"))
 
   @staticmethod
-  def _ic_lead(lead, path_c0):
+  def _ic_lead(lead, path_c0, display_max=0.0):
+    """openpilot's lead as the cluster's group-0 object.
+
+    display_max pulls a distant lead in so the cluster will draw it. Nothing about the field or
+    the factory forces this: DAS_objVehDx carries 127.5 m and the factory itself routinely
+    publishes objects out to 124.5 m with RelevantForControl set, so the cull is a rule inside the
+    IC that the bus does not expose. Clamping and watching is the only way to find where it is.
+
+    This deliberately reports a car as nearer than it is, which is a lie to the driver -- a
+    conservative one (it can only ever show a lead closer, never further) on a display-only
+    message, and off unless asked for. Distances below the threshold are untouched.
+    """
     if lead is None or not lead.present:
       return None
+    d_rel = float(np.clip(lead.dRel, 0.0, 126.0))
+    if display_max > 0.0:
+      d_rel = min(d_rel, display_max)
     return (
-      float(np.clip(lead.dRel, 0.0, 126.0)),
+      d_rel,
       float(np.clip(int(lead.vRel), -30, 26)),
       float(np.clip(path_c0 - lead.yRel, -22.05, 22.4)),
     )
@@ -154,7 +171,7 @@ class CarController(CarControllerBase):
       lead1 = self.ic_radar.leadOne
       if lead1.present and self._factory_already_shows(CS.das_vehicles, lead1.dRel):
         lead1 = None
-      sends.append(self.tesla_can.create_ic_leads(self._ic_lead(lead1, path_c0), None))
+      sends.append(self.tesla_can.create_ic_leads(self._ic_lead(lead1, path_c0, self.ic_lead_display_max), None))
     return sends
 
   def update_cluster_speed(self, CC, CS):

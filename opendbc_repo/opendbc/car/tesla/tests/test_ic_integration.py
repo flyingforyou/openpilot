@@ -119,3 +119,32 @@ class TestLaneChangeDashedLine:
     parser = CANParser("tesla_can", [("AutopilotStatus", 25)], 0)
     parser.update([(1_000_000, frames)])
     assert int(parser.vl["AutopilotStatus"]["autopilotStatus"]) == 3
+
+
+class TestFarLeadDisplayClamp:
+  """TeslaICLeadMaxM pulls a distant lead in so the cluster will draw it. Display only -- nothing
+  here may ever reach control, and it must never push a lead further away than it really is."""
+
+  def _lead(self, d_rel):
+    return SimpleNamespace(present=True, dRel=d_rel, vRel=-2.0, yRel=0.0)
+
+  def test_off_is_truthful(self):
+    assert CarController._ic_lead(self._lead(100.0), 0.0, 0.0)[0] == 100.0
+
+  def test_far_lead_is_pulled_in(self):
+    assert CarController._ic_lead(self._lead(100.0), 0.0, 75.0)[0] == 75.0
+
+  def test_near_lead_is_untouched(self):
+    assert CarController._ic_lead(self._lead(40.0), 0.0, 75.0)[0] == 40.0
+
+  def test_never_reports_further_than_reality(self):
+    for d in (10.0, 40.0, 74.9, 75.0, 90.0, 126.0):
+      shown = CarController._ic_lead(self._lead(d), 0.0, 75.0)[0]
+      assert shown <= d, "a lead must never be drawn further away than it is"
+
+  def test_absent_lead_stays_absent(self):
+    assert CarController._ic_lead(SimpleNamespace(present=False, dRel=0.0, vRel=0.0, yRel=0.0), 0.0, 75.0) is None
+
+  def test_field_range_is_respected(self):
+    # DAS_objVehDx tops out at 127.5 and 127.5 is the "no object" saturation value
+    assert CarController._ic_lead(self._lead(200.0), 0.0, 0.0)[0] <= 126.0
