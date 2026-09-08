@@ -1671,10 +1671,61 @@ font-size:12px;border-bottom:1px solid var(--line)}
 .sig .en{color:var(--dim);font-size:10.5px;margin-left:6px}
 .sig.noise{opacity:.4}
 .empty{color:var(--dim);font-size:13px;padding:24px 4px;text-align:center}
+.own{margin:0 0 14px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.own>summary{cursor:pointer;padding:10px 12px;font-size:13px;font-weight:600;list-style:none}
+.own>summary::-webkit-details-marker{display:none}
+.own>summary::before{content:'\25B8 ';color:var(--dim)}
+.own[open]>summary::before{content:'\25BE '}
+.own .in{padding:0 12px 12px}
+.own table{border-collapse:collapse;width:100%;font-size:12px}
+.own th,.own td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);
+vertical-align:top;white-space:nowrap}
+.own td.d{white-space:normal;color:var(--mut)}
+.own th{color:var(--dim);font-weight:600;font-size:11px}
+.own tr:last-child td{border-bottom:0}
+.own .a{font-family:var(--m)}
+.own .tx{color:var(--hot);font-weight:600}
+.own .no{color:var(--dim)}
+.own .note{margin-top:10px;padding:9px 10px;border-left:2px solid var(--hot);
+background:rgba(245,185,66,.07);font-size:11.5px;color:var(--mut);line-height:1.55;white-space:normal}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
 </style></head><body>
 <a class="back" href="/">← 메뉴</a>
 <h1>CAN 신호 뷰어</h1><div class="sub" id="sub">연결 중…</div>
+<details class="own">
+<summary>AP 계열 메시지 — 누가 만들고, panda 가 무엇을 막나</summary>
+<div class="in">
+<table>
+<tr><th>주소</th><th>메시지</th><th>openpilot</th><th>panda</th><th>역할 / 실측 상태</th></tr>
+<tr><td class="a">0x2b9</td><td>DAS_control</td><td class="tx">송신</td><td>조건부 차단</td>
+    <td class="d">종방향. 가속도·저크 한계를 차에 지시. 종방향을 openpilot 이 가질 때만 공장 것을 막음</td></tr>
+<tr><td class="a">0x488</td><td>DAS_steeringControl</td><td class="tx">송신</td><td>차단</td>
+    <td class="d">조향 각도 지령</td></tr>
+<tr><td class="a">0x27d</td><td>APS_eacMonitor</td><td class="tx">송신</td><td>차단 (HW1 제외)</td>
+    <td class="d">조향 허가 신호</td></tr>
+<tr><td class="a">0x239</td><td>DAS_lanes</td><td class="tx">송신</td><td>차단</td>
+    <td class="d">계기판 차선 기하 (C0~C3, 폭, 존재). <b>공장 프레임을 그대로 복제</b> — 오버라이드 훅은 비어 있음</td></tr>
+<tr><td class="a">0x399</td><td>AutopilotStatus</td><td class="tx">송신</td><td>차단</td>
+    <td class="d">계기판 AP 상태. autopilotStatus=3 고정 + hands-on / 차선변경 점선(ALC 9·10)</td></tr>
+<tr><td class="a">0x309</td><td>DAS_object</td><td class="tx">송신</td><td>공유 (차단 안 함)</td>
+    <td class="d">앞차 아이콘. 공장 스트림과 공존하므로 보탤 게 있을 때만 송신</td></tr>
+<tr><td class="a">0x3a9</td><td>DAS_telemetry</td><td class="no">읽기만</td><td>—</td>
+    <td class="d"><b>차선 실선/점선·색·품질.</b> 값이 살아 움직이는데 우리는 만들지도 막지도 않음 — 공장 것이 그대로 계기판에 도달. openpilot 에 분류기가 없어 해독 대상</td></tr>
+<tr><td class="a">0x389</td><td>DAS_status2</td><td class="no">—</td><td>—</td>
+    <td class="d">ACC 리포트·속도제한·LSS 상태. 값 변동함</td></tr>
+<tr><td class="a">0x3e9</td><td>DAS_bodyControls</td><td class="no">—</td><td>—</td>
+    <td class="d">깜빡이·등화·와이퍼 요청. <b>값이 전부 고정</b> — AP1 이 이 기능을 쓰지 않음</td></tr>
+<tr><td class="a">0x209</td><td>DAS_longControl</td><td class="no">—</td><td>—</td>
+    <td class="d">대체 종방향 경로. locState·locSpeed 고정</td></tr>
+<tr><td class="a">0x219</td><td>DAS_pscControl</td><td class="no">—</td><td>—</td>
+    <td class="d">주차 조향. 오토파크는 공장에 양보</td></tr>
+</table>
+<div class="note"><b>src 번호로 송신자를 판단하지 말 것.</b> 우리가 한 번도 보내지 않는 0x3a9 가
+src=128 에 2308 프레임 잡히고, 그 분포(102 / 2410 / 2308)가 우리가 실제로 769 프레임 보낸
+0x239 와 완전히 동일합니다. src=128 은 openpilot 의 송신 표시가 아니라 panda 가 버스 간
+중계하는 프레임입니다. <b>무엇을 우리가 보냈는지는 sendcan 만이 답합니다.</b></div>
+</div>
+</details>
 <div class="srcbar">
   <select id="route" aria-label="신호 소스"><option value="">라이브 (차량 연결)</option></select>
   <button class="tg" id="play">재생</button>
