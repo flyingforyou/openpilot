@@ -14,6 +14,7 @@ from openpilot.tools.tesla_analysis.device_preflight import (
   check_offroad_alerts,
   check_ownership,
   check_staging_ownership,
+  updates_disabled,
   check_symlinks,
   check_update_health,
   collect_and_run,
@@ -120,3 +121,34 @@ class TestOnDevice:
     results = collect_and_run("tesla-hw1-carrot-0.11.2")
     failed = [f"{r.name}: {r.detail}" for r in results if not r.ok]
     assert not failed, "인게이지를 막을 수 있는 상태:\n  " + "\n  ".join(failed)
+
+
+class TestUpdatesDisabled:
+  """DisableUpdates is upstream's own escape hatch -- updated.py exits on it and hardwared.py's
+  up_to_date startup condition is satisfied regardless of a stale alert. Once it is set, checking
+  update health would report on a process that no longer runs."""
+
+  def test_flag_is_read(self):
+    assert updates_disabled({"DisableUpdates": "1"})
+    assert not updates_disabled({"DisableUpdates": "0"})
+    assert not updates_disabled({})
+
+  def test_update_check_stops_asserting(self):
+    # stale failures must not fail the preflight once nothing is running to clear them
+    r = check_update_health({"DisableUpdates": "1", "UpdateFailedCount": "10",
+                             "LastUpdateException": "command failed"})
+    assert r.ok and r.warn and "비활성" in r.detail
+
+  def test_connectivity_alert_is_forgiven(self):
+    alert = json.dumps({"text": "connect to internet", "severity": 1})
+    assert check_offroad_alerts({"DisableUpdates": "1", "Offroad_ConnectivityNeeded": alert}).ok
+
+  def test_other_alerts_still_block(self):
+    # disabling updates forgives the update alerts only, not e.g. a calibration problem
+    alert = json.dumps({"text": "recalibrate", "severity": 1})
+    r = check_offroad_alerts({"DisableUpdates": "1", "Offroad_Recalibration": alert})
+    assert not r.ok and "Recalibration" in r.detail
+
+  def test_still_enforced_when_updates_are_on(self):
+    alert = json.dumps({"text": "connect to internet", "severity": 1})
+    assert not check_offroad_alerts({"Offroad_ConnectivityNeeded": alert}).ok

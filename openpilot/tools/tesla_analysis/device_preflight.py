@@ -72,8 +72,19 @@ def check_staging_ownership(staging_count: int, update_ok: bool) -> Result:
                   f"sudo chown -R comma:comma {STAGING_ROOT}")
 
 
+def updates_disabled(params: dict[str, str]) -> bool:
+    """DisableUpdates is upstream's own escape hatch: updated.py exits immediately, and
+    hardwared.py's `up_to_date` startup condition is satisfied regardless of any stale alert."""
+    return (params.get("DisableUpdates") or "").strip() in ("1", "true", "True")
+
+
 def check_update_health(params: dict[str, str]) -> Result:
-    """The updater must be succeeding, or openpilot eventually refuses to start."""
+    """The updater must be succeeding, or openpilot eventually refuses to start.
+
+    Meaningless once updates are switched off -- nothing runs to succeed or fail, and the gate it
+    would trip no longer applies -- so say so rather than passing on stale numbers."""
+    if updates_disabled(params):
+        return Result("update", True, "업데이트 비활성 (DisableUpdates) -- 검사 안 함", warn=True)
     failed = params.get("UpdateFailedCount", "0").strip() or "0"
     exc = (params.get("LastUpdateException") or "").strip()
     try:
@@ -89,11 +100,18 @@ def check_update_health(params: dict[str, str]) -> Result:
                   "원인이 Permission denied 면 ownership 항목을 먼저 고칠 것")
 
 
+# Alerts hardwared.py's up_to_date condition forgives once updates are disabled.
+UPDATE_ALERTS = ("Offroad_ConnectivityNeeded", "Offroad_ConnectivityNeededPrompt")
+
+
 def check_offroad_alerts(params: dict[str, str]) -> Result:
     """Any Offroad_* alert that is set and severe enough to stop engagement."""
+    forgiven = UPDATE_ALERTS if updates_disabled(params) else ()
     blocking = []
     for key, raw in params.items():
         if not key.startswith("Offroad_") or not (raw or "").strip():
+            continue
+        if key in forgiven:
             continue
         try:
             sev = json.loads(raw).get("severity", 0)
