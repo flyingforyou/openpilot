@@ -1686,6 +1686,20 @@ vertical-align:top;white-space:nowrap}
 .own .a{font-family:var(--m)}
 .own .tx{color:var(--hot);font-weight:600}
 .own .no{color:var(--dim)}
+.own .msg{border:1px solid var(--line);border-radius:8px;margin:0 0 6px}
+.own .msg>summary{cursor:pointer;padding:7px 10px;font-size:12px;list-style:none;
+display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.own .msg>summary::-webkit-details-marker{display:none}
+.own .msg .a{font-family:var(--m);color:var(--mut)}
+.own .msg .tx{color:var(--hot);font-weight:600;font-size:11px}
+.own .msg .ro{color:var(--mut);font-size:11px}
+.own .msg .no{color:var(--dim);font-size:11px}
+.own .msg .blk{color:var(--dim);font-size:11px}
+.own .msg .role{color:var(--dim);font-size:11px;flex:1;min-width:180px;white-space:normal}
+.own .msg table{margin:0 0 8px}
+.own .msg td.n{font-family:var(--m);color:var(--mut);white-space:normal}
+.own .msg td.u{font-family:var(--m);color:var(--dim);font-size:11px}
+.own .msg td.d{font-size:11.5px}
 .own .note{margin-top:10px;padding:9px 10px;border-left:2px solid var(--hot);
 background:rgba(245,185,66,.07);font-size:11.5px;color:var(--mut);line-height:1.55;white-space:normal}
 @media(prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -1693,33 +1707,161 @@ background:rgba(245,185,66,.07);font-size:11.5px;color:var(--mut);line-height:1.
 <a class="back" href="/">← 메뉴</a>
 <h1>CAN 신호 뷰어</h1><div class="sub" id="sub">연결 중…</div>
 <details class="own">
-<summary>AP 계열 메시지 — 누가 만들고, panda 가 무엇을 막나</summary>
+<summary>AP 계열 메시지 11개 · 신호 120개 — 누가 만들고, panda 가 무엇을 막나</summary>
 <div class="in">
-<table>
-<tr><th>주소</th><th>메시지</th><th>openpilot</th><th>panda</th><th>역할 / 실측 상태</th></tr>
-<tr><td class="a">0x2b9</td><td>DAS_control</td><td class="tx">송신</td><td>조건부 차단</td>
-    <td class="d">종방향. 가속도·저크 한계를 차에 지시. 종방향을 openpilot 이 가질 때만 공장 것을 막음</td></tr>
-<tr><td class="a">0x488</td><td>DAS_steeringControl</td><td class="tx">송신</td><td>차단</td>
-    <td class="d">조향 각도 지령</td></tr>
-<tr><td class="a">0x27d</td><td>APS_eacMonitor</td><td class="tx">송신</td><td>차단 (HW1 제외)</td>
-    <td class="d">조향 허가 신호</td></tr>
-<tr><td class="a">0x239</td><td>DAS_lanes</td><td class="tx">송신</td><td>차단</td>
-    <td class="d">계기판 차선 기하 (C0~C3, 폭, 존재). <b>공장 프레임을 그대로 복제</b> — 오버라이드 훅은 비어 있음</td></tr>
-<tr><td class="a">0x399</td><td>AutopilotStatus</td><td class="tx">송신</td><td>차단</td>
-    <td class="d">계기판 AP 상태. autopilotStatus=3 고정 + hands-on / 차선변경 점선(ALC 9·10)</td></tr>
-<tr><td class="a">0x309</td><td>DAS_object</td><td class="tx">송신</td><td>공유 (차단 안 함)</td>
-    <td class="d">앞차 아이콘. 공장 스트림과 공존하므로 보탤 게 있을 때만 송신</td></tr>
-<tr><td class="a">0x3a9</td><td>DAS_telemetry</td><td class="no">읽기만</td><td>—</td>
-    <td class="d"><b>차선 실선/점선·색·품질.</b> 값이 살아 움직이는데 우리는 만들지도 막지도 않음 — 공장 것이 그대로 계기판에 도달. openpilot 에 분류기가 없어 해독 대상</td></tr>
-<tr><td class="a">0x389</td><td>DAS_status2</td><td class="no">—</td><td>—</td>
-    <td class="d">ACC 리포트·속도제한·LSS 상태. 값 변동함</td></tr>
-<tr><td class="a">0x3e9</td><td>DAS_bodyControls</td><td class="no">—</td><td>—</td>
-    <td class="d">깜빡이·등화·와이퍼 요청. <b>값이 전부 고정</b> — AP1 이 이 기능을 쓰지 않음</td></tr>
-<tr><td class="a">0x209</td><td>DAS_longControl</td><td class="no">—</td><td>—</td>
-    <td class="d">대체 종방향 경로. locState·locSpeed 고정</td></tr>
-<tr><td class="a">0x219</td><td>DAS_pscControl</td><td class="no">—</td><td>—</td>
-    <td class="d">주차 조향. 오토파크는 공장에 양보</td></tr>
-</table>
+<details class="msg"><summary><span class="a">0x2b9</span> DAS_control<span class="tx">송신</span><span class="blk">조건부 차단</span><span class="role">종방향 가속도·저크 지시</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">DAS_setSpeed</td><td class="u">0~409.4 kph</td><td class="d">4095=SNA</td></tr>
+<tr><td class="n">DAS_accState</td><td class="u">4bit </td><td class="d">0=ACC_CANCEL_GENERIC, 3=ACC_HOLD, 4=ACC_ON, 5=APC_BACKWARD … (+8) · <b>4=ACC_ON, 13=CANCEL</b></td></tr>
+<tr><td class="n">DAS_aebEvent</td><td class="u">0~3 </td><td class="d">0=AEB_NOT_ACTIVE, 1=AEB_ACTIVE, 2=AEB_FAULT, 3=AEB_SNA</td></tr>
+<tr><td class="n">DAS_jerkMin</td><td class="u">-15.232~0.098 m/s^3</td><td class="d">511=SNA · <b>우리가 상한을 씌우는 신호 (TeslaBrakeJerk)</b></td></tr>
+<tr><td class="n">DAS_jerkMax</td><td class="u">0~15.045 m/s^3</td><td class="d">255=SNA · <b>가속 저크 — 손대지 않음</b></td></tr>
+<tr><td class="n">DAS_accelMin</td><td class="u">-15~5.44 m/s^2</td><td class="d">511=SNA · <b>지령 감속도</b></td></tr>
+<tr><td class="n">DAS_accelMax</td><td class="u">-15~5.44 m/s^2</td><td class="d">511=SNA</td></tr>
+<tr><td class="n">DAS_controlCounter</td><td class="u">3bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_controlChecksum</td><td class="u">8bit </td><td class="d">—</td></tr>
+</table></details>
+<details class="msg"><summary><span class="a">0x488</span> DAS_steeringControl<span class="tx">송신</span><span class="blk">차단</span><span class="role">조향 각도 지령</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">DAS_steeringControlType</td><td class="u">2bit </td><td class="d">0=NONE, 1=ANGLE_CONTROL, 2=LANE_KEEP_ASSIST, 3=EMERGENCY_LANE_KEEP · <b>1=활성</b></td></tr>
+<tr><td class="n">DAS_steeringControlChecksum</td><td class="u">8bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_steeringControlCounter</td><td class="u">4bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_steeringAngleRequest</td><td class="u">-1638.35~1638.35 deg</td><td class="d">16384=ZERO_ANGLE · <b>부호 반전해서 송신</b></td></tr>
+<tr><td class="n">DAS_steeringHapticRequest</td><td class="u">1bit </td><td class="d">0=IDLE, 1=ACTIVE</td></tr>
+</table></details>
+<details class="msg"><summary><span class="a">0x27d</span> APS_eacMonitor<span class="tx">송신</span><span class="blk">차단 (HW1 제외)</span><span class="role">조향 허가</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">APS_eacAllow</td><td class="u">2bit </td><td class="d">0=APS_EAC_INHIBIT, 1=APS_EAC_ALLOW, 2=APS_EAC_RESERVED, 3=APS_EAC_SNA</td></tr>
+<tr><td class="n">APS_eacMonitorCounter</td><td class="u">4bit </td><td class="d">—</td></tr>
+<tr><td class="n">APS_eacMonitorChecksum</td><td class="u">8bit </td><td class="d">—</td></tr>
+</table></details>
+<details class="msg"><summary><span class="a">0x239</span> DAS_lanes<span class="tx">송신</span><span class="blk">차단</span><span class="role">계기판 차선 기하 — 공장 프레임 복제</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">DAS_leftLaneExists</td><td class="u">1bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_rightLaneExists</td><td class="u">1bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_virtualLaneWidth</td><td class="u">2~7 m</td><td class="d"><b>실측 2.94~3.88m</b></td></tr>
+<tr><td class="n">DAS_virtualLaneViewRange</td><td class="u">0~160 m</td><td class="d">—</td></tr>
+<tr><td class="n">DAS_virtualLaneC0</td><td class="u">-3.5~3.5 m</td><td class="d"><b>횡 오프셋 (실측 −1.93~2.21m)</b></td></tr>
+<tr><td class="n">DAS_virtualLaneC1</td><td class="u">-0.2~0.2 rad</td><td class="d"><b>기울기</b></td></tr>
+<tr><td class="n">DAS_virtualLaneC2</td><td class="u">-0.0025~0.0025 m-1</td><td class="d"><b>곡률 (실측 ±0.0024)</b></td></tr>
+<tr><td class="n">DAS_virtualLaneC3</td><td class="u">-3e-05~3e-05 m-2</td><td class="d"><b>곡률 변화 — 실측 항상 0</b></td></tr>
+<tr><td class="n">DAS_leftLineUsage</td><td class="u">0~3 </td><td class="d">0=REJECTED_UNAVAILABLE, 1=AVAILABLE, 2=FUSED, 3=BLACKLISTED · <b>융합 사용 여부지 실선/점선 아님</b></td></tr>
+<tr><td class="n">DAS_rightLineUsage</td><td class="u">0~3 </td><td class="d">0=REJECTED_UNAVAILABLE, 1=AVAILABLE, 2=FUSED, 3=BLACKLISTED · <b>융합 사용 여부지 실선/점선 아님</b></td></tr>
+<tr><td class="n">DAS_leftFork</td><td class="u">0~3 </td><td class="d">0=LEFT_FORK_NONE, 1=LEFT_FORK_AVAILABLE, 2=LEFT_FORK_SELECTED, 3=LEFT_FORK_UNAVAILABLE · <b>실측 97,771 프레임 전부 0</b></td></tr>
+<tr><td class="n">DAS_rightFork</td><td class="u">0~3 </td><td class="d">0=RIGHT_FORK_NONE, 1=RIGHT_FORK_AVAILABLE, 2=RIGHT_FORK_SELECTED, 3=RIGHT_FORK_UNAVAILABLE · <b>실측 97,771 프레임 전부 0</b></td></tr>
+<tr><td class="n">DAS_lanesCounter</td><td class="u">4bit </td><td class="d">—</td></tr>
+</table></details>
+<details class="msg"><summary><span class="a">0x399</span> AutopilotStatus<span class="tx">송신</span><span class="blk">차단</span><span class="role">계기판 AP 상태·차선변경 점선</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">autopilotStatus</td><td class="u">4bit </td><td class="d">0=DISABLED, 1=UNAVAILABLE, 2=AVAILABLE, 3=ACTIVE_1 … (+2) · <b>우리가 3(ACTIVE_1) 고정</b></td></tr>
+<tr><td class="n">DAS_blindSpotRearLeft</td><td class="u">2bit </td><td class="d">0=NO_WARNING, 1=WARNING_LEVEL_1, 2=WARNING_LEVEL_2, 3=SNA</td></tr>
+<tr><td class="n">DAS_blindSpotRearRight</td><td class="u">2bit </td><td class="d">0=NO_WARNING, 1=WARNING_LEVEL_1, 2=WARNING_LEVEL_2, 3=SNA</td></tr>
+<tr><td class="n">DAS_fusedSpeedLimit</td><td class="u">0~150 kph/mph</td><td class="d">0=UNKNOWN_SNA, 31=NONE</td></tr>
+<tr><td class="n">DAS_suppressSpeedWarning</td><td class="u">1bit </td><td class="d">0=Do_Not_Suppress, 1=Suppress_Speed_Warning</td></tr>
+<tr><td class="n">DAS_summonObstacle</td><td class="u">1bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_summonClearedGate</td><td class="u">1bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_visionOnlySpeedLimit</td><td class="u">0~150 kph/mph</td><td class="d">0=UNKNOWN_SNA, 31=NONE</td></tr>
+<tr><td class="n">DAS_heaterState</td><td class="u">1bit </td><td class="d">0=HEATER_OFF_SNA, 1=HEATER_ON</td></tr>
+<tr><td class="n">DAS_forwardCollisionWarning</td><td class="u">2bit </td><td class="d">0=NONE, 1=FORWARD_COLLISION_WARNING, 3=SNA</td></tr>
+<tr><td class="n">DAS_autoparkReady</td><td class="u">0~1 </td><td class="d">0=AUTOPARK_UNAVAILABLE, 1=AUTOPARK_READY</td></tr>
+<tr><td class="n">DAS_autoParked</td><td class="u">1bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_autoparkWaitingForBrake</td><td class="u">0~1 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_summonFwdLeashReached</td><td class="u">0~1 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_summonRvsLeashReached</td><td class="u">0~1 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_sideCollisionAvoid</td><td class="u">2bit </td><td class="d">0=NONE, 1=AVOID_LEFT, 2=AVOID_RIGHT, 3=SNA</td></tr>
+<tr><td class="n">DAS_sideCollisionWarning</td><td class="u">2bit </td><td class="d">0=NONE, 1=WARN_LEFT, 2=WARN_RIGHT, 3=WARN_LEFT_RIGHT</td></tr>
+<tr><td class="n">DAS_sideCollisionInhibit</td><td class="u">1bit </td><td class="d">0=NO_INHIBIT, 1=INHIBIT</td></tr>
+<tr><td class="n">DAS_csaState</td><td class="u">2bit </td><td class="d">0=CSA_EXTERNAL_STATE_UNAVAILABLE, 1=CSA_EXTERNAL_STATE_AVAILABLE, 2=CSA_EXTERNAL_STATE_ENABLE, 3=CSA_EXTERNAL_STATE_HOLD</td></tr>
+<tr><td class="n">DAS_laneDepartureWarning</td><td class="u">3bit </td><td class="d">0=NONE, 1=LEFT_WARNING, 2=RIGHT_WARNING, 3=LEFT_WARNING_SEVERE … (+2)</td></tr>
+<tr><td class="n">DAS_fleetSpeedState</td><td class="u">2bit </td><td class="d">0=FLEETSPEED_UNAVAILABLE, 1=FLEETSPEED_AVAILABLE, 2=FLEETSPEED_ACTIVE, 3=FLEETSPEED_HOLD</td></tr>
+<tr><td class="n">DAS_autopilotHandsOnState</td><td class="u">4bit </td><td class="d">0=LC_HANDS_ON_NOT_REQD, 1=LC_HANDS_ON_REQD_DETECTED, 2=LC_HANDS_ON_REQD_NOT_DETECTED, 3=LC_HANDS_ON_REQD_VISUAL … (+5) · <b>정합성 위해 1/2 로 패치</b></td></tr>
+<tr><td class="n">DAS_autoLaneChangeState</td><td class="u">5bit </td><td class="d">0=ALC_UNAVAILABLE_DISABLED, 1=ALC_UNAVAILABLE_NO_LANES, 2=ALC_UNAVAILABLE_SONICS_INVALID, 3=ALC_UNAVAILABLE_TP_FOLLOW … (+28) · <b>9/10 = 차선변경 점선</b></td></tr>
+<tr><td class="n">DAS_summonAvailable</td><td class="u">0~1 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_statusCounter</td><td class="u">4bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_statusChecksum</td><td class="u">8bit </td><td class="d"><b>재계산 필요</b></td></tr>
+</table></details>
+<details class="msg"><summary><span class="a">0x309</span> DAS_object<span class="tx">송신</span><span class="blk">공유 (차단 안 함)</span><span class="role">앞차 아이콘 — 공장과 공존</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">DAS_objectId</td><td class="u">0~5 </td><td class="d">0=LEAD_VEHICLES, 1=LEFT_VEHICLES, 2=RIGHT_VEHICLES, 3=CUTIN_VEHICLE … (+2)</td></tr>
+<tr><td class="n">DAS_objVehType</td><td class="u">0~7 </td><td class="d">0=UNKNOWN, 1=TRUCK, 2=CAR, 3=MOTORCYCLE … (+3)</td></tr>
+<tr><td class="n">DAS_objVehRelevantForControl</td><td class="u">0~1 </td><td class="d"><b>1이어야 진하게 그림</b></td></tr>
+<tr><td class="n">DAS_objVehDx</td><td class="u">0~127.5 m</td><td class="d"><b>먼 앞차 압축 대상 (TeslaICLeadMaxM)</b></td></tr>
+<tr><td class="n">DAS_objVehVxRel</td><td class="u">-30~30 m/s</td><td class="d">—</td></tr>
+<tr><td class="n">DAS_objVehDy</td><td class="u">-22.05~22.4 m</td><td class="d">—</td></tr>
+<tr><td class="n">DAS_objVehId</td><td class="u">0~127 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_objSpareBit6</td><td class="u">0~1 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_objSpareBit37</td><td class="u">0~1 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_objVeh2Type</td><td class="u">0~7 </td><td class="d">0=UNKNOWN, 1=TRUCK, 2=CAR, 3=MOTORCYCLE … (+3)</td></tr>
+<tr><td class="n">DAS_objVeh2RelevantForControl</td><td class="u">0~1 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_objVeh2Dx</td><td class="u">0~127.5 m</td><td class="d">—</td></tr>
+<tr><td class="n">DAS_objVeh2VxRel</td><td class="u">-30~30 m/s</td><td class="d">—</td></tr>
+<tr><td class="n">DAS_objVeh2Dy</td><td class="u">-22.05~22.4 m</td><td class="d">—</td></tr>
+<tr><td class="n">DAS_objVeh2Id</td><td class="u">0~63 </td><td class="d">—</td></tr>
+</table></details>
+<details class="msg"><summary><span class="a">0x3a9</span> DAS_telemetry<span class="ro">읽기만</span><span class="blk">—</span><span class="role">차선 실선/점선·색 — 읽기만, 해독 대상</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">DAS_telemetryMultiplexer</td><td class="u">0~255 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_telLeftLaneType</td><td class="u">0~7 </td><td class="d"><b>실측 0,1,3,4,5,6 — VAL_ 정의 없음</b></td></tr>
+<tr><td class="n">DAS_telRightLaneType</td><td class="u">0~7 </td><td class="d"><b>실측 0,1,2,3,4,5</b></td></tr>
+<tr><td class="n">DAS_telLeftMarkerQuality</td><td class="u">0~3 </td><td class="d"><b>실측 0~3</b></td></tr>
+<tr><td class="n">DAS_telRightMarkerQuality</td><td class="u">0~3 </td><td class="d"><b>실측 0~3</b></td></tr>
+<tr><td class="n">DAS_telLeftMarkerColor</td><td class="u">0~3 </td><td class="d"><b>실측 0,1,2</b></td></tr>
+<tr><td class="n">DAS_telRightMarkerColor</td><td class="u">0~3 </td><td class="d"><b>실측 0,1</b></td></tr>
+<tr><td class="n">DAS_telLeftLaneCrossing</td><td class="u">0~1 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_telRightLaneCrossing</td><td class="u">0~1 </td><td class="d">—</td></tr>
+</table></details>
+<details class="msg"><summary><span class="a">0x389</span> DAS_status2<span class="no">—</span><span class="blk">—</span><span class="role">ACC 리포트·속도제한·LSS</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">DAS_accSpeedLimit</td><td class="u">0~204.6 mph</td><td class="d">0=NONE, 1023=SNA · <b>실측 변동 (15~102 m/s)</b></td></tr>
+<tr><td class="n">DAS_pmmObstacleSeverity</td><td class="u">0~7 </td><td class="d">0=PMM_NONE, 1=PMM_IMMINENT_REAR, 2=PMM_IMMINENT_FRONT, 3=PMM_BRAKE_REQUEST … (+4)</td></tr>
+<tr><td class="n">DAS_pmmLoggingRequest</td><td class="u">0~1 </td><td class="d">0=FALSE, 1=TRUE</td></tr>
+<tr><td class="n">DAS_activationFailureStatus</td><td class="u">0~1 </td><td class="d">0=LC_ACTIVATION_IDLE, 1=LC_ACTIVATION_FAILED_1, 2=LC_ACTIVATION_FAILED_2</td></tr>
+<tr><td class="n">DAS_pmmUltrasonicsFaultReason</td><td class="u">0~7 </td><td class="d">0=PMM_ULTRASONICS_NO_FAULT, 1=PMM_ULTRASONICS_BLOCKED_FRONT, 2=PMM_ULTRASONICS_BLOCKED_REAR, 3=PMM_ULTRASONICS_BLOCKED_BOTH … (+1)</td></tr>
+<tr><td class="n">DAS_pmmRadarFaultReason</td><td class="u">0~3 </td><td class="d">0=PMM_RADAR_NO_FAULT, 1=PMM_RADAR_BLOCKED_FRONT, 2=PMM_RADAR_INVALID_MIA</td></tr>
+<tr><td class="n">DAS_pmmSysFaultReason</td><td class="u">0~7 </td><td class="d">0=PMM_FAULT_NONE, 1=PMM_FAULT_DAS_DISABLED, 2=PMM_FAULT_SPEED, 3=PMM_FAULT_DI_FAULT … (+4)</td></tr>
+<tr><td class="n">DAS_pmmCameraFaultReason</td><td class="u">0~3 </td><td class="d">0=PMM_CAMERA_NO_FAULT, 1=PMM_CAMERA_BLOCKED_FRONT, 2=PMM_CAMERA_INVALID_MIA</td></tr>
+<tr><td class="n">DAS_ACC_report</td><td class="u">5bit </td><td class="d">0=ACC_REPORT_TARGET_NONE, 1=ACC_REPORT_TARGET_CIPV, 2=ACC_REPORT_TARGET_IN_FRONT_OF_CIPV, 3=ACC_REPORT_TARGET_MCVL … (+21)</td></tr>
+<tr><td class="n">DAS_lssState</td><td class="u">3bit </td><td class="d">0=LSS_STATE_FAULT, 1=LSS_STATE_LDW, 2=LSS_STATE_LKA, 3=LSS_STATE_ELK … (+4)</td></tr>
+<tr><td class="n">DAS_radarTelemetry</td><td class="u">2bit </td><td class="d">0=RADAR_TELEMETRY_IDLE, 1=RADAR_TELEMETRY_NORMAL, 2=RADAR_TELEMETRY_URGENT</td></tr>
+<tr><td class="n">DAS_robState</td><td class="u">0~3 </td><td class="d">0=ROB_STATE_INHIBITED, 1=ROB_STATE_MEASURE, 2=ROB_STATE_ACTIVE, 3=ROB_STATE_MAPLESS</td></tr>
+<tr><td class="n">DAS_driverInteractionLevel</td><td class="u">0~3 </td><td class="d">0=DRIVER_INTERACTING, 1=DRIVER_NOT_INTERACTING, 2=CONTINUED_DRIVER_NOT_INTERACTING</td></tr>
+<tr><td class="n">DAS_ppOffsetDesiredRamp</td><td class="u">-1.28~1.27 m</td><td class="d">128=PP_NO_OFFSET</td></tr>
+<tr><td class="n">DAS_longCollisionWarning</td><td class="u">0~15 </td><td class="d">0=FCM_LONG_COLLISION_WARNING_NONE, 1=FCM_LONG_COLLISION_WARNING_VEHICLE_UNKNOWN, 2=FCM_LONG_COLLISION_WARNING_PEDESTRIAN, 3=FCM_LONG_COLLISION_WARNING_IPSO … (+10)</td></tr>
+<tr><td class="n">DAS_status2Counter</td><td class="u">4bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_status2Checksum</td><td class="u">8bit </td><td class="d">—</td></tr>
+</table></details>
+<details class="msg"><summary><span class="a">0x3e9</span> DAS_bodyControls<span class="no">—</span><span class="blk">—</span><span class="role">깜빡이·등화·와이퍼 — 값 전부 고정</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">DAS_headlightRequest</td><td class="u">0~3 </td><td class="d">0=DAS_HEADLIGHT_REQUEST_OFF, 1=DAS_HEADLIGHT_REQUEST_ON, 3=DAS_HEADLIGHT_REQUEST_INVALID · <b>실측 항상 3</b></td></tr>
+<tr><td class="n">DAS_hazardLightRequest</td><td class="u">0~3 </td><td class="d">0=DAS_REQUEST_HAZARDS_OFF, 1=DAS_REQUEST_HAZARDS_ON, 2=DAS_REQUEST_HAZARDS_UNUSED, 3=DAS_REQUEST_HAZARDS_SNA</td></tr>
+<tr><td class="n">DAS_wiperSpeed</td><td class="u">0~15 </td><td class="d">0=DAS_WIPER_SPEED_OFF, 1=DAS_WIPER_SPEED_1, 2=DAS_WIPER_SPEED_2, 3=DAS_WIPER_SPEED_3 … (+12) · <b>실측 항상 15</b></td></tr>
+<tr><td class="n">DAS_turnIndicatorRequest</td><td class="u">0~3 </td><td class="d">0=DAS_TURN_INDICATOR_NONE, 1=DAS_TURN_INDICATOR_LEFT, 2=DAS_TURN_INDICATOR_RIGHT, 3=DAS_TURN_INDICATOR_CANCEL · <b>실측 항상 0</b></td></tr>
+<tr><td class="n">DAS_highLowBeamDecision</td><td class="u">0~3 </td><td class="d">0=DAS_HIGH_BEAM_UNDECIDED, 1=DAS_HIGH_BEAM_OFF, 2=DAS_HIGH_BEAM_ON, 3=DAS_HIGH_BEAM_SNA</td></tr>
+<tr><td class="n">DAS_highLowBeamOffReason</td><td class="u">0~4 </td><td class="d">0=HIGH_BEAM_ON, 1=HIGH_BEAM_OFF_REASON_MOVING_VISION_TARGET, 2=HIGH_BEAM_OFF_REASON_MOVING_RADAR_TARGET, 3=HIGH_BEAM_OFF_REASON_AMBIENT_LIGHT … (+2)</td></tr>
+<tr><td class="n">DAS_turnIndicatorRequestReason</td><td class="u">0~15 </td><td class="d">0=DAS_NONE, 1=DAS_ACTIVE_NAV_LANE_CHANGE, 2=DAS_ACTIVE_SPEED_LANE_CHANGE, 3=DAS_ACTIVE_FORK … (+3)</td></tr>
+<tr><td class="n">DAS_bodyControlsCounter</td><td class="u">0~15 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_bodyControlsChecksum</td><td class="u">0~255 </td><td class="d">—</td></tr>
+</table></details>
+<details class="msg"><summary><span class="a">0x209</span> DAS_longControl<span class="no">—</span><span class="blk">—</span><span class="role">대체 종방향 — 고정</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">DAS_locMode</td><td class="u">2bit </td><td class="d">0=DAS_LOC_OFF, 1=DAS_LOC_NORMAL, 2=DAS_LOC_RESTRICTED, 3=DAS_LOC_DRIVERLESS</td></tr>
+<tr><td class="n">DAS_locState</td><td class="u">3bit </td><td class="d">0=DAS_LOC_HEALTHY, 1=DAS_LOC_CANCEL_GENERIC, 2=DAS_LOC_CANCEL_SILENT, 6=DAS_LOC_AEB_ACTIVE … (+1) · <b>실측 고정</b></td></tr>
+<tr><td class="n">DAS_locRequest</td><td class="u">3bit </td><td class="d">0=DAS_RQ_IDLE, 1=DAS_RQ_FORWARD, 2=DAS_RQ_BACKWARD, 3=DAS_RQ_HOLD … (+1)</td></tr>
+<tr><td class="n">DAS_locJerkMin</td><td class="u">-8.67~0 m/s^3</td><td class="d">255=SNA</td></tr>
+<tr><td class="n">DAS_locJerkMax</td><td class="u">0~8.67 m/s^3</td><td class="d">255=SNA</td></tr>
+<tr><td class="n">DAS_locSpeed</td><td class="u">0~204.7 kph</td><td class="d">2047=SNA · <b>실측 고정</b></td></tr>
+<tr><td class="n">DAS_locAccelMin</td><td class="u">-15~5.44 m/s^2</td><td class="d">511=SNA</td></tr>
+<tr><td class="n">DAS_locAccelMax</td><td class="u">-15~5.44 m/s^2</td><td class="d">511=SNA</td></tr>
+<tr><td class="n">DAS_longControlCounter</td><td class="u">3bit </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_longControlChecksum</td><td class="u">8bit </td><td class="d">—</td></tr>
+</table></details>
+<details class="msg"><summary><span class="a">0x219</span> DAS_pscControl<span class="no">—</span><span class="blk">—</span><span class="role">주차 조향 — 공장 양보</span></summary><table>
+<tr><th>신호</th><th>단위·범위</th><th>값 / 메모</th></tr>
+<tr><td class="n">DAS_pscControlCounter</td><td class="u">0~15 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_pscParkState</td><td class="u">0~15 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_eacState</td><td class="u">0~7 </td><td class="d">—</td></tr>
+<tr><td class="n">DAS_pscControlChecksum</td><td class="u">0~255 </td><td class="d">—</td></tr>
+</table></details>
 <div class="note"><b>src 번호로 송신자를 판단하지 말 것.</b> 우리가 한 번도 보내지 않는 0x3a9 가
 src=128 에 2308 프레임 잡히고, 그 분포(102 / 2410 / 2308)가 우리가 실제로 769 프레임 보낸
 0x239 와 완전히 동일합니다. src=128 은 openpilot 의 송신 표시가 아니라 panda 가 버스 간
