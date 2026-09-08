@@ -1,8 +1,10 @@
 import pytest
 
 from openpilot.common.constants import CV
+from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.map_cruise import (
   MapCruiseController,
+  OVERRIDE_HOLD,
   OFFSET_ABOVE,
   OFFSET_BELOW,
   OFFSET_SPLIT,
@@ -37,8 +39,11 @@ class FakeNav:
 
 
 class FakeCS:
-  def __init__(self, nav):
+  def __init__(self, nav, gas=False, brake=False):
     self.navMap = nav
+    # the pedals: the real carState always carries them, and the override reads both
+    self.gasPressed = gas
+    self.brakePressed = brake
 
 
 def make(v_max_mph=90, use_curve=False):
@@ -372,3 +377,65 @@ class TestClassCeilingSizing:
     """5.97% of frames, and the reason the whole cross-check is here."""
     c = make()
     assert settle(c, 65, 70, nav=FakeNav(65, 4)) < 65
+
+
+class TestAcceleratorOverride:
+  """The driver pressing the accelerator is the one input here that is not a guess about the road.
+  Without it the map's number survived the override, so releasing the pedal braked away the speed
+  just asked for -- on a road whose limit the map had not caught up with, that reads as the car
+  undoing the driver."""
+
+  LIMIT = 35
+  FAST = 55
+
+  def _settled(self):
+    """A controller sitting on the map's answer for a 35 mph road."""
+    c = make()
+    nav = FakeNav(self.LIMIT, road_class_for(self.LIMIT))
+    cs = FakeCS(nav)
+    out = 0.0
+    for _ in range(400):
+      out = c.update(cs, 20 * MPH, 70 * MPH)
+    return c, nav, out / MPH
+
+  def _run(self, c, nav, n, v_ego_mph, gas=False, brake=False):
+    cs = FakeCS(nav, gas=gas, brake=brake)
+    out = 0.0
+    for _ in range(n):
+      out = c.update(cs, v_ego_mph * MPH, 70 * MPH)
+    return out / MPH
+
+  def test_map_owns_the_setpoint_without_the_pedal(self):
+    _, _, out = self._settled()
+    assert out == pytest.approx(self.LIMIT, abs=6)
+
+  def test_pedal_raises_the_setpoint_immediately(self):
+    c, nav, base = self._settled()
+    # one frame: no dwell, because this is the driver and not the map changing its mind
+    out = self._run(c, nav, 1, self.FAST, gas=True)
+    assert out > base and out == pytest.approx(self.FAST, abs=1)
+
+  def test_setpoint_survives_the_release(self):
+    c, nav, _ = self._settled()
+    self._run(c, nav, 20, self.FAST, gas=True)
+    out = self._run(c, nav, 1, self.FAST)          # pedal up
+    assert out == pytest.approx(self.FAST, abs=1), "braked away the speed just asked for"
+
+  def test_override_expires_and_the_map_takes_over(self):
+    c, nav, base = self._settled()
+    self._run(c, nav, 20, self.FAST, gas=True)
+    out = self._run(c, nav, int(OVERRIDE_HOLD / DT_MDL) + 20, self.FAST)
+    assert out == pytest.approx(base, abs=1), "a standing override pins MAX to one number"
+
+  def test_brake_ends_it_at_once(self):
+    c, nav, base = self._settled()
+    self._run(c, nav, 20, self.FAST, gas=True)
+    out = self._run(c, nav, 1, self.FAST, brake=True)
+    assert out == pytest.approx(base, abs=1)
+
+  def test_configured_ceiling_still_outranks_the_pedal(self):
+    c = make(v_max_mph=60)
+    nav = FakeNav(self.LIMIT, road_class_for(self.LIMIT))
+    self._run(c, nav, 400, 20)
+    out = self._run(c, nav, 5, 90, gas=True)
+    assert out <= 60 + 1e-6

@@ -87,6 +87,17 @@ RAMP_OFF = 2
 # freeway, the posted limit went 25 -> 65 mph while the car was still at 18 mph on the on-ramp.
 RAISE_DWELL = 3.0
 
+# The driver pressing the accelerator is the one input here that is not a guess about the road.
+# Without this the map's number survives the override untouched, so the moment the pedal comes up
+# the setpoint is still the low one and the car brakes away the speed just asked for -- on a road
+# whose limit the map had not caught up with yet, that reads as the car undoing the driver.
+#
+# So the pedal raises the setpoint while it is down, and the raised value outlives the release.
+# Not forever: a standing override is what pinned MAX to the last number dialled and stopped it
+# following the road at all (see the stalk note further down). It expires, and a brake -- the
+# driver saying the opposite -- ends it at once.
+OVERRIDE_HOLD = 15.0
+
 # How long a posted limit may go missing before the state actually changes. All four sources
 # blink to zero for a frame or two while the map re-localises -- seg 0 of the reference drive did
 # it twice in forty seconds -- and reacting to each blink makes the setpoint hunt.
@@ -184,6 +195,8 @@ class MapCruiseController:
     self.loss_timer = 0.0
     self.last_posted = 0.0
     self.curve_from_map = False   # which of the two saw the bend that is capping
+    self.v_override = 0.0         # speed the driver took with the pedal
+    self.override_timer = 0.0
 
 
   def set_config(self, enabled: bool, offset_ratio: float,
@@ -209,6 +222,8 @@ class MapCruiseController:
     self.loss_timer = 0.0
     self.last_posted = 0.0
     self.curve_from_map = False
+    self.v_override = 0.0
+    self.override_timer = 0.0
 
   def _posted_limit(self, nav) -> tuple[float, str]:
     """Best posted limit available, and where it came from. 0.0 if none is trustworthy.
@@ -464,6 +479,20 @@ class MapCruiseController:
     # is taken at once, because that one is not a suggestion. An off-ramp never gets the raise:
     # the limit of the road being left does not apply to the ramp. Merging is the opposite and
     # skips the wait, since reaching the speed of the road being joined is the whole point.
+    # The accelerator, before the slew decides anything. While it is down the driver is choosing
+    # the speed, so the setpoint follows them up immediately -- no dwell, since this is not the
+    # map changing its mind. Braking is the driver saying the opposite and drops the override.
+    if CS.brakePressed:
+      self.v_override = 0.0
+      self.override_timer = 0.0
+    elif CS.gasPressed:
+      self.v_override = max(self.v_override, v_ego)
+      self.override_timer = OVERRIDE_HOLD
+    elif self.override_timer > 0.0:
+      self.override_timer -= DT_MDL
+    if self.override_timer <= 0.0:
+      self.v_override = 0.0
+
     if self.v_target < self.v_output:
       self.raise_timer = 0.0
       self.v_output = self.v_target
@@ -477,4 +506,9 @@ class MapCruiseController:
     else:
       self.raise_timer = 0.0
 
-    return float(np.clip(self.v_output, MIN_TARGET, self.v_max))
+    # The override floors the answer rather than replacing v_output, so the map keeps tracking the
+    # road underneath and takes over again by itself once the hold runs out. Still bounded by the
+    # configured ceiling -- the pedal may outrank the map, but not the number the driver set as
+    # the most this should ever ask for.
+    out = max(self.v_output, self.v_override) if self.v_override > 0.0 else self.v_output
+    return float(np.clip(out, MIN_TARGET, self.v_max))

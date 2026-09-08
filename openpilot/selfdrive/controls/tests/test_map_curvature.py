@@ -172,6 +172,9 @@ class FullNav(Nav):
 class CS:
   def __init__(self, nav):
     self.navMap = nav
+    # the real carState always carries the pedals; the override reads both
+    self.gasPressed = False
+    self.brakePressed = False
 
 
 def settle(c, nav, v_ego=FAST, model_k=0.0, n=200):
