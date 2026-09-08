@@ -35,6 +35,17 @@ SIDE_LEAD_PROJECT_SEC = 1.5
 SIDE_LEAD_TTC_MIN_CLOSING = 0.5
 SIDE_LEAD_TTC_NEAR_MARGIN = 6.0
 
+# The vehicle a lane change moves in behind must be in the lane being entered, not the one past it.
+# get_side_leads accepts anything 1.8-5.4 m to a side, which is wider than a lane: measured over
+# four lane changes, the one genuine target-lane lead sat at |yRel| 1.5 m while three others ran
+# 3.9-5.3 m and never converged toward our path as the change progressed -- the signature of a car
+# one lane further out. One of those braked the car from 106 to 79 km/h (commanded -3.50 m/s^2) for
+# a car it was never going to end up behind, while its real lead sat untroubled at 46 m.
+#
+# A lane is ~3.27 m here, so a target-lane vehicle starts a change at about that and shrinks toward
+# zero; the next lane over starts at ~6.5 m. This keeps the former and drops the latter.
+TARGET_LANE_MAX_YREL = 3.5
+
 
 def lane_exists(outer_line_prob: float, edge_distance: float) -> bool:
   """Is there room for a lane on this side? Unknown counts as yes -- this gate exists to catch
@@ -102,6 +113,8 @@ def target_lane_lead(meta, lead_left, lead_right, lead_two):
     return None
 
   if target is None or not target.present:
+    return None
+  if abs(target.yRel) > TARGET_LANE_MAX_YREL:
     return None
   if lead_two is not None and lead_two.present and lead_two.dRel <= target.dRel:
     return None

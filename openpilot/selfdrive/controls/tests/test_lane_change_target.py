@@ -18,8 +18,8 @@ LaneChangeDirection = log.LaneChangeDirection
 
 
 class Lead:
-  def __init__(self, present=True, d_rel=30.0):
-    self.present, self.dRel = present, d_rel
+  def __init__(self, present=True, d_rel=30.0, y_rel=0.0):
+    self.present, self.dRel, self.yRel = present, d_rel, y_rel
 
 
 class Meta:
@@ -95,3 +95,34 @@ class TestLeavesItAlone:
     out = run(State(Lead(present=False), Lead(d_rel=5.0), two),
               Meta(STARTING, LaneChangeDirection.left))
     assert out is two
+
+
+class TestTargetMustBeInTheTargetLane:
+  """get_side_leads accepts anything 1.8-5.4 m to a side, which is wider than a lane. Promoting a
+  car from the lane BEYOND the one being entered braked the car from 106 to 79 km/h on 09-08 for a
+  vehicle it was never going to end up behind, while its real lead sat untroubled at 46 m."""
+
+  def _meta(self, direction):
+    return Meta(LaneChangeState.laneChangeStarting, direction)
+
+  def test_target_lane_vehicle_is_kept(self):
+    # the genuine case measured that day: |yRel| 1.5 m
+    t = Lead(d_rel=60.0, y_rel=1.5)
+    assert target_lane_lead(self._meta(LaneChangeDirection.left), t, None, None) is t
+
+  def test_vehicle_at_a_full_lane_is_still_kept(self):
+    # before the change starts moving, the target lane sits about one lane width away
+    t = Lead(d_rel=60.0, y_rel=3.27)
+    assert target_lane_lead(self._meta(LaneChangeDirection.left), t, None, None) is t
+
+  def test_next_lane_over_is_rejected(self):
+    # the 09-08 episode: promoted at 5.33 m and never came nearer than 3.88 m
+    for y in (3.88, 4.4, 5.33):
+      assert target_lane_lead(self._meta(LaneChangeDirection.left), Lead(d_rel=43.8, y_rel=y),
+                              None, None) is None
+
+  def test_gate_is_symmetric(self):
+    right = self._meta(LaneChangeDirection.right)
+    assert target_lane_lead(right, None, Lead(d_rel=43.8, y_rel=-5.33), None) is None
+    keep = Lead(d_rel=43.8, y_rel=-1.5)
+    assert target_lane_lead(right, None, keep, None) is keep
