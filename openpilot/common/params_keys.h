@@ -137,9 +137,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"Version", {PERSISTENT, STRING}},
 
     // Tesla HW1 port and the CarrotPilot longitudinal planner.
-    {"DriverMonitorBypass", {PERSISTENT, BOOL, "0"}},
+    {"DriverMonitorBypass", {PERSISTENT, BOOL, "1"}},
     {"GapProfile", {PERSISTENT, INT, "0"}},
-    {"RadarLeadHoldCm", {PERSISTENT, INT, "0"}},
+    {"RadarLeadHoldCm", {PERSISTENT, INT, "10000"}},
     {"RadarLeadHoldMs", {PERSISTENT, INT, "1000"}},
     {"StopDistanceCm", {PERSISTENT, INT, "600"}},
     {"TFollowRiseRatePct", {PERSISTENT, INT, "35"}},
@@ -155,17 +155,17 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // here like the rest of this block -- authority is a percent, offset is centimetres.
     // Tenths of a second the blinker must be held before a lane change starts without the
     // driver's nudge. 0 keeps stock behaviour, where only the nudge starts it.
-    {"AutoLaneChange", {PERSISTENT, INT, "0"}},
-    {"LaneCentering", {PERSISTENT, BOOL, "0"}},
+    {"AutoLaneChange", {PERSISTENT, INT, "5"}},
+    {"LaneCentering", {PERSISTENT, BOOL, "1"}},
     {"LaneCenteringPauseOnSignal", {PERSISTENT, BOOL, "1"}},
     // 0 corrects every deviation, 100 leaves the big confident ones to the model. StarPilot
     // ships 100; half is the point where a wide line through a bend still gets pulled in.
-    {"LaneCenteringE2EAuthority", {PERSISTENT, INT, "50"}},
+    {"LaneCenteringE2EAuthority", {PERSISTENT, INT, "100"}},
     {"LaneCenterOffset", {PERSISTENT, INT, "0"}},
     // Centiseconds of low-pass on the model's desired curvature; 0 = off (upstream's default).
     // Carrot ships 13. Off here so it stays an opt-in option -- see modeld.py's note on why the
     // low-speed wheel shake is what it is for.
-    {"LatSmoothSec", {PERSISTENT, INT, "0"}},
+    {"LatSmoothSec", {PERSISTENT, INT, "13"}},
     // These two carrot reads from params where this tree takes them from the car port. The
     // defaults are the port's values for this car, not carrot's generic 20/50: vEgoStopping is
     // set to 0.1 in the Tesla interface specifically, and 0.5 would have the car decide it has
@@ -177,20 +177,20 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Seconds of unbroken green before openpilot will pull away from a light stop. The launch
     // is otherwise taken on the first green frame, and this port has no second traffic-light
     // source to cross-check the camera against. 0 restores the old immediate behaviour.
-    {"TrafficLightGreenHold", {PERSISTENT, INT, "5"}},  // 0.1s units
+    {"TrafficLightGreenHold", {PERSISTENT, INT, "8"}},  // 0.1s units
     {"TrafficLightDetectMode", {PERSISTENT, INT, "2"}},
     // Seven entries, one per position of this car's gap stalk. carrot ships four because the
     // cars it target have a four-position button, which openpilot maps onto the four
     // personality levels; this car reports seven. Same curve, subdivided: carrot's own
     // 1.10/1.20/1.40/1.60 land on gaps 1/3/5/7 and the even positions are interpolated between
     // them, so the endpoints and the shape are carrot's and only the resolution is ours.
-    {"TFollowGap1", {PERSISTENT, INT, "110"}},
-    {"TFollowGap2", {PERSISTENT, INT, "115"}},
-    {"TFollowGap3", {PERSISTENT, INT, "120"}},
-    {"TFollowGap4", {PERSISTENT, INT, "130"}},
-    {"TFollowGap5", {PERSISTENT, INT, "140"}},
-    {"TFollowGap6", {PERSISTENT, INT, "150"}},
-    {"TFollowGap7", {PERSISTENT, INT, "160"}},
+    {"TFollowGap1", {PERSISTENT, INT, "46"}},
+    {"TFollowGap2", {PERSISTENT, INT, "60"}},
+    {"TFollowGap3", {PERSISTENT, INT, "74"}},
+    {"TFollowGap4", {PERSISTENT, INT, "88"}},
+    {"TFollowGap5", {PERSISTENT, INT, "102"}},
+    {"TFollowGap6", {PERSISTENT, INT, "116"}},
+    {"TFollowGap7", {PERSISTENT, INT, "130"}},
     {"DynamicTFollow", {PERSISTENT, INT, "0"}},
     {"DynamicTFollowLC", {PERSISTENT, INT, "100"}},
     {"EnableSpeedTF", {PERSISTENT, INT, "0"}},
@@ -206,9 +206,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // A lower value assumes the car can only brake gently, so it demands more room and brakes
     // earlier and harder for the same closing speed. Measured over a drive, this term was 60%
     // of the whole follow distance.
-    {"ComfortBrake", {PERSISTENT, INT, "240"}},
+    {"ComfortBrake", {PERSISTENT, INT, "216"}},
     {"ComfortBrake2", {PERSISTENT, INT, "250"}},
-    {"StopDistanceCarrot", {PERSISTENT, INT, "550"}},
+    {"StopDistanceCarrot", {PERSISTENT, INT, "450"}},
     // Stopping accel: the car must already be braking at least this hard before the controller
     // commits to its stopping ramp. 0 means "use the port's own stopAccel", which is what the
     // stock planner does. Negative hundredths, matching carrot.
@@ -219,21 +219,21 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Longitudinal PID, exposed the way carrot exposes it. This port leaves kpV and kiV at
     // [0.], so the loop is feedforward-only until these are set -- Kp 100 is 1.00, Ki is in
     // thousandths, Kf 100 leaves a_target passing through unchanged.
-    {"LongTuningKpV", {PERSISTENT, INT, "100"}},
+    {"LongTuningKpV", {PERSISTENT, INT, "0"}},
     {"LongTuningKiV", {PERSISTENT, INT, "0"}},
     {"LongTuningKf", {PERSISTENT, INT, "100"}},
     // How far ahead a radar track is projected when judging whether it is moving into our lane,
     // in hundredths of a second. carrot ships 0, which turns the projection off entirely; 60
     // keeps what this tree has been doing since the radard port.
     {"RadarLatFactor", {PERSISTENT, INT, "60"}},
-    {"JLeadFactor3", {PERSISTENT, INT, "0"}},
+    {"JLeadFactor3", {PERSISTENT, INT, "100"}},
     {"AutoNaviSpeedDecelRate", {PERSISTENT, INT, "120"}},
     {"AChangeCostStarting", {PERSISTENT, INT, "10"}},
-    {"TrafficStopDistanceAdjust", {PERSISTENT, INT, "-150"}},
+    {"TrafficStopDistanceAdjust", {PERSISTENT, INT, "150"}},
     // Auto cruise speed from the car's own navigation map (selfdrive/controls/lib/map_cruise.py).
     // Off by default: it lowers the cruise setpoint on its own, which is not something to turn on
     // behind a driver's back.
-    {"TeslaMapAutoSpeed", {PERSISTENT, BOOL, "0"}},
+    {"TeslaMapAutoSpeed", {PERSISTENT, BOOL, "1"}},
     // Percent of the posted limit to target, before the car's own offset is added. 100 is the
     // sign as posted.
     {"TeslaMapAutoSpeedRatio", {PERSISTENT, INT, "100"}},
@@ -258,28 +258,28 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // a little room given to a real car in the next lane.
     // Braking jerk floor handed to the DI, in 0.1 m/s^3 steps; 0 = off (full JERK_LIMIT_MIN,
     // the shipped behaviour). See CarControllerParams.JERK_BRAKE_GAIN for why.
-    {"TeslaBrakeJerk", {PERSISTENT, INT, "0"}},
+    {"TeslaBrakeJerk", {PERSISTENT, INT, "25"}},
     // Ceiling on the braking jerk handed to the DI, 0.1 m/s^3 steps; 0 = the full limit.
     // Unlike the floor this one limits genuine hard braking.
-    {"TeslaBrakeJerkMax", {PERSISTENT, INT, "0"}},
+    {"TeslaBrakeJerkMax", {PERSISTENT, INT, "40"}},
     // Metres to pull a distant lead in to on the instrument cluster only; 0 = truthful.
     // Display-only experiment to find where the IC stops drawing objects. See _ic_lead.
-    {"TeslaICLeadMaxM", {PERSISTENT, INT, "0"}},
+    {"TeslaICLeadMaxM", {PERSISTENT, INT, "80"}},
     {"TeslaCutInLead", {PERSISTENT, BOOL, "1"}},
     {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "150"}},
     {"TeslaCoopMaxTorqueCNm", {PERSISTENT, INT, "250"}},
     // Drive the cluster's MAX number to match what openpilot is actually targeting, by
     // emulating the cruise stalk. DAS_setSpeed does not reach that display at all -- the DI
     // owns it and only STW_ACTN_RQ moves it. Off by default: it writes the stalk.
-    {"TeslaSyncClusterSpeed", {PERSISTENT, BOOL, "0"}},
+    {"TeslaSyncClusterSpeed", {PERSISTENT, BOOL, "1"}},
     // Tesla Unity-style AP1 instrument-cluster integration (HW1 only). While engaged, openpilot
     // takes over the factory 0x239 DAS_lanes and 0x399 AutopilotStatus frames -- keeping their
     // rolling counters -- so the cluster draws openpilot's path in the AP-active view, and adds
     // its radar leads to the 0x309 object stream. Off by default: it changes cluster-side CAN.
-    {"TeslaICIntegration", {PERSISTENT, BOOL, "0"}},
-    {"TeslaCoopSteer", {PERSISTENT, BOOL, "0"}},
+    {"TeslaICIntegration", {PERSISTENT, BOOL, "1"}},
+    {"TeslaCoopSteer", {PERSISTENT, BOOL, "1"}},
     {"TeslaLastGapAdjust", {PERSISTENT, INT, "0"}},
-    {"TeslaStockAutopark", {PERSISTENT, BOOL, "0"}},
+    {"TeslaStockAutopark", {PERSISTENT, BOOL, "1"}},
     {"TeslaStockLong", {PERSISTENT, BOOL, "0"}},
     // Blocks openpilot from ever actuating -- same mechanism OpenpilotEnabledToggle/dashcamOnly
     // already use (CarParams.passive: panda safetyModel forced to noOutput, card.py skips
@@ -296,7 +296,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // whether openpilot's software-side invalidLkasSetting NO_ENTRY gate honours the factory's
     // own "I'm autosteering" signal or ignores it. Off by default. Set at init, so a restart is
     // required.
-    {"TeslaDoubleStrokeOverride", {PERSISTENT, BOOL, "0"}},
+    {"TeslaDoubleStrokeOverride", {PERSISTENT, BOOL, "1"}},
 
     // Experiment: hold openpilot's own steering correction at zero (angle command frozen, no
     // lateral torque) until the genuine bus2 autopilotStatus reports Active_nominal(3) on its
