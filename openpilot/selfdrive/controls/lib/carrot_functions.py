@@ -11,7 +11,12 @@ from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_t_follow import ramp_t_follow
 from openpilot.selfdrive.controls.lib.lane_change_guards import side_lead_unsafe
 from openpilot.selfdrive.controls.lib.map_cruise import CURVE_LOOKAHEAD_T, MapCruiseController
-from openpilot.selfdrive.controls.lib.model_stop import model_stop_sign
+from openpilot.selfdrive.controls.lib.model_stop import (
+  STOP_ADJUST_SPEED_BP,
+  STOP_ADJUST_SPEED_V,
+  adjusted_stop_distance,
+  model_stop_sign,
+)
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.selfdrived.events import Events
 
@@ -435,6 +440,19 @@ class CarrotPlanner:
     stop_x = self.xStopFilter2.process(stop_x)
     return stop_x
 
+  def adjusted_stop_distance(self, stop_model_x_rl, v_ego_kph):
+    """The modelled stop point, pulled in by the high-speed correction.
+
+    속도가 높을수록 먼 정지거리 추정값을 줄여 보정함. Upstream applied this only once the car was
+    already in e2eStop, while the frame that *enters* e2eStop took the raw value -- and because the
+    state machine is an elif chain, the corrected value did not land until the frame after. At
+    88 km/h the ratio is 0.73, so the stop point jumped ~50 m closer one frame after the state
+    change and the speed ceiling stepped 96 -> 76 km/h in a single 50 ms tick. Both sites call this
+    now, so entering e2eStop and staying in it agree.
+    """
+    self.trafficStopAdjustRatio = float(np.interp(v_ego_kph, STOP_ADJUST_SPEED_BP, STOP_ADJUST_SPEED_V))
+    return adjusted_stop_distance(stop_model_x_rl, v_ego_kph)
+
   def check_model_stopping(self, v_cruise, v, v_ego, a_ego, model_x, y, d_rel):
     v_ego_kph = v_ego * CV.MS_TO_KPH
     model_v = self.vFilter.process(v[-1])
@@ -653,9 +671,7 @@ class CarrotPlanner:
         else:
           self.comfort_brake = self.comfortBrake * 0.9
           #self.comfort_brake = COMFORT_BRAKE
-          self.trafficStopAdjustRatio = np.interp(v_ego_kph, [0, 100], [1.0, 0.7])
-          # 속도가 높을수록 먼 정지거리 추정값을 줄여 보정함.
-          stop_dist = stop_model_x_rl * np.interp(stop_model_x_rl, [0, 50], [1.0, self.trafficStopAdjustRatio])
+          stop_dist = self.adjusted_stop_distance(stop_model_x_rl, v_ego_kph)
           if stop_dist > 10.0:  # 10m 이상일 때만 실제 정지거리를 갱신함.
             self.actual_stop_distance = stop_dist
           stop_model_x = 0
@@ -681,7 +697,10 @@ class CarrotPlanner:
       elif self.trafficState == TrafficState.red and abs(carstate.steeringAngleDeg) < 30 and self.traffic_starting_count == 0:
         self.add_event(EventName.trafficStopping)
         self.xState = XState.e2eStop
-        self.actual_stop_distance = stop_model_x_rl
+        # Enter on exactly what the e2eStop branch would compute next frame -- both the corrected
+        # stop point and its softer comfort brake -- so the ceiling does not step on the handover.
+        self.actual_stop_distance = self.adjusted_stop_distance(stop_model_x_rl, v_ego_kph)
+        self.comfort_brake = self.comfortBrake * 0.9
       else:
         self.xState = XState.e2eCruise
 

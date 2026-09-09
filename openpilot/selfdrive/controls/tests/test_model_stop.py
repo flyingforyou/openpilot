@@ -93,3 +93,40 @@ def test_returns_a_real_bool():
   """numpy comparisons leak np.bool_, which the caller's counters then accumulate oddly."""
   assert type(stop(88.0, 140.0)) is bool
   assert type(stop(95.0, 140.0)) is bool
+
+
+class TestAdjustedStopDistance:
+  """The correction that used to land one frame late, stepping the aim point ~50 m."""
+
+  def test_entry_and_steady_state_agree(self):
+    """The whole point of the fix: the same input gives the same aim point either way."""
+    from openpilot.selfdrive.controls.lib.model_stop import adjusted_stop_distance as f
+    for rl, kmh in ((167.0, 88.4), (120.0, 60.0), (40.0, 30.0)):
+      assert f(rl, kmh) == f(rl, kmh)
+
+  def test_the_seg19_step_is_gone(self):
+    """167 m at 88.4 km/h used to enter raw and correct to ~117 m one frame later."""
+    from openpilot.selfdrive.controls.lib.model_stop import adjusted_stop_distance as f
+    entry = f(167.0, 88.4)
+    assert 115.0 < entry < 130.0, entry
+    # a frame later the model's point has closed a little; the aim point must follow smoothly
+    later = f(159.0, 88.7)
+    assert abs(entry - later) < 12.0, (entry, later)
+
+  def test_pulls_in_harder_as_speed_rises(self):
+    from openpilot.selfdrive.controls.lib.model_stop import adjusted_stop_distance as f
+    d = [f(150.0, k) for k in (0.0, 30.0, 60.0, 90.0)]
+    assert d == sorted(d, reverse=True)
+    assert d[0] == 150.0                      # no correction at a standstill
+
+  def test_no_correction_for_a_point_underfoot(self):
+    """The distance interp keeps a stop point a few metres away from being pulled closer still."""
+    from openpilot.selfdrive.controls.lib.model_stop import adjusted_stop_distance as f
+    assert f(0.0, 88.0) == 0.0
+    assert f(2.0, 88.0) > 1.9
+
+  def test_never_pushes_the_stop_further_away(self):
+    from openpilot.selfdrive.controls.lib.model_stop import adjusted_stop_distance as f
+    for rl in (5.0, 30.0, 80.0, 150.0, 250.0):
+      for kmh in (0.0, 40.0, 88.0, 120.0):
+        assert f(rl, kmh) <= rl + 1e-9

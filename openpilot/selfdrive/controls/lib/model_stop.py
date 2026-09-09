@@ -84,3 +84,22 @@ def model_stop_sign(v_ego_kph: float, model_x: float, model_v: float, v_path_0: 
                abs(y_last) < MAX_Y_OFFSET)
 
   return bool(stop_sign and not decel_suppress)
+
+
+# The modelled stop point is pulled in as speed rises -- 속도가 높을수록 먼 정지거리 추정값을 줄여
+# 보정함. Full strength only applies once the point is far enough out to be a genuine estimate
+# rather than a car's length away, hence the second interp against the distance itself.
+STOP_ADJUST_SPEED_BP = [0.0, 100.0]
+STOP_ADJUST_SPEED_V = [1.0, 0.7]
+STOP_ADJUST_DIST_BP = [0.0, 50.0]
+
+
+def adjusted_stop_distance(stop_model_x_rl: float, v_ego_kph: float) -> float:
+  """Where to actually aim the stop, given the model's rate-limited stop point and the speed.
+
+  Both the frame that enters e2eStop and the frames that stay in it must use this. They did not:
+  entry took the raw value and the correction only landed a frame later, which at 88 km/h moved
+  the aim point ~50 m closer in one 50 ms tick and stepped the speed ceiling 96 -> 76 km/h.
+  """
+  ratio = float(np.interp(v_ego_kph, STOP_ADJUST_SPEED_BP, STOP_ADJUST_SPEED_V))
+  return float(stop_model_x_rl * np.interp(stop_model_x_rl, STOP_ADJUST_DIST_BP, [1.0, ratio]))
