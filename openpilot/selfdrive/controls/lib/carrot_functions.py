@@ -11,6 +11,7 @@ from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_t_follow import ramp_t_follow
 from openpilot.selfdrive.controls.lib.lane_change_guards import side_lead_unsafe
 from openpilot.selfdrive.controls.lib.map_cruise import CURVE_LOOKAHEAD_T, MapCruiseController
+from openpilot.selfdrive.controls.lib.model_stop import model_stop_sign
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.selfdrived.events import Events
 
@@ -439,19 +440,20 @@ class CarrotPlanner:
     model_v = self.vFilter.process(v[-1])
     startSign = model_v > 5.0 or model_v > (v[0] + 2)
 
-    if v_ego_kph < 1.0:
-      stopSign = model_x < 20.0 and model_v < 10.0
-    elif v_ego_kph < 82.0:
-      stopSign = (model_x < d_rel - 3.0 and
-                  model_x < np.interp(v[0] * 3.6, [60, 80], [120.0, 150]) and
-                  ((model_v < 3.0) or (model_v < v[0] * 0.7)) and
-                  abs(y[-1]) < 5.0)
-      # 정상 주행 중 감속하는 경우(카메라 감속 등)에는 오감지가 많음.
-      # 회생 감속으로 v_cruise가 0인 경우에는 신호를 감지하도록 함.
-      if v_cruise != 0 and (self.xState == XState.e2eCruise and a_ego < -1.0):
-        stopSign = False
-    else:
-      stopSign = False
+    # 정상 주행 중 감속하는 경우(카메라 감속 등)에는 오감지가 많음.
+    # 회생 감속으로 v_cruise가 0인 경우에는 신호를 감지하도록 함.
+    decel_suppress = v_cruise != 0 and self.xState == XState.e2eCruise and a_ego < -1.0
+
+    # The speed gate inside model_stop_sign was 82 km/h upstream, which cut off exactly the speed
+    # this car cruises the city at -- 55 mph is 88.5. That matters because this inference is the
+    # only thing here that can see a stop coming BEFORE a lead exists: with no lead the caller
+    # passes d_rel = 1000, so the lead-margin term is free and the model's own short path carries
+    # it. On route 000000f7 seg 19 every term was already satisfied at t+53.2 with the path ending
+    # 150 m out, while the lead did not appear until t+55.68 at 107 m -- 2.5 s and ~60 m thrown
+    # away by the gate alone, and the stop that followed took -5.28 m/s^2 where the same situation
+    # with more room took -2.46. Raised to 89 to cover that cruise speed and no further; see
+    # model_stop.py.
+    stopSign = model_stop_sign(v_ego_kph, model_x, model_v, v[0], y[-1], d_rel, decel_suppress)
 
     # self.stopSignCount = (
     #   self.stopSignCount + 1
