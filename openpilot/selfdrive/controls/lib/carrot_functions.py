@@ -8,7 +8,7 @@ from openpilot.common.constants import CV
 from openpilot.common.filter_simple import MyMovingAverage
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
-from openpilot.selfdrive.controls.lib.carrot_t_follow import ramp_t_follow
+from openpilot.selfdrive.controls.lib.carrot_t_follow import low_speed_jerk_factor, ramp_t_follow
 from openpilot.selfdrive.controls.lib.lane_change_guards import side_lead_unsafe
 from openpilot.selfdrive.controls.lib.map_cruise import CURVE_LOOKAHEAD_T, MapCruiseController
 from openpilot.selfdrive.controls.lib.model_stop import (
@@ -104,6 +104,19 @@ def _personality_int(personality) -> int:
 GAP_MULT_BPS = [1, 3, 5, 7]
 GAP_MULT_VALS = [1.0, 1.3, 1.6, 2.0]
 
+# jerk_factor multiplies BOTH a_change_cost and J_EGO_COST in the MPC, so a low value makes
+# changing acceleration cheap -- snappy, and in slow traffic, jerky. carrot derives it from the gap
+# position alone (0.5 at gap 1 rising to 1.0 at gap 7), which ties "follow closely" to "accelerate
+# and brake abruptly". They are not the same wish. At gap 2 the factor is 0.57, and the 09-09
+# evening jam (000000f8 seg 14-23, 9.5 engaged minutes almost entirely under 40 km/h) crossed
+# +/-0.5 m/s^2 sixty-one times -- once every 9.4 s -- riding the +2.0 accel ceiling and reaching
+# -3.16 braking at crawl speed.
+#
+# LowSpeedJerk puts a floor under the factor at low speed only, so the gap stays where it was
+# tuned while the controller stops snatching at it. The floor fades out by LOW_SPEED_JERK_BP[1],
+# above which nothing changes.
+
+
 def _model_curvature(model) -> float:
   """Tightest curvature the model sees within CURVE_LOOKAHEAD_T, 1/m. 0.0 if it cannot say.
 
@@ -192,6 +205,7 @@ class CarrotPlanner:
     self.dynamicTFollow = 0.0
     self.dynamicTFollowLC = 0.0
     self.enableSpeedTF = 0
+    self.lowSpeedJerk = 1.0   # matches params_keys.h
     self.personality = 1
 
     self.cruiseMaxVals0 = 1.6
@@ -269,6 +283,7 @@ class CarrotPlanner:
       self.dynamicTFollow = self.params.get_float("DynamicTFollow") / 100.
       self.dynamicTFollowLC = self.params.get_float("DynamicTFollowLC") / 100.
       self.enableSpeedTF = self.params.get_int("EnableSpeedTF")
+      self.lowSpeedJerk = self.params.get_float("LowSpeedJerk") / 100.
     elif self.params_count == 30:
       self.cruiseMaxVals0 = self.params.get_float("CruiseMaxVals0") / 100.
       self.cruiseMaxVals1 = self.params.get_float("CruiseMaxVals1") / 100.
@@ -344,6 +359,11 @@ class CarrotPlanner:
       self.jerk_factor = float(np.interp(gap_pos, [1, 4, 7], [0.5, 0.7, 1.0]))
       if self.myDrivingMode == DrivingMode.Safe:
         self.jerk_factor = 1.0
+
+    # Smoothness floor for slow traffic. Raises the factor, never lowers it, so a gap position
+    # already asking for a smooth ride keeps what it asked for.
+    self.jerk_factor = low_speed_jerk_factor(self.jerk_factor, v_ego * CV.MS_TO_KPH,
+                                             self.lowSpeedJerk)
 
     return float(tf_base)
 
