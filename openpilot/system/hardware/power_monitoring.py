@@ -4,6 +4,7 @@ import threading
 from openpilot.common.params import Params
 from openpilot.common.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
+from openpilot.system.hardware.power_rules import DEFAULT_OFFROAD_SHUTDOWN_MIN, battery_only_shutdown
 
 CAR_VOLTAGE_LOW_PASS_K = 0.011 # LPF gain for 45s tau (dt/tau / (dt/tau + 1))
 
@@ -102,6 +103,13 @@ class PowerMonitoring:
   def get_car_battery_capacity(self) -> int:
     return int(self.car_battery_capacity_uWh)
 
+  def _offroad_shutdown_min(self) -> float:
+    try:
+      v = self.params.get("OffroadShutdownMin")
+      return DEFAULT_OFFROAD_SHUTDOWN_MIN if v is None else float(v)
+    except Exception:
+      return DEFAULT_OFFROAD_SHUTDOWN_MIN
+
   # See if we need to shutdown
   def should_shutdown(self, ignition: bool, in_car: bool, offroad_timestamp: float | None, started_seen: bool):
     if offroad_timestamp is None:
@@ -119,6 +127,11 @@ class PowerMonitoring:
     should_shutdown &= (not self.params.get_bool("DisablePowerDown"))
     should_shutdown &= in_car
     should_shutdown &= offroad_time > DELAY_SHUTDOWN_TIME_S
+    # This car cuts harness power when it sleeps, which takes the panda with it and masks every
+    # rule above -- see power_rules.battery_only_shutdown. Still honours DisablePowerDown.
+    if not self.params.get_bool("DisablePowerDown"):
+      should_shutdown |= battery_only_shutdown(started_seen, in_car, ignition, offroad_time,
+                                               self._offroad_shutdown_min())
     should_shutdown |= self.params.get_bool("ForcePowerDown")
     should_shutdown &= started_seen or (now > MIN_ON_TIME_S)
     return should_shutdown

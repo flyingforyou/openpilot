@@ -260,6 +260,26 @@ CARROT_SETTINGS = {
     "help": "정지선에서 얼마나 앞뒤로 멈출지 조정합니다. 음수면 더 앞에 섭니다.",
     "options": [(-250, "2.5m 앞"), (-150, "1.5m 앞 (기본)"), (0, "정지선"), (150, "1.5m 뒤")],
   },
+  "OffroadShutdownMin": {
+    "label": "주차 후 자동 종료 (분)", "type": "int",
+    "help": "시동을 끄고 이만큼 지나면 디바이스를 <b>스스로 끕니다</b>."
+            "<br><br>순정 openpilot 의 종료 로직은 전부 <code>in_car</code>(= panda 가 살아 있음) "
+            "조건에 묶여 있습니다. 하네스에 상시전원이 들어오는 차라면 panda 가 계속 보고하면서 "
+            "오프로드 전력예산(30Wh)을 소진하고 알아서 꺼집니다."
+            "<br><br><b>이 차는 잠들면 하네스 전원을 끊습니다.</b> panda 가 같이 죽어서 "
+            "<code>harnessStatus=notConnected</code>, <code>pandaType=unknown</code> 이 되고, "
+            "<code>in_car=False</code> 라 위의 모든 종료 조건이 통째로 무시됩니다. 전압도 None 이 "
+            "되어 전력 적산이 멈추므로 <code>CarBatteryCapacity</code> 는 만충에 머뭅니다. "
+            "결과적으로 디바이스가 <b>내장 배터리로 방전될 때까지 계속 켜져 있습니다</b> "
+            "(주차 중 실측: dc/usb/pc_port 전부 offline, 배터리 64%)."
+            "<br><br>안전장치는 <b>이번 전원 사이클에 실제로 주행했을 때만</b> 작동한다는 것입니다. "
+            "한 번도 온로드로 간 적 없는 벤치 상태에서는 절대 꺼지지 않고, 하네스에 상시전원이 "
+            "들어오는 경우(<code>in_car=True</code>)에도 관여하지 않습니다 — 그쪽은 "
+            "<b>차 배터리</b>를 지키는 순정 로직이 계속 담당합니다."
+            "<br><br>0 이면 끕니다. <code>DisablePowerDown</code> 이 켜져 있으면 이 값과 무관하게 "
+            "꺼지지 않습니다.",
+    "range": (0, 180, 5), "scale": 1.0, "unit": "분", "zero": "끔 (계속 켜둠)",
+  },
   "LowSpeedJerk": {
     "label": "저속 부드러움 (가다서다 붕끽)", "type": "int",
     "help": "정체 구간에서 <b>가속을 얼마나 급하게 바꿔도 되는지</b>를 정합니다. MPC 의 "
