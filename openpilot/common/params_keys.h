@@ -197,7 +197,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LowSpeedJerk", {PERSISTENT, INT, "100"}},
     {"CruiseMaxVals0", {PERSISTENT, INT, "130"}},
     {"CruiseMaxVals1", {PERSISTENT, INT, "150"}},
-    {"CruiseMaxVals2", {PERSISTENT, INT, "150"}},
+    {"CruiseMaxVals2", {PERSISTENT, INT, "185"}},
     {"CruiseMaxVals3", {PERSISTENT, INT, "130"}},
     {"CruiseMaxVals4", {PERSISTENT, INT, "110"}},
     {"CruiseMaxVals5", {PERSISTENT, INT, "95"}},
