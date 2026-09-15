@@ -619,7 +619,7 @@ def main(demo=False):
       drivingdata_send = messaging.new_message('drivingModelData')
       posenet_send = messaging.new_message('cameraOdometry')
 
-      lat_smooth_dynamic, _y_std_1s = get_lat_smooth_seconds_dynamic(model_output, lat_smooth_seconds)
+      lat_smooth_dynamic, _smooth_driver = get_lat_smooth_seconds_dynamic(model_output, lat_smooth_seconds)
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
                                      lat_smooth_dynamic)
       prev_action = action

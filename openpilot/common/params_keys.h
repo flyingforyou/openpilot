@@ -209,7 +209,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // earlier and harder for the same closing speed. Measured over a drive, this term was 60%
     // of the whole follow distance.
     {"ComfortBrake", {PERSISTENT, INT, "216"}},
-    {"ComfortBrake2", {PERSISTENT, INT, "250"}},
+    {"ComfortBrake2", {PERSISTENT, INT, "237"}},
     {"StopDistanceCarrot", {PERSISTENT, INT, "450"}},
     // Stopping accel: the car must already be braking at least this hard before the controller
     // commits to its stopping ramp. 0 means "use the port's own stopAccel", which is what the
@@ -250,7 +250,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // on ramps. This is the curve slowdown: the gateway's fleetSplineSpeed leads a curve by a
     // median 4s, so it arrives in time to be braked for. Only ever lowers the target.
     {"TeslaMapAutoSpeedCurve", {PERSISTENT, BOOL, "1"}},
-    {"TeslaMapCurveLatAccel", {PERSISTENT, INT, "400"}},
+    {"TeslaMapCurveLatAccel", {PERSISTENT, INT, "340"}},
     // Let the gateway's own road-ahead cubic (UI_roadCurvature) cap the curve speed past 60m,
     // where the model has stopped seeing bends -- at 100m it calls 15% of the real ones against
     // the map's 72%. Tighter of the two wins, so this can only ever slow the car down.

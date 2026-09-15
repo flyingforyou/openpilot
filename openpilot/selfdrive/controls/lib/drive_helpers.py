@@ -48,23 +48,70 @@ LAT_SMOOTH_SECONDS_MAX = 0.60          # ceiling on the total, as carrot has
 LAT_SMOOTH_Y_STD_RANGE = (0.15, 0.25)  # m of 1s lateral std over which the extra ramps in
 LAT_SMOOTH_T_IDX_1S = 10               # ModelConstants.T_IDXS[10] = 0.977 s
 
+# Lane-line uncertainty is the better trigger of the two, measured on this car.
+#
+# The path-std criterion above almost never fires: over 20k engaged frames, plan_stds y at 1 s sits
+# at a median 0.05 m and a p90 of 0.10 -- under the 0.15 where the ramp even starts -- so the extra
+# engaged on 2.7% of frames in the 40-70 km/h band and 0% above it. Meanwhile the wobble itself
+# tracks the lane lines closely: model curvature residual RMS runs 0.000141 at 40-70 km/h where the
+# lines are weak (prob 0.802, std 0.178) against 0.000039 above 70 where they are clean (0.993,
+# 0.045), and within the 40-70 band alone it is 1.65x worse at lane std > 0.6 than at 0.1-0.3.
+# The two signals only correlate +0.345, which is why the path criterion misses it -- the model
+# stays confident about its own path even when it is unsure where the lines are.
+#
+# Range picked off that distribution: nothing happens above 70 km/h (std 0.04-0.06), the 40-70 band
+# lands mid-ramp, and the low-speed case with genuinely poor lines gets most of the extra.
+LANE_STD_RANGE = (0.10, 0.35)          # m of ego lane-line std over which the extra ramps in
+LANE_STD_IDX = (1, 2)                  # the two lines bounding the ego lane
+
+
+def _lane_line_std(model_output) -> float:
+  """Worst of the two ego lane-line stds, or nan when the model did not say."""
+  try:
+    stds = model_output['lane_lines_stds'][0, :, 0, 0]
+  except (KeyError, IndexError, TypeError):
+    return float('nan')
+  try:
+    vals = [float(stds[i]) for i in LANE_STD_IDX]
+  except (IndexError, TypeError):
+    return float('nan')
+  worst = max(vals)
+  return worst if np.isfinite(worst) else float('nan')
+
 
 def get_lat_smooth_seconds_dynamic(model_output, base: float) -> tuple[float, float]:
-  """Base lateral smoothing, plus more of it while the model is unsure where the path is.
+  """Base lateral smoothing, plus more of it while the model is unsure what it is following.
 
-  Returns (tau, y_std_1s). base <= 0 disables the feature entirely, which is the default.
+  Two criteria, whichever asks for more: how unsure the model is of its own path a second out, and
+  how unsure it is where the lane lines are. The second is what actually catches the wobble on this
+  car -- see the note on LANE_STD_RANGE -- but the first is kept because a path the model cannot
+  place is worth damping whatever the lines look like.
+
+  Returns (tau, driver), where driver is the lane-line std when that is the criterion in force and
+  the path std otherwise, so a log shows which one acted. base <= 0 disables the feature entirely.
   """
   if base <= 0.0:
     return 0.0, 0.0
+
   try:
     y_std_1s = float(model_output['plan_stds'][0, LAT_SMOOTH_T_IDX_1S, 1])
   except (KeyError, IndexError, TypeError):
-    # Fall back to the plain base rather than silently disabling what the driver asked for.
-    return base, 0.0
+    y_std_1s = float('nan')
   if not np.isfinite(y_std_1s):
-    return base, 0.0
-  extra = float(np.interp(y_std_1s, LAT_SMOOTH_Y_STD_RANGE, [0.0, base * 2.0]))
-  return float(np.clip(base + extra, 0.0, LAT_SMOOTH_SECONDS_MAX)), y_std_1s
+    y_std_1s = 0.0
+  extra_path = float(np.interp(y_std_1s, LAT_SMOOTH_Y_STD_RANGE, [0.0, base * 2.0]))
+
+  lane_std = _lane_line_std(model_output)
+  if np.isfinite(lane_std):
+    extra_lane = float(np.interp(lane_std, LANE_STD_RANGE, [0.0, base * 2.0]))
+  else:
+    extra_lane, lane_std = 0.0, 0.0
+
+  extra = max(extra_path, extra_lane)
+  # Strictly greater, so that with neither criterion engaged the reported driver stays the
+  # path std -- what this returned before the lane criterion existed.
+  driver = lane_std if extra_lane > extra_path else y_std_1s
+  return float(np.clip(base + extra, 0.0, LAT_SMOOTH_SECONDS_MAX)), driver
 
 def clip_curvature(v_ego, prev_curvature, new_curvature, roll) -> tuple[float, bool]:
   # This function respects ISO lateral jerk and acceleration limits + a max curvature
