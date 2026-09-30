@@ -35,3 +35,28 @@ def low_speed_jerk_factor(jerk_factor: float, v_ego_kph: float, floor_at_rest: f
     return jerk_factor
   floor = float(np.interp(v_ego_kph, LOW_SPEED_JERK_BP, [floor_at_rest, 0.0]))
   return max(jerk_factor, floor)
+
+
+# The desired gap credits the lead with its own braking distance, v_lead**2 / (2*b2), on the idea
+# that a lead which brakes also takes room to stop. At equal speeds it cancels our own braking term
+# and all is well. When the lead is FASTER than us the credit outgrows it and the target collapses:
+# on route 00000178 seg 6, ego 19 km/h behind a lead at 29 km/h, the formula gave 13.4 m of need and
+# 13.7 m of credit -- a target of about zero, so a car 12 m back saw a +12 m error and ran to the
+# accel ceiling. In stop-and-go the lead stops again within seconds and the speed has to come off
+# at -2.3 to -2.9.
+#
+# Capping the credited lead speed at our own speed means a faster lead is only ever assumed to be
+# as fast as we are. The target can then only get larger, never smaller, than before. Closed-loop
+# replay of the carrot MPC (simulated ego, recorded lead) on that route:
+#
+#                        seg6 accel / brake     seg7 accel / brake     large cmd steps (seg7)
+#   uncapped, Kalman     +1.69 / -2.68          +1.58 / -2.52          51
+#   capped,   radar      +1.05 / -1.42          +1.27 / -1.58          11
+#
+# and on the 09-11 open-road case -- lead pulling away at 30+ m -- the result is unchanged, since
+# the accel ceiling binds long before the target does at that range.
+def lead_speed_for_credit(v_lead, v_ego: float, enabled: bool):
+  """The lead speed to credit in the stopped-equivalence term: capped at ego speed when enabled."""
+  if not enabled:
+    return v_lead
+  return np.minimum(v_lead, max(float(v_ego), 0.0))

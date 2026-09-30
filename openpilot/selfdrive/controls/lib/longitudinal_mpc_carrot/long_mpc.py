@@ -2,6 +2,7 @@
 import os
 import time
 import numpy as np
+from openpilot.selfdrive.controls.lib.carrot_t_follow import lead_speed_for_credit
 from openpilot.cereal import log
 from opendbc.car.interfaces import ACCEL_MIN
 from openpilot.common.realtime import DT_MDL
@@ -406,6 +407,12 @@ class LongitudinalMpc:
     lead_xv_0, lead_v_0 = self.process_lead(radarstate.leadOne, np.clip(self.j_lead * carrot.j_lead_factor, -1.0, 1.0))
     lead_xv_1, _ = self.process_lead(radarstate.leadTwo, 0.0)
 
+    # A faster lead is credited as no faster than us -- see lead_speed_for_credit.
+    credit_cap = carrot.leadCreditCap
+    lead_v_0 = lead_speed_for_credit(lead_v_0, v_ego, credit_cap)
+    lead_v_credit_0 = lead_speed_for_credit(lead_xv_0[:,1], v_ego, credit_cap)
+    lead_v_credit_1 = lead_speed_for_credit(lead_xv_1[:,1], v_ego, credit_cap)
+
     mode = self.mode
     comfort_brake = carrot.comfort_brake
     comfort_brake_2 = carrot.comfort_brake_2
@@ -421,8 +428,8 @@ class LongitudinalMpc:
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
     # and then treat that as a stopped car/obstacle at this new distance.
-    lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1], comfort_brake_2)
-    lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1], comfort_brake_2)
+    lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_v_credit_0, comfort_brake_2)
+    lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_v_credit_1, comfort_brake_2)
     
     self.desired_distance = desired_follow_distance(v_ego, lead_v_0, comfort_brake, stop_distance, t_follow, comfort_brake_2)
 

@@ -206,6 +206,7 @@ class CarrotPlanner:
     self.dynamicTFollowLC = 0.0
     self.enableSpeedTF = 0
     self.lowSpeedJerk = 1.0   # matches params_keys.h
+    self.leadCreditCap = True  # matches params_keys.h
     self.personality = 1
 
     self.cruiseMaxVals0 = 1.6
@@ -284,6 +285,7 @@ class CarrotPlanner:
       self.dynamicTFollowLC = self.params.get_float("DynamicTFollowLC") / 100.
       self.enableSpeedTF = self.params.get_int("EnableSpeedTF")
       self.lowSpeedJerk = self.params.get_float("LowSpeedJerk") / 100.
+      self.leadCreditCap = self.params.get_bool("LeadCreditCap")
     elif self.params_count == 30:
       self.cruiseMaxVals0 = self.params.get_float("CruiseMaxVals0") / 100.
       self.cruiseMaxVals1 = self.params.get_float("CruiseMaxVals1") / 100.
