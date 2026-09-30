@@ -63,6 +63,12 @@ FS_REACTION = 0.1      # s, the failsafe's reaction delay (the reference's one s
 # Stern 2018 sets v_des to the speed the wave should be smoothed to, not the driver's set speed; the
 # flow estimate below (faded to the cruise target above 70 km/h) plays that role.
 FS_USE_FLOW = True
+# Stern 2018 fed v_cmd to the stock cruise loop, which answers like a first-order lag, not the
+# instant (v_cmd - v)/0.1 of the sim reference. Used directly as an accel command the piecewise
+# v_cmd law is a jerk source (RMS 2-8 m/s^3 in replay), so this lag stands in for that loop. It
+# fixes the jerk but the failsafe then acts through the lag: 1 s left 0.4 m to the lead (000000f8
+# seg 20) and 2 s left 0.1 m (seg 22) in replay. Off; kept only to reproduce that.
+FS_LOOP_TAU = 0.0      # s, 0 = off
 
 
 def eidm_limit_ratio(z: float, z_prev: float | None, dt: float, a: float, j_max: float = EIDM_JMAX) -> float:
@@ -188,10 +194,12 @@ class ResearchLongitudinal:
     self.weight = 0.0        # 1 = this path, 0 = MPC; ramps over BLEND_TIME
     self.last_a = 0.0
     self.z_prev = None       # EIDM: previous gap ratio
+    self.fs_a = None         # FollowerStopper: lagged output
 
   def reset(self):
     self.flow = None
     self.z_prev = None
+    self.fs_a = None
 
   def update(self, v_ego: float, lead_present: bool, d_rel: float, v_lead: float, a_lead: float,
              v_cruise: float, a_max: float, mode: int = 0, s_eq: float = 0.0,
@@ -203,14 +211,20 @@ class ResearchLongitudinal:
     if not lead_present or v_cruise <= 0.0:
       self.flow = None
       self.z_prev = None
+      self.fs_a = None
       return None
     if self.flow is None:
       self.flow = v_lead
     self.flow += (v_lead - self.flow) * self.dt / (FLOW_TAU + self.dt)
     v0 = flow_v0(max(self.flow, 0.0), v_cruise)
     if mode == 1:
-      return follower_stopper_accel(v_ego, v_lead, d_rel, v0 if FS_USE_FLOW else v_cruise, s_eq,
+      a_fs = follower_stopper_accel(v_ego, v_lead, d_rel, v0 if FS_USE_FLOW else v_cruise, s_eq,
                                     stop_distance, a_max)
+      if FS_LOOP_TAU <= 0.0 or self.fs_a is None:
+        self.fs_a = a_fs
+      else:
+        self.fs_a += (a_fs - self.fs_a) * self.dt / (FS_LOOP_TAU + self.dt)
+      return self.fs_a
     a_out, self.z_prev = idm_cah_accel(v_ego, v_lead, a_lead, d_rel, v0, a_max,
                                        z_prev=self.z_prev, dt=self.dt, return_z=True)
     return a_out
