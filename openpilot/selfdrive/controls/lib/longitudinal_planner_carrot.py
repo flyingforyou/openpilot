@@ -226,6 +226,8 @@ class _CarrotLongitudinalPlannerImpl:
       accel_limits = [ACCEL_MIN, ACCEL_MAX]
       accel_limits_turns = [ACCEL_MIN, ACCEL_MAX]
 
+    a_max_turns = accel_limits_turns[1]
+
     if reset_state:
       self.v_desired_filter.x = v_ego
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
@@ -344,6 +346,10 @@ class _CarrotLongitudinalPlannerImpl:
                                    float(lead.aLeadK), float(carrot.v_cruise), a_max, self.research_mode,
                                    s_eq, float(carrot.stop_distance)))
         a_res = more_binding(*a_leads)
+        # The MPC's ceiling is also cut back in turns (limit_accel_in_turns). Applied to the output,
+        # not fed in as IDM's a: that a scales the braking term too, and a turn can take it to zero.
+        if a_res is not None:
+          a_res = min(a_res, max(float(a_max_turns), 0.0))
       else:
         self.research.reset()
         self.research_two.reset()
