@@ -17,6 +17,12 @@ was removed.
       low-pass of the lead's speed in slow traffic, faded back to the cruise target by 70 km/h so
       open-road catch-up (the 09-11 complaint) is untouched.
   (2) is how it is judged -- OpenACC-style string-stability metrics in closedloop_sim.py.
+
+LongResearchMode 1 swaps (3) for the time-headway FollowerStopper itself, as published in the
+CIRCLES code (nathanlct/trajectory-training-icra, trajectory/env/accel_controllers.py): three
+distance bands pick a commanded speed between 0, the lead's speed and the desired speed, and a
+velocity loop tracks it. Its middle band is the equilibrium gap, so here that band is pinned to the
+MPC's own equilibrium gap for the current gap-stalk position -- the 7-step knob keeps its meaning.
 """
 import math
 
@@ -37,6 +43,26 @@ FLOW_TAU = 5.0         # s, low-pass on lead speed that defines the "flow" speed
 FLOW_MARGIN = 1.5      # m/s allowed above the flow speed
 FLOW_FADE_KPH = (50.0, 70.0)   # full smoothing below, none above
 FREE_DECEL_FLOOR = -0.5        # exceeding the flow speed only ever coasts, never brakes hard
+
+# Time-headway FollowerStopper (CIRCLES reference implementation). Band k sits at
+#   dv_-^2 / (2 d_k) + max(dx0_k, h_k * v),   dv_- = min(v_lead - v, 0)
+# with h = 0.4/0.6/0.8 s, dx0 = 4.5/5.25/6.0 m, d = 1.5/1.0/0.5 m/s^2. Here the middle band's
+# max(dx0, h v) is replaced by the MPC's equilibrium gap s_eq (stop distance + t_follow v + k v^2),
+# and the outer two keep the paper's ratios to it: the standstill part scales by dx0_k/dx0_2 and the
+# speed part by h_k/h_2.
+FS_H = (0.4, 0.6, 0.8)
+FS_DX0 = (4.5, 5.25, 6.0)
+FS_D = (1.5, 1.0, 0.5)
+FS_MAX_ACCEL = 1.5     # m/s^2, reference max_accel
+FS_MAX_DECEL = 3.0     # m/s^2, reference max_deaccel (also the failsafe's braking assumption)
+FS_MIN_GAP = 2.5       # m, reference safe_velocity min_gap
+# The reference steps its sim at 0.1 s and commands (v_cmd - v)/0.1 -- instant speed tracking; on
+# the road (Stern 2018) v_cmd went to the car's own cruise loop. This is that loop's gain.
+FS_KV = 1.0            # 1/s
+FS_REACTION = 0.1      # s, the failsafe's reaction delay (the reference's one sim step)
+# Stern 2018 sets v_des to the speed the wave should be smoothed to, not the driver's set speed; the
+# flow estimate below (faded to the cruise target above 70 km/h) plays that role.
+FS_USE_FLOW = True
 
 
 def eidm_limit_ratio(z: float, z_prev: float | None, dt: float, a: float, j_max: float = EIDM_JMAX) -> float:
@@ -121,6 +147,40 @@ def flow_v0(flow_speed: float, v_cruise: float) -> float:
   return w * smoothed + (1.0 - w) * v_cruise
 
 
+def fs_bands(v: float, v_lead: float, s_eq: float, stop_distance: float) -> tuple[float, float, float]:
+  """FollowerStopper's three distance thresholds, middle one at the MPC's equilibrium gap."""
+  dvm = min(v_lead - v, 0.0)
+  span = max(s_eq - stop_distance, 0.0)
+  return tuple(dvm * dvm / (2.0 * d) + stop_distance * dx0 / FS_DX0[1] + span * h / FS_H[1]
+               for h, dx0, d in zip(FS_H, FS_DX0, FS_D, strict=True))
+
+
+def fs_safe_velocity(v_lead: float, s: float) -> float:
+  """Continuous form of the reference failsafe: the fastest speed from which, after FS_REACTION,
+  braking at FS_MAX_DECEL still stops FS_MIN_GAP short of where the lead stops at the same rate."""
+  b, tr = FS_MAX_DECEL, FS_REACTION
+  room = s + v_lead * v_lead / (2.0 * b) - FS_MIN_GAP
+  if room <= 0.0:
+    return 0.0
+  return -b * tr + math.sqrt((b * tr) ** 2 + 2.0 * b * room)
+
+
+def follower_stopper_accel(v: float, v_lead: float, s: float, v_des: float, s_eq: float,
+                           stop_distance: float, a_max: float = FS_MAX_ACCEL) -> float:
+  dx1, dx2, dx3 = fs_bands(v, v_lead, s_eq, stop_distance)
+  vl = min(max(v_lead, 0.0), v_des)
+  if s <= dx1:
+    v_cmd = 0.0
+  elif s <= dx2:
+    v_cmd = vl * (s - dx1) / max(dx2 - dx1, 1e-3)
+  elif s <= dx3:
+    v_cmd = vl + (v_des - vl) * (s - dx2) / max(dx3 - dx2, 1e-3)
+  else:
+    v_cmd = v_des
+  v_cmd = min(v_cmd, fs_safe_velocity(v_lead, s))
+  return float(np.clip(FS_KV * (v_cmd - v), -FS_MAX_DECEL, min(FS_MAX_ACCEL, max(a_max, 0.1))))
+
+
 class ResearchLongitudinal:
   def __init__(self, dt: float):
     self.dt = dt
@@ -134,8 +194,12 @@ class ResearchLongitudinal:
     self.z_prev = None
 
   def update(self, v_ego: float, lead_present: bool, d_rel: float, v_lead: float, a_lead: float,
-             v_cruise: float, a_max: float) -> float | None:
-    """Proposed acceleration while following a lead, or None when this path has nothing to say."""
+             v_cruise: float, a_max: float, mode: int = 0, s_eq: float = 0.0,
+             stop_distance: float = IDM_S0) -> float | None:
+    """Proposed acceleration while following a lead, or None when this path has nothing to say.
+
+    mode 0: IIDM + CAH with flow smoothing. mode 1: FollowerStopper around s_eq, the MPC's
+    equilibrium gap at the current gap position."""
     if not lead_present or v_cruise <= 0.0:
       self.flow = None
       self.z_prev = None
@@ -144,6 +208,9 @@ class ResearchLongitudinal:
       self.flow = v_lead
     self.flow += (v_lead - self.flow) * self.dt / (FLOW_TAU + self.dt)
     v0 = flow_v0(max(self.flow, 0.0), v_cruise)
+    if mode == 1:
+      return follower_stopper_accel(v_ego, v_lead, d_rel, v0 if FS_USE_FLOW else v_cruise, s_eq,
+                                    stop_distance, a_max)
     a_out, self.z_prev = idm_cah_accel(v_ego, v_lead, a_lead, d_rel, v0, a_max,
                                        z_prev=self.z_prev, dt=self.dt, return_z=True)
     return a_out

@@ -10,7 +10,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from opendbc.car.structs import car
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc import LongitudinalMpc, N
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc import LongitudinalMpc, N, desired_follow_distance
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 
@@ -160,6 +160,7 @@ class _CarrotLongitudinalPlannerImpl:
     self.params = TypedParams()
     self.research = ResearchLongitudinal(DT_MDL)
     self.research_enabled = False
+    self.research_mode = 0
     self.research_active = False
     self._research_param_count = -1
 
@@ -328,13 +329,18 @@ class _CarrotLongitudinalPlannerImpl:
     self._research_param_count = (self._research_param_count + 1) % 50
     if self._research_param_count == 0:
       self.research_enabled = self.params.get_bool("LongResearchPath")
+      self.research_mode = self.params.get_int("LongResearchMode")
     if self.research_enabled:
       a_res = None
       if self.mpc.mode == 'acc' and int(carrot.xState.value) in (0, 1, 2):
         lead = sm['radarState'].leadOne
+        # the MPC's steady-state gap at this gap position (lead at our speed)
+        s_eq = float(desired_follow_distance(v_ego, v_ego, carrot.comfort_brake, carrot.stop_distance,
+                                             self.mpc.t_follow, carrot.comfort_brake_2))
         a_res = self.research.update(v_ego, bool(lead.present), float(lead.dRel), float(lead.vLead),
                                      float(lead.aLeadK), float(carrot.v_cruise),
-                                     float(carrot.get_carrot_accel(v_ego)))
+                                     float(carrot.get_carrot_accel(v_ego)), self.research_mode,
+                                     s_eq, float(carrot.stop_distance))
       else:
         self.research.reset()
       output_a_target = self.research.blend(a_res, output_a_target)

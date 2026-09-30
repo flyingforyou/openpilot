@@ -122,3 +122,64 @@ def test_the_seg18_flip_is_damped():
                          0.0, 33.6, 1.5))
   steps = [abs(b - a) for a, b in zip(outs[2:], outs[3:])]
   assert max(steps) < 0.8, (max(steps), outs[:6])
+
+
+# --- LongResearchMode 1: time-headway FollowerStopper (CIRCLES reference) ---
+from openpilot.selfdrive.controls.lib.research_long import (  # noqa: E402
+  fs_bands, fs_safe_velocity, follower_stopper_accel,
+)
+
+STOP = 4.5
+
+
+def _s_eq(v, t_follow):
+  return STOP + t_follow * v
+
+
+@pytest.mark.parametrize("t_follow", [0.46, 0.88, 1.30])
+@pytest.mark.parametrize("v", [5.0, 15.0, 28.0])
+def test_fs_holds_speed_at_every_gap_positions_equilibrium(t_follow, v):
+  s = _s_eq(v, t_follow)
+  assert abs(follower_stopper_accel(v, v, s, 33.0, s, STOP)) < 1e-6
+
+
+def test_fs_bands_keep_the_papers_ratios():
+  v = 20.0
+  s_eq = _s_eq(v, 0.88)
+  dx1, dx2, dx3 = fs_bands(v, v, s_eq, STOP)
+  assert dx2 == pytest.approx(s_eq)
+  assert (dx1 - STOP * 4.5 / 5.25) / (dx2 - STOP) == pytest.approx(0.4 / 0.6)
+  assert (dx3 - STOP * 6.0 / 5.25) / (dx2 - STOP) == pytest.approx(0.8 / 0.6)
+
+
+def test_fs_closing_speed_widens_the_bands():
+  s_eq = _s_eq(20.0, 0.88)
+  assert all(c > o for c, o in zip(fs_bands(20.0, 15.0, s_eq, STOP), fs_bands(20.0, 20.0, s_eq, STOP), strict=True))
+
+
+def test_fs_wider_gap_position_brakes_earlier():
+  v, s = 20.0, 25.0
+  assert follower_stopper_accel(v, v, s, 33.0, _s_eq(v, 1.30), STOP) < follower_stopper_accel(v, v, s, 33.0, _s_eq(v, 0.46), STOP)
+
+
+def test_fs_stopped_lead_close_brakes_at_the_limit():
+  assert follower_stopper_accel(10.0, 0.0, 15.0, 20.0, _s_eq(10.0, 0.88), STOP) == pytest.approx(-3.0)
+
+
+def test_fs_failsafe_stops_short_of_the_lead():
+  v = fs_safe_velocity(0.0, 20.0)
+  # reaction then full braking fits in 20 m less the 2.5 m min gap
+  assert v * 0.1 + v * v / (2 * 3.0) == pytest.approx(20.0 - 2.5)
+  assert fs_safe_velocity(0.0, 2.0) == 0.0
+
+
+def test_fs_never_exceeds_the_ceiling():
+  assert follower_stopper_accel(0.0, 20.0, 80.0, 30.0, STOP, STOP, a_max=0.8) == pytest.approx(0.8)
+
+
+def test_mode_1_uses_the_follower_stopper():
+  r = ResearchLongitudinal(0.05)
+  v = 15.0
+  s_eq = _s_eq(v, 0.88)
+  assert abs(r.update(v, True, s_eq, v, 0.0, 30.0, 2.0, mode=1, s_eq=s_eq, stop_distance=STOP)) < 1e-6
+  assert r.update(v, True, s_eq - 5, v, 0.0, 30.0, 2.0, mode=1, s_eq=s_eq, stop_distance=STOP) < -0.5
