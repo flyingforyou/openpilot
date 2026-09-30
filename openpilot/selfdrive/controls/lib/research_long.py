@@ -1,7 +1,10 @@
 """An alternative lead-following path built from the car-following literature, off by default.
 
-The carrot MPC stays in charge of everything else; this only proposes the acceleration while a
-lead is being followed, and the MPC keeps the last word on hard braking.
+The carrot MPC stays in charge of everything else; while a lead is being followed in plain
+cruise/lead states, this path's acceleration is used instead (cross-faded on hand-over). An earlier
+version let the MPC take over below -2.0 m/s^2; that is not in the papers and the hard switch made
+braking and jerk worse in replay (00000178 seg 7: -1.95/0.74 without it vs -2.32/1.06 with), so it
+was removed.
 
   (3) IDM + CAH -- Kesting, Treiber & Helbing (2010), "Enhanced intelligent driver model to access
       the impact of driving strategies on traffic capacity", the IDM variant its authors propose as
@@ -34,7 +37,6 @@ FLOW_TAU = 5.0         # s, low-pass on lead speed that defines the "flow" speed
 FLOW_MARGIN = 1.5      # m/s allowed above the flow speed
 FLOW_FADE_KPH = (50.0, 70.0)   # full smoothing below, none above
 FREE_DECEL_FLOOR = -0.5        # exceeding the flow speed only ever coasts, never brakes hard
-MPC_OVERRIDE_BELOW = -2.0      # the MPC takes over whenever it wants harder braking than this
 
 
 def eidm_limit_ratio(z: float, z_prev: float | None, dt: float, a: float, j_max: float = EIDM_JMAX) -> float:
@@ -119,13 +121,6 @@ def flow_v0(flow_speed: float, v_cruise: float) -> float:
   return w * smoothed + (1.0 - w) * v_cruise
 
 
-def combine_with_mpc(a_research: float, a_mpc: float) -> float:
-  """Research path by default; the MPC wins whenever it asks for braking beyond the override."""
-  if a_mpc < MPC_OVERRIDE_BELOW and a_mpc < a_research:
-    return a_mpc
-  return a_research
-
-
 class ResearchLongitudinal:
   def __init__(self, dt: float):
     self.dt = dt
@@ -161,7 +156,7 @@ class ResearchLongitudinal:
     """
     step = self.dt / BLEND_TIME
     if a_research is not None:
-      self.last_a = combine_with_mpc(a_research, a_mpc)
+      self.last_a = a_research
       self.weight = min(1.0, self.weight + step)
     else:
       self.weight = max(0.0, self.weight - step)

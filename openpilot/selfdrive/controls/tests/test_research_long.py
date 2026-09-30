@@ -2,7 +2,7 @@
 import pytest
 
 from openpilot.selfdrive.controls.lib.research_long import (
-  IDM_S0, IDM_T, MPC_OVERRIDE_BELOW, ResearchLongitudinal, combine_with_mpc, flow_v0, idm_cah_accel,
+  IDM_S0, IDM_T, ResearchLongitudinal, flow_v0, idm_cah_accel,
 )
 
 A = 1.5
@@ -52,12 +52,6 @@ def test_flow_smoothing_fades_out_on_open_road():
 def test_over_flow_speed_only_coasts():
   """v > v0 must not brake harder than the coast floor on its own (no lead influence)."""
   assert idm_cah_accel(12.0, 12.0, 0.0, 500.0, 10.0, A) >= -0.5 - 1e-9
-
-
-def test_mpc_keeps_the_last_word_on_hard_braking():
-  assert combine_with_mpc(-0.5, -2.8) == -2.8
-  assert combine_with_mpc(-0.5, MPC_OVERRIDE_BELOW + 0.1) == -0.5
-  assert combine_with_mpc(0.8, 1.6) == 0.8
 
 
 def test_no_lead_hands_back():
