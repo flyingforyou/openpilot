@@ -40,6 +40,16 @@ for s in rp opui plan; do tmux kill-session -t $s; done
 sudo systemctl start comma
 ```
 
+## 0.11.2 changes (2026-09-30)
+
+- The binary is **`./openpilot/tools/replay/replay`** (built by `scons --replay -j4 openpilot/tools/replay`).
+  A stale copy at the repo-root `./tools/replay/replay` publishes the road camera as
+  `roadCameraState`; the UI waits for `narrowRoadCameraState`, never gets the camera intrinsics, and
+  plays the video full-size with no lane lines or path while every other service is alive.
+- Use **`/data/openpilot/.venv/bin/python3`** (what the manager uses) instead of
+  `/usr/local/venv/bin/python3`; the other venv's raylib renders the UI at the wrong size.
+- With a live plannerd, also block **`driverAssistance`** -- plannerd publishes it too.
+
 ## Why each part is the way it is
 
 **`--no-hw-decoder` is not optional.** Without it replay parses the route fine, prints
