@@ -36,6 +36,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_functions import CarrotPlanner
+from openpilot.selfdrive.controls.lib.carrot_t_follow import close_lead_accel_cap
 
 
 LON_MPC_STEP = 0.2  # first step is 0.2s
@@ -212,6 +213,9 @@ class _CarrotLongitudinalPlannerImpl:
     if self.mpc.mode == 'acc':
       #accel_limits = [A_CRUISE_MIN, get_max_accel(v_ego)]
       accel_limits = [A_CRUISE_MIN, carrot.get_carrot_accel(v_ego)]
+      lead = sm['radarState'].leadOne
+      accel_limits[1] = close_lead_accel_cap(accel_limits[1], lead.dRel if lead.present else None,
+                                             v_ego * 3.6, carrot.closeLeadAccel)
       curvature_future = get_future_curvature(sm['modelV2'], sm['controlsState'].desiredCurvature)
       a_lat_max = 3.0
       accel_limits_turns = limit_accel_in_turns(v_ego, curvature_future, accel_limits, a_lat_max)

@@ -196,6 +196,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DynamicTFollowLC", {PERSISTENT, INT, "100"}},
     {"EnableSpeedTF", {PERSISTENT, INT, "0"}},
     {"LowSpeedJerk", {PERSISTENT, INT, "100"}},
+    {"CloseLeadAccel", {PERSISTENT, INT, "100"}},
     {"CruiseMaxVals0", {PERSISTENT, INT, "130"}},
     {"CruiseMaxVals1", {PERSISTENT, INT, "150"}},
     {"CruiseMaxVals2", {PERSISTENT, INT, "185"}},
