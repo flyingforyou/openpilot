@@ -36,6 +36,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_functions import CarrotPlanner
+from openpilot.selfdrive.controls.lib.research_long import ResearchLongitudinal, combine_with_mpc
 
 
 LON_MPC_STEP = 0.2  # first step is 0.2s
@@ -157,6 +158,10 @@ class _CarrotLongitudinalPlannerImpl:
     self.v_cruise_kph = 0.0
 
     self.params = TypedParams()
+    self.research = ResearchLongitudinal(DT_MDL)
+    self.research_enabled = False
+    self.research_active = False
+    self._research_param_count = -1
 
   @staticmethod
   def parse_model(model_msg):
@@ -316,6 +321,25 @@ class _CarrotLongitudinalPlannerImpl:
     #  accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     #self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     #self.prev_accel_clip = accel_clip
+    # Optional literature-based lead-following path (LongResearchPath) -- see research_long.py.
+    # Only while following a lead in plain cruise/lead states; stops, e2e and the no-lead case stay
+    # with the MPC, and the MPC still wins on any braking harder than MPC_OVERRIDE_BELOW.
+    self.research_active = False
+    self._research_param_count = (self._research_param_count + 1) % 50
+    if self._research_param_count == 0:
+      self.research_enabled = self.params.get_bool("LongResearchPath")
+    if self.research_enabled and self.mpc.mode == 'acc' and int(carrot.xState.value) in (0, 1, 2):
+      lead = sm['radarState'].leadOne
+      a_res = self.research.update(v_ego, bool(lead.present), float(lead.dRel), float(lead.vLead),
+                                   float(lead.aLeadK), float(carrot.v_cruise),
+                                   float(carrot.get_carrot_accel(v_ego)))
+      if a_res is not None:
+        output_a_target = combine_with_mpc(a_res, output_a_target)
+        self.output_should_stop = self.output_should_stop or (v_ego < 0.3 and output_a_target < 0.1)
+        self.research_active = True
+    else:
+      self.research.reset()
+
     self.output_a_target = output_a_target
     self.output_v_target_now = output_v_target_now
     self.output_j_target_now = self.j_desired_trajectory[0]
