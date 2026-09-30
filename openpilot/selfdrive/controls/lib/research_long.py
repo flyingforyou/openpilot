@@ -31,8 +31,8 @@ import numpy as np
 # Kesting 2010 Table 1 ('car'): v0 120 km/h, delta 4, T 1.5 s, s0 2.0 m, a 1.4, b 2.0, c 0.99.
 # T and s0 are moved to this car's current gap-1 feel (1.0 s, 4.5 m -- the stop distance it already
 # uses); a, b, delta and c are the paper's.
-IDM_T = 1.0            # s, time gap            (paper 1.5)
-IDM_S0 = 4.5           # m, standstill gap      (paper 2.0)
+IDM_T = 1.0            # s, time gap            (paper 1.5); fallback only, the gap stalk sets it
+IDM_S0 = 4.5           # m, standstill gap      (paper 2.0); fallback only, StopDistance sets it
 IDM_A = 1.4            # m/s^2, max acceleration
 IDM_B = 2.0            # m/s^2, comfortable deceleration
 IDM_DELTA = 4.0
@@ -133,17 +133,28 @@ def cah_accel(v: float, v_lead: float, a_lead: float, s: float, a: float = IDM_A
 
 def idm_cah_accel(v: float, v_lead: float, a_lead: float, s: float, v0: float,
                   a_max: float = IDM_A, b: float = IDM_B, c: float = CAH_COOLNESS,
-                  z_prev: float | None = None, dt: float = 0.05, return_z: bool = False):
+                  z_prev: float | None = None, dt: float = 0.05, return_z: bool = False,
+                  T: float = IDM_T, s0: float = IDM_S0):
   """Kesting 2010 eq. (2.4) ACC acceleration, with IIDM in place of IDM as in the authors' book,
   and the EIDM jerk limit (Salles 2020 eq. 20) on the IIDM's gap ratio."""
   a = min(IDM_A, max(a_max, 0.1))
-  a_iidm, z = iidm_accel(v, v - v_lead, s, v0, a=a, b=b, z_prev=z_prev, dt=dt)
+  a_iidm, z = iidm_accel(v, v - v_lead, s, v0, a=a, b=b, T=T, s0=s0, z_prev=z_prev, dt=dt)
   a_cah = cah_accel(v, v_lead, a_lead, s, a=a)
   if a_iidm >= a_cah:
     out = float(a_iidm)
   else:
     out = float((1.0 - c) * a_iidm + c * (a_cah + b * math.tanh((a_iidm - a_cah) / b)))
   return (out, z) if return_z else out
+
+
+def gap_idm_params(v: float, s_eq: float, stop_distance: float) -> tuple[float, float]:
+  """IDM's s0 and T from the gap stalk: s0 is the stop distance and T the time gap that puts IDM's
+  steady-state gap s0 + vT on the MPC's own equilibrium gap s_eq for this gap position and speed.
+  s_eq <= 0 means no gap information (tests, callers that predate it): the fixed defaults."""
+  if s_eq <= 0.0:
+    return IDM_T, IDM_S0
+  s0 = max(stop_distance, 0.5)
+  return max(s_eq - s0, 0.0) / max(v, 0.1), s0
 
 
 def flow_v0(flow_speed: float, v_cruise: float) -> float:
@@ -206,8 +217,8 @@ class ResearchLongitudinal:
              stop_distance: float = IDM_S0) -> float | None:
     """Proposed acceleration while following a lead, or None when this path has nothing to say.
 
-    mode 0: IIDM + CAH with flow smoothing. mode 1: FollowerStopper around s_eq, the MPC's
-    equilibrium gap at the current gap position."""
+    mode 0: IIDM + CAH with flow smoothing, its time gap and standstill gap taken from s_eq, the
+    MPC's equilibrium gap at the current gap position. mode 1: FollowerStopper around s_eq."""
     if not lead_present or v_cruise <= 0.0:
       self.flow = None
       self.z_prev = None
@@ -225,8 +236,9 @@ class ResearchLongitudinal:
       else:
         self.fs_a += (a_fs - self.fs_a) * self.dt / (FS_LOOP_TAU + self.dt)
       return self.fs_a
+    T, s0 = gap_idm_params(v_ego, s_eq, stop_distance)
     a_out, self.z_prev = idm_cah_accel(v_ego, v_lead, a_lead, d_rel, v0, a_max,
-                                       z_prev=self.z_prev, dt=self.dt, return_z=True)
+                                       z_prev=self.z_prev, dt=self.dt, return_z=True, T=T, s0=s0)
     return a_out
 
   def blend(self, a_research: float | None, a_mpc: float) -> float:

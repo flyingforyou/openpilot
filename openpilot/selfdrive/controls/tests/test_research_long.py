@@ -183,3 +183,27 @@ def test_mode_1_uses_the_follower_stopper():
   s_eq = _s_eq(v, 0.88)
   assert abs(r.update(v, True, s_eq, v, 0.0, 30.0, 2.0, mode=1, s_eq=s_eq, stop_distance=STOP)) < 1e-6
   assert r.update(v, True, s_eq - 5, v, 0.0, 30.0, 2.0, mode=1, s_eq=s_eq, stop_distance=STOP) < -0.5
+
+
+# --- mode 0 follows the gap stalk ---
+from openpilot.selfdrive.controls.lib.research_long import gap_idm_params  # noqa: E402
+
+
+@pytest.mark.parametrize("t_follow", [0.46, 0.88, 1.30])
+@pytest.mark.parametrize("v", [3.0, 15.0, 28.0])
+def test_iidm_holds_speed_at_every_gap_positions_equilibrium(t_follow, v):
+  r = ResearchLongitudinal(0.05)
+  s_eq = STOP + t_follow * v
+  a = r.update(v, True, s_eq, v, 0.0, 33.0, 2.0, mode=0, s_eq=s_eq, stop_distance=STOP)
+  assert abs(a) < 0.05
+
+
+def test_iidm_gap_params_recover_t_follow():
+  assert gap_idm_params(20.0, STOP + 0.88 * 20.0, STOP) == pytest.approx((0.88, STOP))
+
+
+def test_iidm_wider_gap_position_brakes_earlier():
+  v, s = 20.0, 25.0
+  tight = ResearchLongitudinal(0.05).update(v, True, s, v, 0.0, 33.0, 2.0, s_eq=STOP + 0.46 * v, stop_distance=STOP)
+  loose = ResearchLongitudinal(0.05).update(v, True, s, v, 0.0, 33.0, 2.0, s_eq=STOP + 1.30 * v, stop_distance=STOP)
+  assert loose < -0.5 < tight
