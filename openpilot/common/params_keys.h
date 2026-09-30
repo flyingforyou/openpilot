@@ -141,6 +141,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DriverMonitorBypass", {PERSISTENT, BOOL, "1"}},
     {"GapProfile", {PERSISTENT, INT, "0"}},
     {"RadarLeadHoldCm", {PERSISTENT, INT, "10000"}},
+    {"RadarLeadAccel", {PERSISTENT, BOOL, "1"}},
     {"RadarLeadHoldMs", {PERSISTENT, INT, "1000"}},
     {"StopDistanceCm", {PERSISTENT, INT, "600"}},
     {"TFollowRiseRatePct", {PERSISTENT, INT, "35"}},

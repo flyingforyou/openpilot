@@ -82,11 +82,15 @@ def get_torque_params():
 class MyTrack:
   """Absolute lead motion for one radar point, filtered.
 
-  Ported from CarrotPilot. aRel comes back NaN or plainly noisy on most radars -- this car's
-  Bosch unit included -- so acceleration is differentiated from a filtered speed here, where the
+  Ported from CarrotPilot. aRel comes back NaN or plainly noisy on most radars, so acceleration is
+  differentiated from a filtered speed here, where the
   raw point and its measured flag are still in hand, rather than left for radard to infer from a
   track it has already smoothed. jLead falls out of the same chain and is what the longitudinal
   MPC reads to tell a lead easing off from one braking hard.
+
+  This car's Bosch radar is the exception, and an earlier version of this note wrongly lumped it
+  in: its LongAccel tracks the lead's true acceleration well and 0.4 s sooner than any filtered
+  derivative, so radard takes aLeadK from it directly -- see radar_lead_accel.
 
   Corner-radar slot reuse handling is not ported: that exists because some radars recycle a slot
   id for a different object between frames, and this car has one forward radar that does not.

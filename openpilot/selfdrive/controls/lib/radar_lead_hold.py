@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from typing import TYPE_CHECKING, Any
 
 from openpilot.common.realtime import DT_MDL
@@ -86,3 +88,36 @@ class RadarLeadHold:
       self.track_id = -1
       self.frames = 0
     self.used = False
+
+
+# The lead's acceleration straight from the radar, instead of differentiating its speed.
+#
+# radard has always estimated aLeadK by running the lead's speed through a two-state Kalman filter
+# with low gains (K 0.20 / 0.29), tuned to keep radar speed noise from turning into phantom braking.
+# The price is lag. The Bosch unit on this car reports each track's relative acceleration itself
+# (LongAccel, 0.03125 m/s^2 steps), and radard never read it.
+#
+# Measured over 1078 segments against the lead's true acceleration (a centred difference of its
+# speed, so no lag of its own), the time to register a change past 0.5 m/s^2:
+#
+#                       braking onset           accelerating onset      |a|>0.5 while steady
+#   aLeadK (Kalman)     +0.74 s, catches 72%    +0.70 s, catches 78%    2.74%
+#   a_ego + LongAccel   +0.30 s, catches 87%    +0.29 s, catches 91%    3.31%
+#
+# Where both saw it, the radar value was first 99% of the time. Low-pass filtering it does not
+# lower the false-alarm rate at all (3.2-3.5% for tau 0.05-0.25 s) -- that disagreement is not
+# high-frequency noise -- it only adds lag, so the value is used raw. Both directions matter for
+# the stop-and-go lurch: on route 00000178 seg 6 the lead had finished accelerating (true +0.15)
+# while aLeadK still read +0.75, and the car was still commanding +1.68 because of it.
+#
+# CarrotPilot has the same branch (a_lead = aRel + a_ego) but hard-disabled with `if True:`; its
+# fleet is mostly Hyundai radars, where aRel is not usable. That does not transfer to this radar.
+RADAR_LEAD_ACCEL_CLIP = (-10.0, 5.0)
+
+
+def radar_lead_accel(a_rel: float, a_ego: float) -> float | None:
+  """Absolute lead acceleration from the radar's own relative value, or None if it gave none."""
+  if a_rel is None or not math.isfinite(a_rel) or not math.isfinite(a_ego):
+    return None
+  lo, hi = RADAR_LEAD_ACCEL_CLIP
+  return min(max(a_rel + a_ego, lo), hi)
