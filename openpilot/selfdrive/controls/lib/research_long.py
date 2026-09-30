@@ -198,6 +198,17 @@ def follower_stopper_accel(v: float, v_lead: float, s: float, v_des: float, s_eq
   return float(np.clip(FS_KV * (v_cmd - v), -FS_MAX_DECEL, min(FS_MAX_ACCEL, max(a_max, 0.1))))
 
 
+def more_binding(*accels: float | None) -> float | None:
+  """The acceleration that respects every lead: the smallest of those that have an opinion.
+
+  leadTwo carries what the MPC already treats as a second obstacle -- a car the radar-only cut-in
+  detector sees merging (cut_in.py) and the target lane's lead during our own lane change. Following
+  only leadOne here would silently switch that anticipation off whenever this path is in charge.
+  """
+  vals = [a for a in accels if a is not None]
+  return min(vals) if vals else None
+
+
 class ResearchLongitudinal:
   def __init__(self, dt: float):
     self.dt = dt

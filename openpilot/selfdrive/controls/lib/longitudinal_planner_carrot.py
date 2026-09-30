@@ -36,7 +36,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_functions import CarrotPlanner
-from openpilot.selfdrive.controls.lib.research_long import ResearchLongitudinal
+from openpilot.selfdrive.controls.lib.research_long import ResearchLongitudinal, more_binding
 
 
 LON_MPC_STEP = 0.2  # first step is 0.2s
@@ -159,6 +159,7 @@ class _CarrotLongitudinalPlannerImpl:
 
     self.params = TypedParams()
     self.research = ResearchLongitudinal(DT_MDL)
+    self.research_two = ResearchLongitudinal(DT_MDL)   # leadTwo: cut-ins and the target lane's lead
     self.research_enabled = False
     self.research_mode = 0
     self.research_active = False
@@ -333,16 +334,19 @@ class _CarrotLongitudinalPlannerImpl:
     if self.research_enabled:
       a_res = None
       if self.mpc.mode == 'acc' and int(carrot.xState.value) in (0, 1, 2):
-        lead = sm['radarState'].leadOne
         # the MPC's steady-state gap at this gap position (lead at our speed)
         s_eq = float(desired_follow_distance(v_ego, v_ego, carrot.comfort_brake, carrot.stop_distance,
                                              self.mpc.t_follow, carrot.comfort_brake_2))
-        a_res = self.research.update(v_ego, bool(lead.present), float(lead.dRel), float(lead.vLead),
-                                     float(lead.aLeadK), float(carrot.v_cruise),
-                                     float(carrot.get_carrot_accel(v_ego)), self.research_mode,
-                                     s_eq, float(carrot.stop_distance))
+        a_max = float(carrot.get_carrot_accel(v_ego))
+        a_leads = []
+        for rl, lead in ((self.research, sm['radarState'].leadOne), (self.research_two, sm['radarState'].leadTwo)):
+          a_leads.append(rl.update(v_ego, bool(lead.present), float(lead.dRel), float(lead.vLead),
+                                   float(lead.aLeadK), float(carrot.v_cruise), a_max, self.research_mode,
+                                   s_eq, float(carrot.stop_distance)))
+        a_res = more_binding(*a_leads)
       else:
         self.research.reset()
+        self.research_two.reset()
       output_a_target = self.research.blend(a_res, output_a_target)
       self.research_active = self.research.weight > 0.0
       if self.research_active:

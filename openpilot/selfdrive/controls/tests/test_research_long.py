@@ -207,3 +207,23 @@ def test_iidm_wider_gap_position_brakes_earlier():
   tight = ResearchLongitudinal(0.05).update(v, True, s, v, 0.0, 33.0, 2.0, s_eq=STOP + 0.46 * v, stop_distance=STOP)
   loose = ResearchLongitudinal(0.05).update(v, True, s, v, 0.0, 33.0, 2.0, s_eq=STOP + 1.30 * v, stop_distance=STOP)
   assert loose < -0.5 < tight
+
+
+# --- leadTwo (cut-in / target lane lead) is respected too ---
+from openpilot.selfdrive.controls.lib.research_long import more_binding  # noqa: E402
+
+
+def test_more_binding_takes_the_stricter_lead():
+  assert more_binding(0.4, -1.2) == -1.2
+  assert more_binding(None, -0.3) == -0.3
+  assert more_binding(0.5, None) == 0.5
+  assert more_binding(None, None) is None
+
+
+def test_a_merging_car_closer_than_the_lead_brakes_the_output():
+  v = 25.0
+  s_eq = STOP + 0.60 * v
+  lead_one = ResearchLongitudinal(0.05).update(v, True, s_eq + 5, v, 0.0, 30.0, 2.0, s_eq=s_eq, stop_distance=STOP)
+  cut_in = ResearchLongitudinal(0.05).update(v, True, 12.0, v - 2.0, 0.0, 30.0, 2.0, s_eq=s_eq, stop_distance=STOP)
+  assert lead_one > 0.0 > cut_in
+  assert more_binding(lead_one, cut_in) == cut_in
