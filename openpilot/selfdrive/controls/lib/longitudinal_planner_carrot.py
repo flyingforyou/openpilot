@@ -36,7 +36,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_functions import CarrotPlanner
-from openpilot.selfdrive.controls.lib.research_long import ResearchLongitudinal, combine_with_mpc
+from openpilot.selfdrive.controls.lib.research_long import ResearchLongitudinal
 
 
 LON_MPC_STEP = 0.2  # first step is 0.2s
@@ -328,17 +328,19 @@ class _CarrotLongitudinalPlannerImpl:
     self._research_param_count = (self._research_param_count + 1) % 50
     if self._research_param_count == 0:
       self.research_enabled = self.params.get_bool("LongResearchPath")
-    if self.research_enabled and self.mpc.mode == 'acc' and int(carrot.xState.value) in (0, 1, 2):
-      lead = sm['radarState'].leadOne
-      a_res = self.research.update(v_ego, bool(lead.present), float(lead.dRel), float(lead.vLead),
-                                   float(lead.aLeadK), float(carrot.v_cruise),
-                                   float(carrot.get_carrot_accel(v_ego)))
-      if a_res is not None:
-        output_a_target = combine_with_mpc(a_res, output_a_target)
+    if self.research_enabled:
+      a_res = None
+      if self.mpc.mode == 'acc' and int(carrot.xState.value) in (0, 1, 2):
+        lead = sm['radarState'].leadOne
+        a_res = self.research.update(v_ego, bool(lead.present), float(lead.dRel), float(lead.vLead),
+                                     float(lead.aLeadK), float(carrot.v_cruise),
+                                     float(carrot.get_carrot_accel(v_ego)))
+      else:
+        self.research.reset()
+      output_a_target = self.research.blend(a_res, output_a_target)
+      self.research_active = self.research.weight > 0.0
+      if self.research_active:
         self.output_should_stop = self.output_should_stop or (v_ego < 0.3 and output_a_target < 0.1)
-        self.research_active = True
-    else:
-      self.research.reset()
 
     self.output_a_target = output_a_target
     self.output_v_target_now = output_v_target_now

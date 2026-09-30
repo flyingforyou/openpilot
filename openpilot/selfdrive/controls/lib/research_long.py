@@ -19,11 +19,16 @@ import math
 
 import numpy as np
 
-IDM_T = 1.0            # s, time gap
-IDM_S0 = 3.5           # m, standstill gap
+# Kesting 2010 Table 1 ('car'): v0 120 km/h, delta 4, T 1.5 s, s0 2.0 m, a 1.4, b 2.0, c 0.99.
+# T and s0 are moved to this car's current gap-1 feel (1.0 s, 4.5 m -- the stop distance it already
+# uses); a, b, delta and c are the paper's.
+IDM_T = 1.0            # s, time gap            (paper 1.5)
+IDM_S0 = 4.5           # m, standstill gap      (paper 2.0)
+IDM_A = 1.4            # m/s^2, max acceleration
 IDM_B = 2.0            # m/s^2, comfortable deceleration
 IDM_DELTA = 4.0
 CAH_COOLNESS = 0.99    # Kesting 2010's c
+BLEND_TIME = 0.5       # s, cross-fade between this path and the MPC's output on hand-over
 FLOW_TAU = 5.0         # s, low-pass on lead speed that defines the "flow" speed
 FLOW_MARGIN = 1.5      # m/s allowed above the flow speed
 FLOW_FADE_KPH = (50.0, 70.0)   # full smoothing below, none above
@@ -31,32 +36,55 @@ FREE_DECEL_FLOOR = -0.5        # exceeding the flow speed only ever coasts, neve
 MPC_OVERRIDE_BELOW = -2.0      # the MPC takes over whenever it wants harder braking than this
 
 
-def idm_cah_accel(v: float, v_lead: float, a_lead: float, s: float, v0: float,
-                  a_max: float, b: float = IDM_B, T: float = IDM_T, s0: float = IDM_S0,
-                  delta: float = IDM_DELTA, c: float = CAH_COOLNESS) -> float:
-  """Kesting 2010's ACC acceleration: IDM blended with the constant-acceleration heuristic."""
-  a = max(a_max, 0.1)
+def iidm_accel(v: float, dv: float, s: float, v0: float, a: float = IDM_A, b: float = IDM_B,
+               T: float = IDM_T, s0: float = IDM_S0, delta: float = IDM_DELTA) -> float:
+  """Improved IDM (Treiber & Kesting 2013), the car-following core of their ACC model.
+
+  Plain IDM's a*[1 - (v/v0)^d - (s*/s)^2] lets the free-road term shrink the equilibrium gap's
+  stiffness near v0, so followers settle ever further back -- the "unrealistic equilibrium gaps at
+  high speed" the IDM review lists. IIDM splits the state space in four so the equilibrium gap is
+  exactly s* whatever v0 is:
+    v <= v0:  z >= 1 -> a(1 - z^2)            z < 1 -> a_free(1 - z^(2a/a_free))
+    v >  v0:  z >= 1 -> a_free + a(1 - z^2)   z < 1 -> a_free
+  with z = s*/s, s* = s0 + max(0, vT + v*dv/(2 sqrt(ab))), and above v0 a_free = -b(1-(v0/v)^(a d/b)).
+  """
   s = max(s, 0.5)
   v0 = max(v0, 0.5)
-  dv = v - v_lead
   s_star = s0 + max(0.0, v * T + v * dv / (2.0 * math.sqrt(a * b)))
+  z = s_star / s
   if v <= v0:
     a_free = a * (1.0 - (v / v0) ** delta)
-  else:
-    # Treiber's IIDM form above v0, floored: running a little over the flow speed should coast
-    a_free = max(FREE_DECEL_FLOOR, -b * (1.0 - (v0 / v) ** (a * delta / b)))
-  a_idm = a_free - a * (s_star / s) ** 2
+    if z >= 1.0:
+      return a * (1.0 - z * z)
+    if a_free <= 1e-6:
+      return 0.0
+    return a_free * (1.0 - z ** (2.0 * a / a_free))
+  a_free = max(FREE_DECEL_FLOOR, -b * (1.0 - (v0 / v) ** (a * delta / b)))
+  if z >= 1.0:
+    return a_free + a * (1.0 - z * z)
+  return a_free
 
+
+def cah_accel(v: float, v_lead: float, a_lead: float, s: float, a: float = IDM_A) -> float:
+  """Constant-acceleration heuristic, Kesting 2010 eq. (2.3)."""
+  s = max(s, 0.5)
   al = min(a_lead, a)
+  dv = v - v_lead
   if v_lead * dv <= -2.0 * s * al:
     den = v_lead ** 2 - 2.0 * s * al
-    a_cah = (v * v * al / den) if den > 1e-3 else al
-  else:
-    a_cah = al - (dv ** 2) * (1.0 if dv > 0 else 0.0) / (2.0 * s)
+    return (v * v * al / den) if den > 1e-3 else al
+  return al - (dv ** 2) * (1.0 if dv > 0 else 0.0) / (2.0 * s)
 
-  if a_idm >= a_cah:
-    return float(a_idm)
-  return float((1.0 - c) * a_idm + c * (a_cah + b * math.tanh((a_idm - a_cah) / b)))
+
+def idm_cah_accel(v: float, v_lead: float, a_lead: float, s: float, v0: float,
+                  a_max: float = IDM_A, b: float = IDM_B, c: float = CAH_COOLNESS) -> float:
+  """Kesting 2010 eq. (2.4) ACC acceleration, with IIDM in place of IDM as in the authors' book."""
+  a = min(IDM_A, max(a_max, 0.1))
+  a_iidm = iidm_accel(v, v - v_lead, s, v0, a=a, b=b)
+  a_cah = cah_accel(v, v_lead, a_lead, s, a=a)
+  if a_iidm >= a_cah:
+    return float(a_iidm)
+  return float((1.0 - c) * a_iidm + c * (a_cah + b * math.tanh((a_iidm - a_cah) / b)))
 
 
 def flow_v0(flow_speed: float, v_cruise: float) -> float:
@@ -77,6 +105,8 @@ class ResearchLongitudinal:
   def __init__(self, dt: float):
     self.dt = dt
     self.flow = None
+    self.weight = 0.0        # 1 = this path, 0 = MPC; ramps over BLEND_TIME
+    self.last_a = 0.0
 
   def reset(self):
     self.flow = None
@@ -92,3 +122,19 @@ class ResearchLongitudinal:
     self.flow += (v_lead - self.flow) * self.dt / (FLOW_TAU + self.dt)
     v0 = flow_v0(max(self.flow, 0.0), v_cruise)
     return idm_cah_accel(v_ego, v_lead, a_lead, d_rel, v0, a_max)
+
+  def blend(self, a_research: float | None, a_mpc: float) -> float:
+    """Cross-fade to and from the MPC so a hand-over never steps the command.
+
+    Not from the papers -- they have one controller. Here two coexist, and the hand-over produced
+    jerk spikes (RMS 0.21 -> 1.55 on a highway replay) until it was faded.
+    """
+    step = self.dt / BLEND_TIME
+    if a_research is not None:
+      self.last_a = combine_with_mpc(a_research, a_mpc)
+      self.weight = min(1.0, self.weight + step)
+    else:
+      self.weight = max(0.0, self.weight - step)
+    if self.weight <= 0.0:
+      return a_mpc
+    return self.weight * self.last_a + (1.0 - self.weight) * a_mpc

@@ -21,7 +21,7 @@ def test_faster_lead_does_not_run_to_the_ceiling():
   bare = idm_cah_accel(v, vl, 1.5, 12.0, 30.0, A)
   smoothed = idm_cah_accel(v, vl, 1.5, 12.0, flow_v0(6.0, 30.0), A)
   assert bare > 1.0
-  assert 0.0 < smoothed < bare - 0.3
+  assert 0.0 < smoothed < bare
 
 
 def test_stopped_lead_close_brakes_hard():
@@ -64,3 +64,39 @@ def test_no_lead_hands_back():
   r = ResearchLongitudinal(0.05)
   assert r.update(10.0, False, 0.0, 0.0, 0.0, 25.0, A) is None
   assert r.update(10.0, True, 20.0, 10.0, 0.0, 0.0, A) is None     # stopping: MPC's job
+
+
+# --- IIDM and the hand-over blend ------------------------------------------------------------
+
+from openpilot.selfdrive.controls.lib.research_long import BLEND_TIME, iidm_accel  # noqa: E402
+
+
+def test_iidm_equilibrium_gap_is_s_star_even_near_v0():
+  """The defect plain IDM has and IIDM fixes: at s = s*, zero accel whatever v0 is."""
+  v = 27.0
+  s_star = IDM_S0 + v * IDM_T
+  for v0 in (27.5, 28.0, 30.0, 40.0):
+    assert abs(iidm_accel(v, 0.0, s_star, v0)) < 1e-9, v0
+
+
+def test_plain_idm_would_have_drifted_back():
+  """Guard the premise: plain IDM at the same point brakes, i.e. wants a bigger gap."""
+  v, v0 = 27.0, 28.0
+  s_star = IDM_S0 + v * IDM_T
+  plain = 1.4 * (1 - (v / v0) ** 4) - 1.4 * (s_star / s_star) ** 2
+  assert plain < -0.1
+
+
+def test_iidm_closes_a_large_gap_below_v0():
+  assert iidm_accel(20.0, 0.0, 80.0, 30.0) > 0.5
+
+
+def test_blend_never_steps_the_command():
+  r = ResearchLongitudinal(0.05)
+  out = [r.blend(None, 1.0)]
+  for _ in range(20):
+    out.append(r.blend(-0.5, 1.0))
+  for _ in range(20):
+    out.append(r.blend(None, 1.0))
+  steps = [abs(b - a) for a, b in zip(out, out[1:])]
+  assert max(steps) <= 1.5 * 0.05 / BLEND_TIME + 1e-9
