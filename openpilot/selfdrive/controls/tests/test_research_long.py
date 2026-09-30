@@ -76,7 +76,7 @@ def test_iidm_equilibrium_gap_is_s_star_even_near_v0():
   v = 27.0
   s_star = IDM_S0 + v * IDM_T
   for v0 in (27.5, 28.0, 30.0, 40.0):
-    assert abs(iidm_accel(v, 0.0, s_star, v0)) < 1e-9, v0
+    assert abs(iidm_accel(v, 0.0, s_star, v0)[0]) < 1e-9, v0
 
 
 def test_plain_idm_would_have_drifted_back():
@@ -88,7 +88,7 @@ def test_plain_idm_would_have_drifted_back():
 
 
 def test_iidm_closes_a_large_gap_below_v0():
-  assert iidm_accel(20.0, 0.0, 80.0, 30.0) > 0.5
+  assert iidm_accel(20.0, 0.0, 80.0, 30.0)[0] > 0.5
 
 
 def test_blend_never_steps_the_command():
@@ -100,3 +100,31 @@ def test_blend_never_steps_the_command():
     out.append(r.blend(None, 1.0))
   steps = [abs(b - a) for a, b in zip(out, out[1:])]
   assert max(steps) <= 1.5 * 0.05 / BLEND_TIME + 1e-9
+
+
+# --- EIDM jerk limit (Salles 2020 eq. 20) -----------------------------------------------------
+
+from openpilot.selfdrive.controls.lib.research_long import EIDM_JMAX, IDM_A, eidm_limit_ratio  # noqa: E402
+
+
+def test_eidm_ratio_falls_no_faster_than_jmax():
+  dt = 0.05
+  z = eidm_limit_ratio(0.5, 2.0, dt, IDM_A)
+  assert z * z == pytest.approx(4.0 - dt * EIDM_JMAX / IDM_A)
+
+
+def test_eidm_rising_ratio_passes_straight_through():
+  """Gap closing (cut-in) must be felt at once: braking is never delayed."""
+  assert eidm_limit_ratio(3.0, 1.0, 0.05, IDM_A) == 3.0
+
+
+def test_the_seg18_flip_is_damped():
+  """Lead track alternating 24.6 m / 36.2 m each frame at 106 km/h: the output must not flip."""
+  r = ResearchLongitudinal(0.05)
+  outs = []
+  for i in range(20):
+    near = i % 2 == 0
+    outs.append(r.update(29.4, True, 24.6 if near else 36.2, (99.4 if near else 107.9) / 3.6,
+                         0.0, 33.6, 1.5))
+  steps = [abs(b - a) for a, b in zip(outs[2:], outs[3:])]
+  assert max(steps) < 0.8, (max(steps), outs[:6])
