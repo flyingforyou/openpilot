@@ -323,7 +323,7 @@ class _CarrotLongitudinalPlannerImpl:
     #self.prev_accel_clip = accel_clip
     # Optional literature-based lead-following path (LongResearchPath) -- see research_long.py.
     # Only while following a lead in plain cruise/lead states; stops, e2e and the no-lead case stay
-    # with the MPC, and the MPC still wins on any braking harder than MPC_OVERRIDE_BELOW.
+    # with the MPC; hand-overs are cross-faded in ResearchLongitudinal.blend.
     self.research_active = False
     self._research_param_count = (self._research_param_count + 1) % 50
     if self._research_param_count == 0:
