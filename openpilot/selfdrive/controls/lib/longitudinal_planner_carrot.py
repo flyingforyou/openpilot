@@ -341,8 +341,13 @@ class _CarrotLongitudinalPlannerImpl:
                                              self.mpc.t_follow, carrot.comfort_brake_2))
         a_max = float(carrot.get_carrot_accel(v_ego))
         a_leads = []
-        for rl, lead in ((self.research, sm['radarState'].leadOne), (self.research_two, sm['radarState'].leadTwo)):
-          a_leads.append(rl.update(v_ego, bool(lead.present), float(lead.dRel), float(lead.vLead),
+        # leadTwo only when a radar track backs it: that is what the cut-in detector and the target lane
+        # lead hand over. A vision-only second lead can be a one-frame phantom -- 00000172 seg 14 had one
+        # 6 m nearer than the radar lead it sat behind, and the EIDM limit then held the brake it caused
+        # for over a second. The MPC still sees every leadTwo.
+        lead_two = sm['radarState'].leadTwo
+        for rl, lead, use in ((self.research, sm['radarState'].leadOne, True), (self.research_two, lead_two, bool(lead_two.radar))):
+          a_leads.append(rl.update(v_ego, bool(lead.present) and use, float(lead.dRel), float(lead.vLead),
                                    float(lead.aLeadK), float(carrot.v_cruise), a_max, self.research_mode,
                                    s_eq, float(carrot.stop_distance)))
         a_res = more_binding(*a_leads)

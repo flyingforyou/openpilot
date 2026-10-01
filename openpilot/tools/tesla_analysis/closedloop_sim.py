@@ -1,18 +1,24 @@
-"""Closed-loop replay (run ON THE DEVICE -- the acados solver only exists there):
+"""Closed-loop replay: the ego car is simulated, everything else comes from a recorded drive.
 
-  cd /data/openpilot && SIMDELAY=0.15 SIMTAU=0.10 PYTHONPATH=/data/openpilot \\
-    python3 openpilot/tools/tesla_analysis/closedloop_sim.py <route> <seg> <t_start> <t_end>
-  optional: SIMROOT=<dir holding route--seg/rlog.zst>  VARIANTS='[["name", {"Param": value}], ...]'
+Runs locally as well as on the device. Locally (x86, ~2 s per window instead of minutes):
 
-  d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.137 m/s^2).
+  uv sync --frozen && source .venv/bin/activate && mkdir -p panda/board/obj
+  scons -j16 openpilot/selfdrive/controls/lib/longitudinal_mpc_carrot msgq_repo/msgq openpilot/common
+  SIMCP=<CarParamsPersistent copied off the device> SIMROOT=op-logs SIMDELAY=0.15 SIMTAU=0.10 \
+    PYTHONPATH=$PWD:$PWD/opendbc_repo python3 openpilot/tools/tesla_analysis/closedloop_sim.py <route> <seg> <t0> <t1>
 
-Closed-loop replay: does the stop-and-go lurch go away when aLeadK comes from the radar?
+d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.137 m/s^2).
 
-The lead is exogenous -- its recorded position, speed and true acceleration (radar LongAccel +
-recorded a_ego). The ego car is simulated: the carrot planner's output drives a delayed first-order
-actuator, and the planner is fed a synthetic radarState/carState built from the simulated state.
-Mode A estimates the lead's acceleration the old way (radard's Kalman on vLead); mode B uses the
-radar value. Mode A must reproduce the recorded lurch for the comparison to mean anything.
+  VARIANTS='[["name", {"Param": value, ...}], ...]'   params overridden per variant; also
+      "GAP": 1-7 (gap stalk), "KALMAN": 1 (lead accel from the Kalman filter instead of the radar),
+      "rl.<CONST>": value (a research_long.py module constant)
+  SIMRADARD=1   rerun today's radard over the recorded radarTracks (lead hold, radar accel, cut-in)
+                instead of trusting the radarState recorded at the time
+  SIMLEAD2=1    keep leadTwo (cut-ins, the target lane's lead) instead of dropping it
+  SIMTRACE=1    print frames where the command moves;  SIMDUMP=<file.json>  per-frame traces
+
+The lead is exogenous: its recorded absolute position and speed. The planner gets a synthetic
+carState/radarState built from the simulated ego, so a variant changes what happens next.
 """
 import sys, math, collections
 import numpy as np, zstandard
@@ -22,6 +28,8 @@ from openpilot.selfdrive.controls.radard import KalmanParams
 from openpilot.selfdrive.controls.lib.longitudinal_planner_carrot import CarrotLongitudinalPlanner
 from openpilot.selfdrive.debug.shadow_replay import _ReplaySM
 
+if __import__('os').environ.get('SIMNOOVR'):
+    import openpilot.selfdrive.controls.lib.research_long as _rl; _rl.MPC_OVERRIDE_BELOW = -99.0
 route, seg, T0, T1 = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
 import os, json
 DELAY = float(os.environ.get('SIMDELAY', 0.15)); TAU = float(os.environ.get('SIMTAU', 0.35)); DT = 0.05
@@ -38,10 +46,32 @@ if CP is None:
     from opendbc.car import structs
     CP = log.Event.from_bytes(open('/data/params/d/CarParamsPersistent','rb').read()) if False else None
     from openpilot.cereal import car
-    CP = car.CarParams.from_bytes(Params().get("CarParamsPersistent"))
+    CP = car.CarParams.from_bytes(open(os.environ['SIMCP'], 'rb').read() if os.environ.get('SIMCP') else Params().get("CarParamsPersistent"))
+
+def _sstar(planner, v, v_lead):
+    """The IIDM path's dynamic target gap s* for the current frame (research_long, mode 0)."""
+    from openpilot.selfdrive.controls.lib.research_long import gap_idm_params, IDM_A, IDM_B
+    import openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc as lm_
+    cr = planner.carrot
+    seq = lm_.desired_follow_distance(v, v, cr.comfort_brake, cr.stop_distance, planner.planner.mpc.t_follow, cr.comfort_brake_2)
+    T, s0 = gap_idm_params(v, float(seq), cr.stop_distance)
+    return float(s0 + max(0.0, v * T + v * (v - v_lead) / (2 * math.sqrt(IDM_A * IDM_B))))
 
 def run(mode, cap=0.0, credit_cap=False, ovr=None):
+    import openpilot.selfdrive.controls.lib.research_long as _rl
+    if not hasattr(_rl, '_defaults'): _rl._defaults = {k: getattr(_rl, k) for k in dir(_rl) if k.isupper()}
+    for k, v in _rl._defaults.items(): setattr(_rl, k, v)
+    for k, v in (ovr or {}).items():
+        if k.startswith('rl.'): setattr(_rl, k[3:], v)
+    gap = (ovr or {}).get('GAP')
+    from openpilot.selfdrive.controls.lib.carrot_functions import GAP_TO_PERSONALITY_INT
     NEEDED = ('carControl', 'carState', 'controlsState', 'radarState', 'modelV2', 'selfdriveState', 'vehicleParameters')
+    # SIMRADARD: rerun today's radard over the recorded radar tracks instead of trusting the radarState
+    # recorded at the time -- the lead hold, radar accel and cut-in logic may have changed since.
+    rd = None; rd_state = None
+    if os.environ.get('SIMRADARD'):
+        from openpilot.selfdrive.controls.radard import RadarD
+        rd = RadarD(CP.radarDelay)
     sm = _ReplaySM(); planner = None; pts = {}; t0 = None
     kp = KalmanParams(DT); kf = None
     xe = ve = ae = None; x_rec = 0.0; last_t = None
@@ -68,12 +98,20 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             if last_t is not None: x_rec += e.carState.vEgo * (t - last_t)
             last_t = t; rec_cs = e.carState
         if w == 'radarState': rec_rs = e.radarState
-        if w in NEEDED: sm.data[w] = getattr(e, w); sm.logMonoTime[w] = e.logMonoTime; sm.seen[w] = sm.alive[w] = True
+        if w in NEEDED or (rd is not None and w in ('radarTracks', 'deviceMotion')):
+            sm.data[w] = getattr(e, w); sm.logMonoTime[w] = e.logMonoTime; sm.seen[w] = sm.alive[w] = True
+            if not hasattr(sm, 'recv_frame'): sm.recv_frame = {}
+            sm.recv_frame[w] = sm.recv_frame.get(w, 0) + 1
+        if rd is not None and w == 'modelV2' and 'radarTracks' in sm.data and 'selfdriveState' in sm.data and rec_cs is not None:
+            keep = sm.data.get('carState'); sm.data['carState'] = rec_cs   # tracks are relative to the recorded car
+            sm.updated = dict.fromkeys(sm.data, True)
+            rd.update(sm, sm.data['radarTracks']); rd_state = rd.radar_state
+            sm.data['carState'] = keep
         if w != 'modelV2' or len(sm.data) < len(NEEDED) or t0 is None: continue
         rt = t - t0
         if rt < T0 - 3.0 or rt > T1: continue
         if rec_rs is None or rec_cs is None: continue
-        rs_rec = rec_rs; ld = rs_rec.leadOne
+        rs_rec = rd_state if (rd is not None and rd_state is not None) else rec_rs; ld = rs_rec.leadOne
         if not ld.present: continue
         # lead: exogenous absolute state
         x_lead = x_rec + ld.dRel; v_lead = ld.vLead
@@ -85,18 +123,42 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
         if rt < T0 or xe is None:     # warm-up (or no earlier lead frame): track the recording
             xe, ve, ae = x_rec, rec_cs.vEgo, rec_cs.aEgo
         a_lead = float(kf.x[1][0]) if mode == 'A' else (a_true if a_true is not None else float(kf.x[1][0]))
+        if rd is not None and mode != 'A':
+            a_lead = float(ld.aLeadK)   # radard's own value (radar accel when the lead is a radar track)
         cs = rec_cs.as_builder(); cs.vEgo = cs.vEgoRaw = cs.vEgoCluster = float(max(ve, 0.0)); cs.aEgo = float(ae)
         cs.standstill = ve < 0.1; cs.gasPressed = False; cs.brakePressed = False
-        rs = rs_rec.as_builder(); L = rs.leadOne
+        if gap:
+            cs.cruiseState.gapAdjust = int(gap)
+            sd = sm.data['selfdriveState']; sd = sd.as_builder() if hasattr(sd, 'as_builder') else sd
+            sd.personality = GAP_TO_PERSONALITY_INT[int(gap) - 1]; sm.data['selfdriveState'] = sd
+        rs = rs_rec.as_builder() if hasattr(rs_rec, 'as_builder') else rs_rec.copy(); L = rs.leadOne
         L.dRel = float(x_lead - xe); L.vRel = float(v_lead - ve); L.vLead = L.vLeadK = float(v_lead); L.aLeadK = float(a_lead)
-        rs.leadTwo.present = False
+        L2 = rs.leadTwo; ld2 = rs_rec.leadTwo
+        if os.environ.get('SIMLEAD2') and ld2.present:
+            # same treatment as leadOne: the recorded car's absolute position, our simulated one
+            L2.dRel = float(x_rec + ld2.dRel - xe); L2.vRel = float(ld2.vLead - ve)
+        else:
+            L2.present = False
         state['d'] = float(x_lead - xe); state['ve'] = float(ve)
         sm.data['carState'] = cs; sm.data['radarState'] = rs
         sm.frame += 1; sm.updated = dict.fromkeys(sm.data, True)
         if planner is None:
             planner = CarrotLongitudinalPlanner(CP)
+            for P in (planner.carrot.params, planner.planner.params):
+                P.put = lambda *a, **k: None       # never write the device's real params from a sim
+            if (ovr or {}).get('VTG'):
+                sys.path.insert(0, '/data/tmp'); from vtg import vtg_time_gap
+                cr = planner.carrot
+                def vtg_dyn(t_follow, lead, desired_distance, prev_a, _cr=cr):
+                    _cr.jerk_factor_apply = _cr.jerk_factor
+                    if not lead.present:
+                        return _cr.apply_t_follow(t_follow, 0.0)
+                    seq = lambda v, t: _cr.stop_distance + t * v + v * v * (1 / (2 * _cr.comfort_brake) - 1 / (2 * _cr.comfort_brake_2))
+                    tg, _ = vtg_time_gap(t_follow, state['ve'], float(lead.vLead), float(lead.dRel), seq)
+                    return _cr.apply_t_follow(tg, 0.0)
+                cr.dynamic_t_follow = vtg_dyn
             if ovr:
-                P = planner.carrot.params
+              for P in (planner.carrot.params, planner.planner.params):
                 for fn in ('get_float', 'get_int', 'get_bool'):
                     orig_fn = getattr(P, fn)
                     def wrapped(key, *a, _o=orig_fn, _fn=fn, **k):
@@ -114,11 +176,19 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
                 planner.carrot.get_carrot_accel = capped
         planner.update(sm)
         cmd = float(planner.planner.output_a_target)
+        if os.environ.get('SIMTRACE') and rt >= T0:
+            rp = planner.planner.research
+            L2s = sm.data['radarState'].leadTwo
+            TRACE.append((rt, ve*3.6, float(x_lead-xe), v_lead*3.6, int(planner.carrot.xState.value), bool(ld.present),
+                          round(rp.weight,2), round(rp.last_a,2), round(cmd,2), round(float(planner.carrot.v_cruise)*3.6,1),
+                          float(L2s.dRel) if L2s.present else -1.0, float(L2s.vLead)*3.6 if L2s.present else -1.0,
+                          int(L2s.radar), int(L2s.radarTrackId), int(ld.radarTrackId), float(L2s.yRel)))
         if rt >= T0:
             cmd_hist.append(cmd); a_in = cmd_hist[0]
             ae += (a_in - ae) * DT / TAU; ve = max(ve + ae * DT, 0.0); xe += ve * DT
             out.append((rt, ve * 3.6, float(x_lead - xe), v_lead * 3.6, a_lead, a_true if a_true is not None else float('nan'), cmd,
-                        rec_cs.vEgo * 3.6, ld.dRel, sm.data['carControl'].actuators.accel))
+                        rec_cs.vEgo * 3.6, ld.dRel, sm.data['carControl'].actuators.accel, float(planner.planner.mpc.t_follow),
+                        float(getattr(planner.planner.mpc, 'desired_distance', float('nan'))), float(planner.planner.research.weight), _sstar(planner, ve, v_lead)))
     return np.array(out)
 
 def stats(c, lbl):
@@ -127,15 +197,31 @@ def stats(c, lbl):
         if x > 0.5 and st <= 0: st = 1; sw += 1
         elif x < -0.5 and st >= 0: st = -1; sw += 1
     return f"{lbl:>26}  가속max {c.max():+.2f}  제동min {c.min():+.2f}  ±0.5교차 {sw:>2}회  |Δ|>1.5 {np.sum(np.abs(np.diff(c))>0.075):>3}"
+TRACE = []
 VARIANTS = json.loads(os.environ.get('VARIANTS', 'null'))
+DUMP = {}
 if VARIANTS:
     rec = None
     for name, ovr in VARIANTS:
-        r = run('B', ovr=ovr)
+        r = run('A' if ovr.get('KALMAN') else 'B', ovr=ovr)
         if rec is None:
             rec = r
             print(stats(r[:, 9], "녹화 실제 명령"))
-        print(stats(r[:, 6], name) + f"   최소거리 {r[:,2].min():.1f}m  평균거리 {np.mean(r[:,2]):.1f}m")
+        ve_, vl_ = r[:, 1], r[:, 3]
+        amp = np.std(ve_) / max(np.std(vl_), 1e-3)                       # OpenACC-style speed amplification
+        p2p = (ve_.max() - ve_.min()) / max(vl_.max() - vl_.min(), 1e-3)
+        tg = r[:, 2] / np.maximum(ve_ / 3.6, 0.5)
+        jerk = np.sqrt(np.mean((np.diff(r[:, 6]) / 0.05) ** 2))
+        DUMP[name] = [[round(float(x), 3) for x in (row[0], row[1], row[2], row[3], row[4], row[6], row[11], row[12], row[13])] for row in r]
+        print(stats(r[:, 6], name) + f"  증폭 {amp:.2f} p2p {p2p:.2f}  최소거리 {r[:,2].min():.1f}m 최소시간간격 {tg[ve_>7].min() if (ve_>7).any() else float('nan'):.2f}s  평균거리 {np.mean(r[:,2]):.1f}m  저크RMS {jerk:.2f}  목표시간간격 평균 {r[:,10].mean():.2f} 최소 {r[:,10].min():.2f} 최대 {r[:,10].max():.2f}s")
+    if os.environ.get('SIMDUMP'):
+        json.dump(DUMP, open(os.environ['SIMDUMP'], 'w'))
+    if os.environ.get('SIMTRACE'):
+        prev=None
+        for row in TRACE:
+            if prev is None or abs(row[8]-prev[8])>0.12 or row[6]!=prev[6] and (row[6] in (0.0,1.0) or prev[6] in (0.0,1.0)):
+                print("  t+%5.1f v%5.1f d%5.1f vl%5.1f xs%d lead%d w%.2f aRes%+.2f out%+.2f vcru%.0f | L2 d%5.1f vl%5.1f radar%d id%d (L1 id%d) y%+.1f" % row)
+            prev=row
     raise SystemExit
 res = {'A': run('A'), 'B': run('B'), 'C': run('A', 1.0), 'D': run('B', 1.0), 'E': run('A', 0.8), 'F': run('B', 0.8), 'G': run('A', 0.0, True), 'H': run('B', 0.0, True)}
 def stats(c, lbl):
