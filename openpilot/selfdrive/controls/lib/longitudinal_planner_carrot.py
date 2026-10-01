@@ -36,7 +36,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_functions import CarrotPlanner
-from openpilot.selfdrive.controls.lib import research_long
+from openpilot.selfdrive.controls.lib import carrot_t_follow, research_long
 from openpilot.selfdrive.controls.lib.research_long import JerkLimiter, ResearchLongitudinal, more_binding
 
 
@@ -315,7 +315,9 @@ class _CarrotLongitudinalPlannerImpl:
     output_v_target_now_e2e = output_v_target_mpc
 
     if self.mpc.mode == 'acc':
-      output_a_target = output_a_target_mpc
+      lead = sm['radarState'].leadOne
+      output_a_target = carrot_t_follow.lead_brake_accel_cap(output_a_target_mpc, bool(lead.present),
+                                                              float(lead.dRel), float(lead.aLeadK))
       output_v_target_now = output_v_target_mpc
       self.output_should_stop = output_should_stop_mpc
     else:

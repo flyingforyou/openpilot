@@ -66,8 +66,12 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
     import openpilot.selfdrive.controls.lib.research_long as _rl
     if not hasattr(_rl, '_defaults'): _rl._defaults = {k: getattr(_rl, k) for k in dir(_rl) if k.isupper()}
     for k, v in _rl._defaults.items(): setattr(_rl, k, v)
+    import openpilot.selfdrive.controls.lib.carrot_t_follow as _ct
+    if not hasattr(_ct, '_defaults'): _ct._defaults = {k: getattr(_ct, k) for k in dir(_ct) if k.isupper()}
+    for k, v in _ct._defaults.items(): setattr(_ct, k, v)
     for k, v in (ovr or {}).items():
         if k.startswith('rl.'): setattr(_rl, k[3:], v)
+        if k.startswith('ct.'): setattr(_ct, k[3:], v)
     gap = (ovr or {}).get('GAP')
     from openpilot.selfdrive.controls.lib.carrot_functions import GAP_TO_PERSONALITY_INT
     NEEDED = ('carControl', 'carState', 'controlsState', 'radarState', 'modelV2', 'selfdriveState', 'vehicleParameters')

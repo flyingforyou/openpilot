@@ -55,8 +55,26 @@ def low_speed_jerk_factor(jerk_factor: float, v_ego_kph: float, floor_at_rest: f
 #
 # and on the 09-11 open-road case -- lead pulling away at 30+ m -- the result is unchanged, since
 # the accel ceiling binds long before the target does at that range.
+# Experiments (sim only until chosen):
+# LEAD_CREDIT_MARGIN -- credit a faster lead up to ego speed + this (m/s) instead of ego speed, so the
+#   target still shrinks a little behind a pulling-away lead (some catch-up) but cannot collapse.
+# LEAD_BRAKE_ACCEL_CAP -- (aLead at which the cap is 0, aLead at which it lifts): stop accelerating
+#   once the radar sees the lead braking, instead of driving on into it. None = off.
+LEAD_CREDIT_MARGIN = 0.0
+LEAD_BRAKE_ACCEL_CAP = None
+LEAD_BRAKE_CAP_DIST = 40.0
+
+
 def lead_speed_for_credit(v_lead, v_ego: float, enabled: bool):
   """The lead speed to credit in the stopped-equivalence term: capped at ego speed when enabled."""
   if not enabled:
     return v_lead
-  return np.minimum(v_lead, max(float(v_ego), 0.0))
+  return np.minimum(v_lead, max(float(v_ego), 0.0) + LEAD_CREDIT_MARGIN)
+
+
+def lead_brake_accel_cap(a_target: float, lead_present: bool, d_rel: float, a_lead: float) -> float:
+  """No positive acceleration toward a lead that is braking (see LEAD_BRAKE_ACCEL_CAP)."""
+  if LEAD_BRAKE_ACCEL_CAP is None or not lead_present or d_rel > LEAD_BRAKE_CAP_DIST or a_target <= 0.0:
+    return a_target
+  cap = float(np.interp(a_lead, LEAD_BRAKE_ACCEL_CAP, [0.0, a_target]))
+  return min(a_target, cap)
