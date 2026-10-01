@@ -39,18 +39,21 @@ IDM_DELTA = 4.0
 CAH_COOLNESS = 0.99    # Kesting 2010's c
 BLEND_TIME = 0.5       # s, cross-fade between this path and the MPC's output on hand-over
 EIDM_JMAX = 3.0        # m/s^3, Salles et al. 2020 Table 3
-# How far below the CAH acceleration eq. (2.4) may go when CAH itself asks for little braking.
-# Kesting uses b (2.0) throughout: when IIDM wants far more
-# than CAH says is needed, the result is up to CAH - b. That is what braked -3.1 for a slower car met
-# at 40 m after a lane change where the MPC asked -1.7. Over 23 closed-loop replays (17 lane changes,
-# 6 stop-and-go windows; closedloop_sim.py with today's radard): worst braking -3.12 -> -1.95 (MPC
-# -2.31), scenes braking >0.5 harder than the MPC 7 -> 2, stop-and-go amplification 0.81 -> 0.82,
-# jerk unchanged. 0.5 cuts one more scene but raises jerk (the tanh knee gets sharp); 1.0 leaves four.
+# How far below the CAH acceleration eq. (2.4) may go. Kesting uses b (2.0) throughout: when IIDM wants
+# far more than CAH says is needed, the result is up to CAH - b. With seconds to spare that over-brakes
+# -- a slower car met at 40 m after a lane change (TTC ~5 s) got -3.1 where the MPC asked -1.7 -- so
+# the reach is CAH_BLEND_B once time-to-contact is CAH_BLEND_TTC[1] or more, and the paper's b by
+# CAH_BLEND_TTC[0]. CAH only just reaches contact, so b is the margin when time is short.
+#
+# Gated on TTC, not on how hard CAH brakes: an earlier version relaxed whenever CAH asked for little,
+# which is also every slow final approach to a stopped car, and openpilot's own longitudinal maneuvers
+# (selfdrive/test/longitudinal_maneuvers, run through closedloop_sim.py with a synthetic lead) then
+# stopped 1.4-2.0 m short of the lead instead of 3.1-3.5 and let a 15 m cut-in close to 4.1 m.
+#   23 replays (17 lane changes, 6 stop-and-go): worst braking -3.12 -> -1.95 (MPC -2.31),
+#     scenes braking >0.5 harder than the MPC 7 -> 3, amplification and jerk unchanged.
+#   16 synthetic maneuvers: stops 3.0-3.4 m (paper's b 3.1-3.5), 15 m cut-in 7.1 m (7.9).
 CAH_BLEND_B = 0.75
-# ...but CAH is the deceleration that just reaches contact, so the blend's reach is the only margin
-# when CAH itself asks for hard braking (a stopped car close ahead). There the paper's b is kept: the
-# reach goes from CAH_BLEND_B at CAH >= -1.5 back to IDM_B by CAH <= -3.
-CAH_BLEND_BP = (-3.0, -1.5)
+CAH_BLEND_TTC = (3.0, 5.0)
 FLOW_TAU = 5.0         # s, low-pass on lead speed that defines the "flow" speed
 FLOW_MARGIN = 1.5      # m/s allowed above the flow speed
 FLOW_FADE_KPH = (50.0, 70.0)   # full smoothing below, none above
@@ -156,8 +159,10 @@ def idm_cah_accel(v: float, v_lead: float, a_lead: float, s: float, v0: float,
   c = CAH_COOLNESS if c is None else c
   a = min(IDM_A, max(a_max, 0.1))
   a_cah = cah_accel(v, v_lead, a_lead, s, a=a)
-  blend_b = b if CAH_BLEND_B is None else float(np.interp(a_cah, CAH_BLEND_BP, [b, CAH_BLEND_B]))
-
+  blend_b = b
+  if CAH_BLEND_B is not None:
+    ttc = max(s, 0.5) / max(v - v_lead, 1e-3)
+    blend_b = float(np.interp(ttc, CAH_BLEND_TTC, [b, CAH_BLEND_B]))
   def acc(zp):
     a_iidm, z = iidm_accel(v, v - v_lead, s, v0, a=a, b=b, T=T, s0=s0, z_prev=zp, dt=dt)
     if a_iidm >= a_cah:

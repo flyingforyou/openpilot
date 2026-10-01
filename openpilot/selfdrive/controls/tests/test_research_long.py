@@ -253,3 +253,12 @@ def test_hard_cah_keeps_the_papers_margin():
   CAH's contact-limited deceleration, as in Kesting's own eq. (2.4)."""
   out = idm_cah_accel(10.0, 0.0, 0.0, 15.0, 30.0, 1.5)
   assert out < cah_accel(10.0, 0.0, 0.0, 15.0) - 1.5
+
+
+def test_blend_relaxes_only_with_time_to_spare():
+  """Same IIDM-vs-CAH gap, different time to contact: relaxed at 10 s, the paper's b at 2 s."""
+  v, vl, al = 20.0, 18.5, -0.5
+  far = idm_cah_accel(v, vl, al, 15.0, 30.0, 1.5)          # TTC 10 s
+  near = idm_cah_accel(v, vl - 4.0, al, 11.0, 30.0, 1.5)   # TTC ~2 s
+  assert far >= cah_accel(v, vl, al, 15.0) - CAH_BLEND_B - 0.05
+  assert near < cah_accel(v, vl - 4.0, al, 11.0) - CAH_BLEND_B - 0.3

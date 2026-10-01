@@ -20,7 +20,7 @@ d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.
 The lead is exogenous: its recorded absolute position and speed. The planner gets a synthetic
 carState/radarState built from the simulated ego, so a variant changes what happens next.
 """
-import sys, math, collections
+import sys, math, collections, types
 import numpy as np, zstandard
 from openpilot.cereal import log
 from openpilot.common.simple_kalman import KF1D
@@ -31,7 +31,12 @@ from openpilot.selfdrive.debug.shadow_replay import _ReplaySM
 if __import__('os').environ.get('SIMNOOVR'):
     import openpilot.selfdrive.controls.lib.research_long as _rl; _rl.MPC_OVERRIDE_BELOW = -99.0
 route, seg, T0, T1 = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sys.argv[4])
+# SIMSYNTH: a synthetic lead in place of the recorded one -- {"speed": ego m/s, "distance": m, "bp": [s],
+# "v": [lead m/s], "prob": [..], "cruise": m/s, "only_lead2": bool, "switch": {"t", "distance", "v"}}.
+# The recording then only supplies the background (model output, car state); T0..T1 is the scenario.
 import os, json
+LOC = bool(os.environ.get('SIMLOC'))
+SYN = json.loads(os.environ['SIMSYNTH']) if os.environ.get('SIMSYNTH') else None
 DELAY = float(os.environ.get('SIMDELAY', 0.15)); TAU = float(os.environ.get('SIMTAU', 0.35)); DT = 0.05
 ADDRS = {0x310 + 3*i for i in range(32)}
 def bits(d, s, n): return (int.from_bytes(bytes(d).ljust(8, b'\0')[:8], 'little') >> s) & ((1 << n) - 1)
@@ -68,7 +73,7 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
     NEEDED = ('carControl', 'carState', 'controlsState', 'radarState', 'modelV2', 'selfdriveState', 'vehicleParameters')
     # SIMRADARD: rerun today's radard over the recorded radar tracks instead of trusting the radarState
     # recorded at the time -- the lead hold, radar accel and cut-in logic may have changed since.
-    rd = None; rd_state = None
+    rd = None; rd_state = None; syn = None; loc = None
     if os.environ.get('SIMRADARD'):
         from openpilot.selfdrive.controls.radard import RadarD
         rd = RadarD(CP.radarDelay)
@@ -111,34 +116,64 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
         rt = t - t0
         if rt < T0 - 3.0 or rt > T1: continue
         if rec_rs is None or rec_cs is None: continue
-        rs_rec = rd_state if (rd is not None and rd_state is not None) else rec_rs; ld = rs_rec.leadOne
-        if not ld.present: continue
-        # lead: exogenous absolute state
-        x_lead = x_rec + ld.dRel; v_lead = ld.vLead
-        a_true = None
-        for dx, vx, ax in pts.values():
-            if abs(dx - ld.dRel) < 2 and abs(vx - ld.vRel) < 1.5: a_true = ax + rec_cs.aEgo; break
-        if kf is None: kf = KF1D([[v_lead], [0.0]], kp.A, kp.C, kp.K)
-        kf.update(v_lead)
-        if rt < T0 or xe is None:     # warm-up (or no earlier lead frame): track the recording
-            xe, ve, ae = x_rec, rec_cs.vEgo, rec_cs.aEgo
-        a_lead = float(kf.x[1][0]) if mode == 'A' else (a_true if a_true is not None else float(kf.x[1][0]))
-        if rd is not None and mode != 'A':
-            a_lead = float(ld.aLeadK)   # radard's own value (radar accel when the lead is a radar track)
-        cs = rec_cs.as_builder(); cs.vEgo = cs.vEgoRaw = cs.vEgoCluster = float(max(ve, 0.0)); cs.aEgo = float(ae)
-        cs.standstill = ve < 0.1; cs.gasPressed = False; cs.brakePressed = False
+        if SYN:
+            # synthetic lead: the recording only supplies the background (model, states)
+            ts = max(rt - T0, 0.0)
+            if syn is None:
+                syn = {'xl': SYN['distance'], 'vl': float(np.interp(0.0, SYN['bp'], SYN['v'])), 'switched': False, 'id': 1}
+                xe, ve, ae = 0.0, SYN['speed'], 0.0
+            if rt >= T0:
+                sw = SYN.get('switch')
+                if sw and not syn['switched'] and ts >= sw['t']:
+                    syn.update(xl=xe + sw['distance'], vl=sw['v'], switched=True, id=2)
+                v_new = float(sw['v']) if syn['switched'] else float(np.interp(ts, SYN['bp'], SYN['v']))
+                a_syn = (v_new - syn['vl']) / DT
+                syn['xl'] += (syn['vl'] + v_new) / 2 * DT; syn['vl'] = v_new
+            else:
+                a_syn = 0.0
+            prob = float(np.interp(ts, SYN['bp'], SYN.get('prob', [1.0] * len(SYN['bp']))))
+            x_lead, v_lead, a_lead, a_true = syn['xl'], syn['vl'], a_syn, a_syn
+            ld = types.SimpleNamespace(present=prob > 0.5, dRel=float(x_lead - xe), radarTrackId=syn['id'])
+            rs = rec_rs.as_builder()
+            for slot, on in ((rs.leadOne, prob > 0.5 and not SYN.get('only_lead2')), (rs.leadTwo, prob > 0.5 and bool(SYN.get('only_lead2')))):
+                slot.present = bool(on); slot.dRel = float(x_lead - xe); slot.yRel = 0.0; slot.vRel = float(v_lead - ve)
+                slot.vLead = slot.vLeadK = float(v_lead); slot.aLeadK = slot.aLead = float(a_lead); slot.jLead = 0.0
+                slot.radar = True; slot.radarTrackId = syn['id']; slot.modelProb = 1.0
+            cs = rec_cs.as_builder(); cs.vEgo = cs.vEgoRaw = cs.vEgoCluster = float(max(ve, 0.0)); cs.aEgo = float(ae)
+            cs.standstill = ve < 0.1; cs.gasPressed = False; cs.brakePressed = False
+            cs.vCruise = cs.vCruiseCluster = float(SYN.get('cruise', 50.0) * 3.6); cs.cruiseState.speed = float(SYN.get('cruise', 50.0))
+        rs_rec = rd_state if (rd is not None and rd_state is not None) else rec_rs
+        if not SYN:
+            ld = rs_rec.leadOne
+        if not SYN and not ld.present: continue
+        if not SYN:
+            # lead: exogenous absolute state
+            x_lead = x_rec + ld.dRel; v_lead = ld.vLead
+            a_true = None
+            for dx, vx, ax in pts.values():
+                if abs(dx - ld.dRel) < 2 and abs(vx - ld.vRel) < 1.5: a_true = ax + rec_cs.aEgo; break
+            if kf is None: kf = KF1D([[v_lead], [0.0]], kp.A, kp.C, kp.K)
+            kf.update(v_lead)
+            if rt < T0 or xe is None:     # warm-up (or no earlier lead frame): track the recording
+                xe, ve, ae = x_rec, rec_cs.vEgo, rec_cs.aEgo
+            a_lead = float(kf.x[1][0]) if mode == 'A' else (a_true if a_true is not None else float(kf.x[1][0]))
+            if rd is not None and mode != 'A':
+                a_lead = float(ld.aLeadK)   # radard's own value (radar accel when the lead is a radar track)
+            cs = rec_cs.as_builder(); cs.vEgo = cs.vEgoRaw = cs.vEgoCluster = float(max(ve, 0.0)); cs.aEgo = float(ae)
+            cs.standstill = ve < 0.1; cs.gasPressed = False; cs.brakePressed = False
         if gap:
             cs.cruiseState.gapAdjust = int(gap)
             sd = sm.data['selfdriveState']; sd = sd.as_builder() if hasattr(sd, 'as_builder') else sd
             sd.personality = GAP_TO_PERSONALITY_INT[int(gap) - 1]; sm.data['selfdriveState'] = sd
-        rs = rs_rec.as_builder() if hasattr(rs_rec, 'as_builder') else rs_rec.copy(); L = rs.leadOne
-        L.dRel = float(x_lead - xe); L.vRel = float(v_lead - ve); L.vLead = L.vLeadK = float(v_lead); L.aLeadK = float(a_lead)
-        L2 = rs.leadTwo; ld2 = rs_rec.leadTwo
-        if os.environ.get('SIMLEAD2') and ld2.present:
-            # same treatment as leadOne: the recorded car's absolute position, our simulated one
-            L2.dRel = float(x_rec + ld2.dRel - xe); L2.vRel = float(ld2.vLead - ve)
-        else:
-            L2.present = False
+        if not SYN:
+            rs = rs_rec.as_builder() if hasattr(rs_rec, 'as_builder') else rs_rec.copy(); L = rs.leadOne
+            L.dRel = float(x_lead - xe); L.vRel = float(v_lead - ve); L.vLead = L.vLeadK = float(v_lead); L.aLeadK = float(a_lead)
+            L2 = rs.leadTwo; ld2 = rs_rec.leadTwo
+            if os.environ.get('SIMLEAD2') and ld2.present:
+                # same treatment as leadOne: the recorded car's absolute position, our simulated one
+                L2.dRel = float(x_rec + ld2.dRel - xe); L2.vRel = float(ld2.vLead - ve)
+            else:
+                L2.present = False
         state['d'] = float(x_lead - xe); state['ve'] = float(ve)
         sm.data['carState'] = cs; sm.data['radarState'] = rs
         sm.frame += 1; sm.updated = dict.fromkeys(sm.data, True)
@@ -183,9 +218,25 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
                           round(rp.weight,2), round(rp.last_a,2), round(cmd,2), round(float(planner.carrot.v_cruise)*3.6,1),
                           float(L2s.dRel) if L2s.present else -1.0, float(L2s.vLead)*3.6 if L2s.present else -1.0,
                           int(L2s.radar), int(L2s.radarTrackId), int(ld.radarTrackId), float(L2s.yRel)))
-        if rt >= T0:
+        if rt >= T0 and LOC:
+            # controlsd's LongControl between the plan and the car (stopping hold and release ramp,
+            # accel limits), at its own 100 Hz -- the fitted actuator lag is from its output to aEgo
+            if loc is None:
+                from openpilot.selfdrive.controls.lib.longcontrol import LongControl
+                from opendbc.car.interfaces import CarInterfaceBase
+                loc = LongControl(CP); loc_hist = collections.deque([0.0] * (int(round(DELAY / 0.01)) + 1), maxlen=int(round(DELAY / 0.01)) + 1)
+            should_stop = bool(planner.planner.output_should_stop)
+            for _ in range(5):
+                lcs = types.SimpleNamespace(vEgo=float(ve), aEgo=float(ae), brakePressed=False,
+                                            cruiseState=types.SimpleNamespace(standstill=False))
+                lim = CarInterfaceBase.get_pid_accel_limits(CP, ve, 0.0)
+                a_out = loc.update(True, lcs, cmd, should_stop, lim, -0.5, float(x_lead - xe), (0.0, 0.0, 1.0))
+                loc_hist.append(float(a_out)); a_in = loc_hist[0]
+                ae += (a_in - ae) * 0.01 / TAU; ve = max(ve + ae * 0.01, 0.0); xe += ve * 0.01
+        elif rt >= T0:
             cmd_hist.append(cmd); a_in = cmd_hist[0]
             ae += (a_in - ae) * DT / TAU; ve = max(ve + ae * DT, 0.0); xe += ve * DT
+        if rt >= T0:
             out.append((rt, ve * 3.6, float(x_lead - xe), v_lead * 3.6, a_lead, a_true if a_true is not None else float('nan'), cmd,
                         rec_cs.vEgo * 3.6, ld.dRel, sm.data['carControl'].actuators.accel, float(planner.planner.mpc.t_follow),
                         float(getattr(planner.planner.mpc, 'desired_distance', float('nan'))), float(planner.planner.research.weight), _sstar(planner, ve, v_lead)))
@@ -213,6 +264,10 @@ if VARIANTS:
         tg = r[:, 2] / np.maximum(ve_ / 3.6, 0.5)
         jerk = np.sqrt(np.mean((np.diff(r[:, 6]) / 0.05) ** 2))
         DUMP[name] = [[round(float(x), 3) for x in (row[0], row[1], row[2], row[3], row[4], row[6], row[11], row[12], row[13])] for row in r]
+        if SYN:
+            close = np.maximum(r[:, 1] - r[:, 3], 0.01) / 3.6
+            ttc = np.where(r[:, 1] > r[:, 3] + 0.5, r[:, 2] / close, 99.0)
+            print(f"{name:>26}  {'충돌!!' if r[:,2].min() < 0.4 else '충돌없음'}  최소TTC {ttc.min():.1f}s  최종거리 {r[-1,2]:.1f}m  최종속도 {r[-1,1]:.1f}km/h")
         print(stats(r[:, 6], name) + f"  증폭 {amp:.2f} p2p {p2p:.2f}  최소거리 {r[:,2].min():.1f}m 최소시간간격 {tg[ve_>7].min() if (ve_>7).any() else float('nan'):.2f}s  평균거리 {np.mean(r[:,2]):.1f}m  저크RMS {jerk:.2f}  목표시간간격 평균 {r[:,10].mean():.2f} 최소 {r[:,10].min():.2f} 최대 {r[:,10].max():.2f}s")
     if os.environ.get('SIMDUMP'):
         json.dump(DUMP, open(os.environ['SIMDUMP'], 'w'))
