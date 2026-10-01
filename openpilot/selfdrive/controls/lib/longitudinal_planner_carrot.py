@@ -318,6 +318,8 @@ class _CarrotLongitudinalPlannerImpl:
       lead = sm['radarState'].leadOne
       output_a_target = carrot_t_follow.lead_brake_accel_cap(output_a_target_mpc, bool(lead.present),
                                                               float(lead.dRel), float(lead.aLeadK))
+      output_a_target = carrot_t_follow.lead_brake_follow(output_a_target, bool(lead.present), float(lead.dRel),
+                                                           float(lead.aLeadK), v_ego, float(lead.vLead))
       output_v_target_now = output_v_target_mpc
       self.output_should_stop = output_should_stop_mpc
     else:
@@ -337,6 +339,11 @@ class _CarrotLongitudinalPlannerImpl:
     if self._research_param_count == 0:
       self.research_enabled = self.params.get_bool("LongResearchPath")
       self.research_mode = self.params.get_int("LongResearchMode")
+      # Start braking when the lead does (carrot_t_follow.lead_brake_follow). 1 = sized to the buffer,
+      # 2..100 = a fixed share of the lead's deceleration, 0 = off.
+      k = self.params.get_int("LeadBrakeFollow")
+      carrot_t_follow.LEAD_BRAKE_BUFFER = (-0.5, float(carrot.stop_distance), 0.25, 60.0) if k == 1 else None
+      carrot_t_follow.LEAD_BRAKE_FOLLOW = (k / 100.0, -0.5, 40.0) if k > 1 else None
     if self.research_enabled:
       a_res = None
       if self.mpc.mode == 'acc' and int(carrot.xState.value) in (0, 1, 2):

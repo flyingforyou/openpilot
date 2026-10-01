@@ -2,7 +2,7 @@
 import os
 import time
 import numpy as np
-from openpilot.selfdrive.controls.lib.carrot_t_follow import lead_speed_for_credit
+from openpilot.selfdrive.controls.lib.carrot_t_follow import brake_comfort_scale, brake_t_follow_scale, lead_speed_for_credit
 from openpilot.cereal import log
 from opendbc.car.interfaces import ACCEL_MIN
 from openpilot.common.realtime import DT_MDL
@@ -416,7 +416,7 @@ class LongitudinalMpc:
     lead_v_credit_1 = lead_speed_for_credit(lead_xv_1[:,1], v_ego, credit_cap, a_lead_1)
 
     mode = self.mode
-    comfort_brake = carrot.comfort_brake
+    comfort_brake = brake_comfort_scale(carrot.comfort_brake, radarstate.leadOne.present, float(radarstate.leadOne.aLeadK))
     comfort_brake_2 = carrot.comfort_brake_2
     stop_distance = carrot.stop_distance
     
@@ -425,6 +425,7 @@ class LongitudinalMpc:
     else:
       v_cruise, stop_x, mode = carrot.v_cruise, carrot.stop_dist, carrot.mode
       desired_distance = desired_follow_distance(v_ego, lead_v_0, comfort_brake, stop_distance, t_follow, comfort_brake_2)
+      t_follow = brake_t_follow_scale(t_follow, radarstate.leadOne.present, float(radarstate.leadOne.aLeadK))
       t_follow = carrot.dynamic_t_follow(t_follow, radarstate.leadOne, desired_distance, self.prev_a)
 
     # To estimate a safe distance from a moving lead, we calculate how much stopping

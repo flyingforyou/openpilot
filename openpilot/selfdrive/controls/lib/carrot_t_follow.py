@@ -65,6 +65,17 @@ LEAD_CREDIT_MARGIN = 0.0
 #   (aLead above this, m/s^2), cap otherwise. None = off.
 LEAD_CREDIT_WHEN_ACCEL = None
 LEAD_BRAKE_ACCEL_CAP = None
+# BRAKE_TF_SCALE -- (aLead points, t_follow multipliers): while the lead brakes, use part of the
+#   time-gap buffer instead of braking hard to hold the full gap. Cuts apply at once; the gap comes
+#   back through ramp_t_follow's slow rise. None = off.
+BRAKE_TF_SCALE = None
+# BRAKE_CB_SCALE -- (aLead points, comfort_brake multipliers): while the lead brakes, assume we may
+#   stop a little harder than the comfortable 2.16, which shrinks our own stopping-distance term.
+BRAKE_CB_SCALE = None
+# LEAD_BRAKE_FOLLOW -- (k, aLead threshold, max distance): once the radar sees the lead braking, brake
+#   at least k x its deceleration straight away instead of first waiting for the gap to justify it.
+#   Starting early and gently is what lets the time-gap buffer absorb the rest. None = off.
+LEAD_BRAKE_FOLLOW = None
 LEAD_BRAKE_CAP_DIST = 40.0
 
 
@@ -73,6 +84,57 @@ def lead_speed_for_credit(v_lead, v_ego: float, enabled: bool, a_lead: float = 0
   if not enabled or (LEAD_CREDIT_WHEN_ACCEL is not None and a_lead > LEAD_CREDIT_WHEN_ACCEL):
     return v_lead
   return np.minimum(v_lead, max(float(v_ego), 0.0) + LEAD_CREDIT_MARGIN)
+
+
+def brake_t_follow_scale(t_follow: float, lead_present: bool, a_lead: float) -> float:
+  """Shrink the time gap while the lead is braking (see BRAKE_TF_SCALE)."""
+  if BRAKE_TF_SCALE is None or not lead_present:
+    return t_follow
+  bp, k = BRAKE_TF_SCALE
+  return t_follow * float(np.interp(a_lead, bp, k))
+
+
+def brake_comfort_scale(comfort_brake: float, lead_present: bool, a_lead: float) -> float:
+  if BRAKE_CB_SCALE is None or not lead_present:
+    return comfort_brake
+  bp, k = BRAKE_CB_SCALE
+  return comfort_brake * float(np.interp(a_lead, bp, k))
+
+
+# LEAD_BRAKE_BUFFER -- (aLead threshold, standstill gap m, reaction s, max distance m): the buffer-sized
+#   version of LEAD_BRAKE_FOLLOW. Instead of a fixed share of the lead's deceleration, brake at once at
+#   the gentlest constant rate that still stops `standstill gap` behind the lead if it keeps braking at
+#   its current rate all the way to a stop, after `reaction` seconds. A long gap gives a gentle start, a
+#   short one a firm start, and the whole buffer is used without ever planning to end up closer than the
+#   standstill gap. None = off.
+LEAD_BRAKE_BUFFER = None
+
+
+def buffer_brake_accel(d_rel: float, a_lead: float, v_ego: float, v_lead: float,
+                       standstill: float, reaction: float) -> float:
+  """Gentlest constant deceleration that stops `standstill` behind a lead braking to a stop at a_lead."""
+  lead_stop = v_lead * v_lead / (2.0 * max(-a_lead, 0.1))
+  room = d_rel + lead_stop - standstill - v_ego * reaction
+  if room <= 0.1:
+    return -10.0
+  return -(v_ego * v_ego) / (2.0 * room)
+
+
+def lead_brake_follow(a_target: float, lead_present: bool, d_rel: float, a_lead: float, v_ego: float, v_lead: float) -> float:
+  """Start braking as soon as the radar sees the lead braking (LEAD_BRAKE_FOLLOW / LEAD_BRAKE_BUFFER)."""
+  if not lead_present or v_ego < 1.0 or v_lead > v_ego + 2.0:
+    return a_target
+  if LEAD_BRAKE_BUFFER is not None:
+    thr, standstill, reaction, dmax = LEAD_BRAKE_BUFFER
+    if a_lead >= thr or d_rel > dmax:
+      return a_target
+    return min(a_target, buffer_brake_accel(d_rel, a_lead, v_ego, v_lead, standstill, reaction))
+  if LEAD_BRAKE_FOLLOW is None:
+    return a_target
+  k, thr, dmax = LEAD_BRAKE_FOLLOW
+  if a_lead >= thr or d_rel > dmax:
+    return a_target
+  return min(a_target, k * a_lead)
 
 
 def lead_brake_accel_cap(a_target: float, lead_present: bool, d_rel: float, a_lead: float) -> float:
