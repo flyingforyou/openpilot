@@ -409,9 +409,11 @@ class LongitudinalMpc:
 
     # A faster lead is credited as no faster than us -- see lead_speed_for_credit.
     credit_cap = carrot.leadCreditCap
-    lead_v_0 = lead_speed_for_credit(lead_v_0, v_ego, credit_cap)
-    lead_v_credit_0 = lead_speed_for_credit(lead_xv_0[:,1], v_ego, credit_cap)
-    lead_v_credit_1 = lead_speed_for_credit(lead_xv_1[:,1], v_ego, credit_cap)
+    a_lead_0 = float(radarstate.leadOne.aLeadK) if radarstate.leadOne.present else 0.0
+    lead_v_0 = lead_speed_for_credit(lead_v_0, v_ego, credit_cap, a_lead_0)
+    lead_v_credit_0 = lead_speed_for_credit(lead_xv_0[:,1], v_ego, credit_cap, a_lead_0)
+    a_lead_1 = float(radarstate.leadTwo.aLeadK) if radarstate.leadTwo.present else 0.0
+    lead_v_credit_1 = lead_speed_for_credit(lead_xv_1[:,1], v_ego, credit_cap, a_lead_1)
 
     mode = self.mode
     comfort_brake = carrot.comfort_brake

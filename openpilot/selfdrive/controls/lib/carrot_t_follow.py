@@ -61,13 +61,16 @@ def low_speed_jerk_factor(jerk_factor: float, v_ego_kph: float, floor_at_rest: f
 # LEAD_BRAKE_ACCEL_CAP -- (aLead at which the cap is 0, aLead at which it lifts): stop accelerating
 #   once the radar sees the lead braking, instead of driving on into it. None = off.
 LEAD_CREDIT_MARGIN = 0.0
+# LEAD_CREDIT_WHEN_ACCEL -- credit the full lead speed while the lead is still accelerating away
+#   (aLead above this, m/s^2), cap otherwise. None = off.
+LEAD_CREDIT_WHEN_ACCEL = None
 LEAD_BRAKE_ACCEL_CAP = None
 LEAD_BRAKE_CAP_DIST = 40.0
 
 
-def lead_speed_for_credit(v_lead, v_ego: float, enabled: bool):
+def lead_speed_for_credit(v_lead, v_ego: float, enabled: bool, a_lead: float = 0.0):
   """The lead speed to credit in the stopped-equivalence term: capped at ego speed when enabled."""
-  if not enabled:
+  if not enabled or (LEAD_CREDIT_WHEN_ACCEL is not None and a_lead > LEAD_CREDIT_WHEN_ACCEL):
     return v_lead
   return np.minimum(v_lead, max(float(v_ego), 0.0) + LEAD_CREDIT_MARGIN)
 
