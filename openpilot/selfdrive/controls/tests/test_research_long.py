@@ -227,3 +227,29 @@ def test_a_merging_car_closer_than_the_lead_brakes_the_output():
   cut_in = ResearchLongitudinal(0.05).update(v, True, 12.0, v - 2.0, 0.0, 30.0, 2.0, s_eq=s_eq, stop_distance=STOP)
   assert lead_one > 0.0 > cut_in
   assert more_binding(lead_one, cut_in) == cut_in
+
+
+# --- the CAH blend's reach below CAH is CAH_BLEND_B, not b ---
+from openpilot.selfdrive.controls.lib.research_long import CAH_BLEND_B, cah_accel  # noqa: E402
+
+
+def test_braking_stays_within_blend_of_cah():
+  """00000178 replay, 60 km/h at 15.9 m behind a lead 5 km/h slower and braking -1.2: IIDM alone
+  asks -2.6, CAH says -1.24 is enough. The result may go below CAH by at most CAH_BLEND_B."""
+  v, vl, s, al = 58.7 / 3.6, 53.4 / 3.6, 15.9, -1.2
+  s_eq = STOP + 0.93 * v
+  out = ResearchLongitudinal(0.05).update(v, True, s, vl, al, 33.0, 2.0, s_eq=s_eq, stop_distance=STOP)
+  a_cah = cah_accel(v, vl, al, s)
+  assert a_cah - CAH_BLEND_B - 0.05 <= out < a_cah
+
+
+def test_cah_stopped_lead_needs_stopping_within_the_gap():
+  # the 0/0 case: lead stopped, zero acceleration
+  assert cah_accel(10.0, 0.0, 0.0, 15.0) == pytest.approx(-10.0 ** 2 / (2 * 15.0))
+
+
+def test_hard_cah_keeps_the_papers_margin():
+  """Closing on a stopped car the blend must not shave the margin: the result stays at least b below
+  CAH's contact-limited deceleration, as in Kesting's own eq. (2.4)."""
+  out = idm_cah_accel(10.0, 0.0, 0.0, 15.0, 30.0, 1.5)
+  assert out < cah_accel(10.0, 0.0, 0.0, 15.0) - 1.5

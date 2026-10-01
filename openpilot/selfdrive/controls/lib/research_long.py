@@ -39,6 +39,18 @@ IDM_DELTA = 4.0
 CAH_COOLNESS = 0.99    # Kesting 2010's c
 BLEND_TIME = 0.5       # s, cross-fade between this path and the MPC's output on hand-over
 EIDM_JMAX = 3.0        # m/s^3, Salles et al. 2020 Table 3
+# How far below the CAH acceleration eq. (2.4) may go when CAH itself asks for little braking.
+# Kesting uses b (2.0) throughout: when IIDM wants far more
+# than CAH says is needed, the result is up to CAH - b. That is what braked -3.1 for a slower car met
+# at 40 m after a lane change where the MPC asked -1.7. Over 23 closed-loop replays (17 lane changes,
+# 6 stop-and-go windows; closedloop_sim.py with today's radard): worst braking -3.12 -> -1.95 (MPC
+# -2.31), scenes braking >0.5 harder than the MPC 7 -> 2, stop-and-go amplification 0.81 -> 0.82,
+# jerk unchanged. 0.5 cuts one more scene but raises jerk (the tanh knee gets sharp); 1.0 leaves four.
+CAH_BLEND_B = 0.75
+# ...but CAH is the deceleration that just reaches contact, so the blend's reach is the only margin
+# when CAH itself asks for hard braking (a stopped car close ahead). There the paper's b is kept: the
+# reach goes from CAH_BLEND_B at CAH >= -1.5 back to IDM_B by CAH <= -3.
+CAH_BLEND_BP = (-3.0, -1.5)
 FLOW_TAU = 5.0         # s, low-pass on lead speed that defines the "flow" speed
 FLOW_MARGIN = 1.5      # m/s allowed above the flow speed
 FLOW_FADE_KPH = (50.0, 70.0)   # full smoothing below, none above
@@ -125,25 +137,34 @@ def cah_accel(v: float, v_lead: float, a_lead: float, s: float, a: float = IDM_A
   s = max(s, 0.5)
   al = min(a_lead, a)
   dv = v - v_lead
-  if v_lead * dv <= -2.0 * s * al:
-    den = v_lead ** 2 - 2.0 * s * al
-    return (v * v * al / den) if den > 1e-3 else al
+  den = v_lead ** 2 - 2.0 * s * al
+  # den -> 0 only for a lead that is stopped with zero acceleration, where the first case is 0/0. Its
+  # limit is the second case, -v^2/(2s): stop within the gap. (MovSim's ACC.java takes the same
+  # branch.) Returning al there said a stopped car needs no braking at all.
+  if v_lead * dv <= -2.0 * s * al and den > 1e-3:
+    return v * v * al / den
   return al - (dv ** 2) * (1.0 if dv > 0 else 0.0) / (2.0 * s)
 
 
 def idm_cah_accel(v: float, v_lead: float, a_lead: float, s: float, v0: float,
-                  a_max: float = IDM_A, b: float = IDM_B, c: float = CAH_COOLNESS,
+                  a_max: float = IDM_A, b: float | None = None, c: float | None = None,
                   z_prev: float | None = None, dt: float = 0.05, return_z: bool = False,
                   T: float = IDM_T, s0: float = IDM_S0):
   """Kesting 2010 eq. (2.4) ACC acceleration, with IIDM in place of IDM as in the authors' book,
   and the EIDM jerk limit (Salles 2020 eq. 20) on the IIDM's gap ratio."""
+  b = IDM_B if b is None else b
+  c = CAH_COOLNESS if c is None else c
   a = min(IDM_A, max(a_max, 0.1))
-  a_iidm, z = iidm_accel(v, v - v_lead, s, v0, a=a, b=b, T=T, s0=s0, z_prev=z_prev, dt=dt)
   a_cah = cah_accel(v, v_lead, a_lead, s, a=a)
-  if a_iidm >= a_cah:
-    out = float(a_iidm)
-  else:
-    out = float((1.0 - c) * a_iidm + c * (a_cah + b * math.tanh((a_iidm - a_cah) / b)))
+  blend_b = b if CAH_BLEND_B is None else float(np.interp(a_cah, CAH_BLEND_BP, [b, CAH_BLEND_B]))
+
+  def acc(zp):
+    a_iidm, z = iidm_accel(v, v - v_lead, s, v0, a=a, b=b, T=T, s0=s0, z_prev=zp, dt=dt)
+    if a_iidm >= a_cah:
+      return float(a_iidm), z
+    return float((1.0 - c) * a_iidm + c * (a_cah + blend_b * math.tanh((a_iidm - a_cah) / blend_b))), z
+
+  out, z = acc(z_prev)
   return (out, z) if return_z else out
 
 
