@@ -167,7 +167,9 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             sd.personality = GAP_TO_PERSONALITY_INT[int(gap) - 1]; sm.data['selfdriveState'] = sd
         if not SYN:
             rs = rs_rec.as_builder() if hasattr(rs_rec, 'as_builder') else rs_rec.copy(); L = rs.leadOne
-            L.dRel = float(x_lead - xe); L.vRel = float(v_lead - ve); L.vLead = L.vLeadK = float(v_lead); L.aLeadK = float(a_lead)
+            # vLead and vLeadK are both absolute lead speeds, so neither depends on our simulated car:
+            # keep radard's (or the recording's) filtered speed instead of copying the raw one over it
+            L.dRel = float(x_lead - xe); L.vRel = float(v_lead - ve); L.vLead = float(v_lead); L.vLeadK = float(ld.vLeadK); L.aLeadK = float(a_lead)
             L2 = rs.leadTwo; ld2 = rs_rec.leadTwo
             if os.environ.get('SIMLEAD2') and ld2.present:
                 # same treatment as leadOne: the recorded car's absolute position, our simulated one
@@ -239,7 +241,8 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
         if rt >= T0:
             out.append((rt, ve * 3.6, float(x_lead - xe), v_lead * 3.6, a_lead, a_true if a_true is not None else float('nan'), cmd,
                         rec_cs.vEgo * 3.6, ld.dRel, sm.data['carControl'].actuators.accel, float(planner.planner.mpc.t_follow),
-                        float(getattr(planner.planner.mpc, 'desired_distance', float('nan'))), float(planner.planner.research.weight), _sstar(planner, ve, v_lead)))
+                        float(getattr(planner.planner.mpc, 'desired_distance', float('nan'))), float(planner.planner.research.weight), _sstar(planner, ve, v_lead),
+                        float(ae), float(a_in)))
     return np.array(out)
 
 def stats(c, lbl):
@@ -263,7 +266,8 @@ if VARIANTS:
         p2p = (ve_.max() - ve_.min()) / max(vl_.max() - vl_.min(), 1e-3)
         tg = r[:, 2] / np.maximum(ve_ / 3.6, 0.5)
         jerk = np.sqrt(np.mean((np.diff(r[:, 6]) / 0.05) ** 2))
-        DUMP[name] = [[round(float(x), 3) for x in (row[0], row[1], row[2], row[3], row[4], row[6], row[11], row[12], row[13])] for row in r]
+        # t, v_ego km/h, gap, v_lead km/h, a_lead, plan accel, MPC desired gap, research weight, s*, actual accel, actuator command
+        DUMP[name] = [[round(float(x), 3) for x in (row[0], row[1], row[2], row[3], row[4], row[6], row[11], row[12], row[13], row[14], row[15])] for row in r]
         if SYN:
             close = np.maximum(r[:, 1] - r[:, 3], 0.01) / 3.6
             ttc = np.where(r[:, 1] > r[:, 3] + 0.5, r[:, 2] / close, 99.0)

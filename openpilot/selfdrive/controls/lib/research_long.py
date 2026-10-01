@@ -59,8 +59,13 @@ CAH_BLEND_TTC = (3.0, 5.0)
 # against the MPC's 0.42 over the 23 replays. Two exceptions keep it from costing safety: never brake
 # less than CAH's collision-avoidance minimum (JerkLimiter), and no brake-side limit at all under
 # JERK_FREE_TTC seconds to contact -- without that a 15 m cut-in closed to 6.0 m instead of 7.1.
-# With the lead's Kalman speed as input (USE_VLEADK): replay jerk 1.00 -> 0.71 (peak 2.61 -> 1.34),
-# scenes braking >0.5 harder than the MPC 3 -> 1; the synthetic maneuvers' distances are unchanged.
+# Replays: plan jerk RMS 1.00 -> 0.75, scenes braking >0.5 harder than the MPC 3 -> 1; the synthetic
+# maneuvers' distances are unchanged. Measured on the car's actual acceleration (LongControl and the
+# fitted actuator lag in the loop) the research path's jerk is 0.47 against the MPC's 0.57.
+#
+# USE_VLEADK's own effect is small. An earlier figure (0.75 -> 0.71) came from leadTwo alone: the sim
+# copied the raw speed over leadOne's vLeadK. Fixed and re-run: plan jerk 0.75 -> 0.68, actual jerk
+# 0.48 -> 0.47, worst actual decel -1.97 -> -2.07 (the filter's lag), brake onset unchanged.
 JERK_LIMIT_BP = (5.0, 20.0)
 JERK_LIMIT_V = (5.0, 2.5)
 JERK_FREE_TTC = 3.0
