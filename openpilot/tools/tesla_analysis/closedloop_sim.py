@@ -42,8 +42,11 @@ ADDRS = {0x310 + 3*i for i in range(32)}
 def bits(d, s, n): return (int.from_bytes(bytes(d).ljust(8, b'\0')[:8], 'little') >> s) & ((1 << n) - 1)
 
 import os
-path = f"{os.environ.get('SIMROOT', '/data/media/0/realdata')}/{route}--{seg}/rlog.zst"
-evts = list(log.Event.read_multiple_bytes(zstandard.ZstdDecompressor().stream_reader(open(path, 'rb'), read_across_frames=True).read()))
+# SIMSEGS=n: play n consecutive segments as one run (times stay relative to the first segment)
+evts = []
+for _s in range(seg, seg + int(os.environ.get('SIMSEGS', 1))):
+    path = f"{os.environ.get('SIMROOT', '/data/media/0/realdata')}/{route}--{_s}/rlog.zst"
+    evts += list(log.Event.read_multiple_bytes(zstandard.ZstdDecompressor().stream_reader(open(path, 'rb'), read_across_frames=True).read()))
 CP = next(e.carParams for e in evts if e.which() == 'carParams') if any(e.which()=='carParams' for e in evts) else None
 if CP is None:
     import glob
