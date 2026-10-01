@@ -108,6 +108,13 @@ def brake_comfort_scale(comfort_brake: float, lead_present: bool, a_lead: float)
 #   short one a firm start, and the whole buffer is used without ever planning to end up closer than the
 #   standstill gap. None = off.
 LEAD_BRAKE_BUFFER = None
+# Smoothing for the brake-follow command (BrakeFollow). The raw version stepped in and out at the
+# aLead threshold, followed radar accel noise frame to frame and let go in one step: actual jerk RMS
+# 1.18 -> 1.55 and accel zig-zags 11 -> 19/min over the 10/01 events.
+BF_ALEAD_TAU = 0.3                 # s, low-pass on the lead's acceleration
+BF_ENGAGE = (-1.0, -0.3)           # aLead (filtered): fully engaged .. not engaged
+BF_RATE_IN = 3.0                   # m/s^3, how fast the follow command may deepen
+BF_RATE_OUT = 1.5                  # m/s^3, how fast it may let go
 
 
 def buffer_brake_accel(d_rel: float, a_lead: float, v_ego: float, v_lead: float,
@@ -135,6 +142,55 @@ def lead_brake_follow(a_target: float, lead_present: bool, d_rel: float, a_lead:
   if a_lead >= thr or d_rel > dmax:
     return a_target
   return min(a_target, k * a_lead)
+
+
+class BrakeFollow:
+  """lead_brake_follow with the edges taken off: filtered lead accel, a graded engage instead of a
+  threshold, and a rate-limited command that deepens quickly and lets go slowly. Like the raw
+  function it only ever brakes harder than the planner's own output."""
+  def __init__(self, dt: float):
+    self.dt = dt
+    self.al = None
+    self.cmd = None
+    self.last_target = 0.0
+
+  def reset(self):
+    self.al = None
+    self.cmd = None
+
+  def update(self, a_target: float, lead_present: bool, d_rel: float, a_lead: float, v_ego: float, v_lead: float) -> float:
+    if LEAD_BRAKE_BUFFER is None and LEAD_BRAKE_FOLLOW is None:
+      self.reset()
+      return a_target
+    if not lead_present:
+      self.reset()
+      return a_target
+    self.al = a_lead if self.al is None else self.al + (a_lead - self.al) * self.dt / (BF_ALEAD_TAU + self.dt)
+    w = float(np.interp(self.al, BF_ENGAGE, [1.0, 0.0]))
+    want = a_target
+    if w > 0.0 and v_ego >= 1.0 and v_lead <= v_ego + 2.0:
+      if LEAD_BRAKE_BUFFER is not None:
+        _, standstill, reaction, dmax = LEAD_BRAKE_BUFFER
+        if d_rel <= dmax:
+          want = min(a_target, buffer_brake_accel(d_rel, min(self.al, -0.1), v_ego, v_lead, standstill, reaction))
+      else:
+        k, _, dmax = LEAD_BRAKE_FOLLOW
+        if d_rel <= dmax:
+          want = min(a_target, k * self.al)
+      want = a_target + w * (want - a_target)
+    # Rate-limit the follow command itself and take the firmer of it and the planner. Limiting the
+    # difference instead would stack the two once the planner brakes harder on its own.
+    # Once it is no firmer than the planner it simply tracks it, so it never slows the planner's own
+    # changes -- only the extra braking it adds is rate-limited, going in and coming out.
+    holding = self.cmd is not None and self.cmd < self.last_target - 1e-6
+    if holding:
+      f = min(max(want, self.cmd - BF_RATE_IN * self.dt), self.cmd + BF_RATE_OUT * self.dt)
+    else:
+      f = max(want, a_target - BF_RATE_IN * self.dt)
+    f = min(f, a_target)
+    self.cmd = f
+    self.last_target = a_target
+    return f
 
 
 def lead_brake_accel_cap(a_target: float, lead_present: bool, d_rel: float, a_lead: float) -> float:

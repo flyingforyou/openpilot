@@ -87,3 +87,23 @@ def test_buffer_mode_only_brakes_harder(monkeypatch):
   assert ct.lead_brake_follow(-3.0, True, 30.0, -2.5, 13.5, 13.0) == -3.0
   assert ct.lead_brake_follow(0.4, True, 30.0, -2.5, 13.5, 13.0) < 0.0
   assert ct.lead_brake_follow(0.4, True, 30.0, -0.2, 13.5, 13.0) == 0.4
+
+
+def test_brake_follow_smoothing(monkeypatch):
+  monkeypatch.setattr(ct, "LEAD_BRAKE_BUFFER", (-0.5, 4.5, 0.25, 60.0))
+  bf = ct.BrakeFollow(0.05)
+  # no lead braking: passes the planner straight through, including fast rises
+  assert bf.update(0.0, True, 20.0, 0.0, 13.0, 13.0) == 0.0
+  assert bf.update(1.5, True, 20.0, 0.0, 13.0, 13.0) == 1.5
+  # lead brakes hard: the extra braking deepens at no more than BF_RATE_IN
+  outs = [bf.update(0.5, True, 16.0, -3.0, 13.5, 13.0) for _ in range(40)]
+  steps = [b - a for a, b in zip(outs, outs[1:], strict=False)]
+  assert min(outs) < -1.0
+  assert min(steps) >= -ct.BF_RATE_IN * 0.05 - 1e-9
+  # lead stops braking: lets go no faster than BF_RATE_OUT
+  rel = [bf.update(0.5, True, 16.0, 0.0, 13.5, 13.0) for _ in range(60)]
+  steps = [b - a for a, b in zip([outs[-1]] + rel, rel, strict=False)]
+  assert max(steps) <= ct.BF_RATE_OUT * 0.05 + 1e-9
+  assert rel[-1] == 0.5
+  # never weaker than the planner
+  assert bf.update(-3.0, True, 16.0, 0.0, 13.5, 13.0) == -3.0
