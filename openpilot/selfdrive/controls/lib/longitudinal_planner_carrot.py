@@ -36,7 +36,8 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_functions import CarrotPlanner
-from openpilot.selfdrive.controls.lib.research_long import ResearchLongitudinal, more_binding
+from openpilot.selfdrive.controls.lib import research_long
+from openpilot.selfdrive.controls.lib.research_long import JerkLimiter, ResearchLongitudinal, more_binding
 
 
 LON_MPC_STEP = 0.2  # first step is 0.2s
@@ -160,6 +161,7 @@ class _CarrotLongitudinalPlannerImpl:
     self.params = TypedParams()
     self.research = ResearchLongitudinal(DT_MDL)
     self.research_two = ResearchLongitudinal(DT_MDL)   # leadTwo: cut-ins and the target lane's lead
+    self.research_jerk = JerkLimiter(DT_MDL)
     self.research_enabled = False
     self.research_mode = 0
     self.research_active = False
@@ -347,10 +349,18 @@ class _CarrotLongitudinalPlannerImpl:
         # for over a second. The MPC still sees every leadTwo.
         lead_two = sm['radarState'].leadTwo
         for rl, lead, use in ((self.research, sm['radarState'].leadOne, True), (self.research_two, lead_two, bool(lead_two.radar))):
-          a_leads.append(rl.update(v_ego, bool(lead.present) and use, float(lead.dRel), float(lead.vLead),
+          a_leads.append(rl.update(v_ego, bool(lead.present) and use, float(lead.dRel),
+                                   float(lead.vLeadK if research_long.USE_VLEADK else lead.vLead),
                                    float(lead.aLeadK), float(carrot.v_cruise), a_max, self.research_mode,
                                    s_eq, float(carrot.stop_distance)))
         a_res = more_binding(*a_leads)
+        if a_res is None:
+          self.research_jerk.reset()
+        else:
+          cah = min(rl.last_cah for rl, a in zip((self.research, self.research_two), a_leads, strict=True) if a is not None)
+          ttc = min((float(l.dRel) / max(v_ego - float(l.vLead), 1e-3) for l, a in
+                     zip((sm['radarState'].leadOne, lead_two), a_leads, strict=True) if a is not None), default=99.0)
+          a_res = self.research_jerk.limit(a_res, cah, v_ego, ttc)
         # The MPC's ceiling is also cut back in turns (limit_accel_in_turns). Applied to the output,
         # not fed in as IDM's a: that a scales the braking term too, and a turn can take it to zero.
         if a_res is not None:
@@ -358,6 +368,7 @@ class _CarrotLongitudinalPlannerImpl:
       else:
         self.research.reset()
         self.research_two.reset()
+        self.research_jerk.reset()
       output_a_target = self.research.blend(a_res, output_a_target)
       self.research_active = self.research.weight > 0.0
       if self.research_active:

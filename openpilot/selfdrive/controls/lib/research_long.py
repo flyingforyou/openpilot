@@ -54,6 +54,17 @@ EIDM_JMAX = 3.0        # m/s^3, Salles et al. 2020 Table 3
 #   16 synthetic maneuvers: stops 3.0-3.4 m (paper's b 3.1-3.5), 15 m cut-in 7.1 m (7.9).
 CAH_BLEND_B = 0.75
 CAH_BLEND_TTC = (3.0, 5.0)
+# Output jerk limit, ISO 15622's ACC comfort bound: 2.5 m/s^3 above 20 m/s, 5 below 5 m/s. EIDM only
+# limits rising acceleration, so the brake side and input noise went straight through: jerk RMS 1.00
+# against the MPC's 0.42 over the 23 replays. Two exceptions keep it from costing safety: never brake
+# less than CAH's collision-avoidance minimum (JerkLimiter), and no brake-side limit at all under
+# JERK_FREE_TTC seconds to contact -- without that a 15 m cut-in closed to 6.0 m instead of 7.1.
+# With the lead's Kalman speed as input (USE_VLEADK): replay jerk 1.00 -> 0.71 (peak 2.61 -> 1.34),
+# scenes braking >0.5 harder than the MPC 3 -> 1; the synthetic maneuvers' distances are unchanged.
+JERK_LIMIT_BP = (5.0, 20.0)
+JERK_LIMIT_V = (5.0, 2.5)
+JERK_FREE_TTC = 3.0
+USE_VLEADK = True        # the lead's Kalman-filtered speed (radard) rather than the raw radar speed
 FLOW_TAU = 5.0         # s, low-pass on lead speed that defines the "flow" speed
 FLOW_MARGIN = 1.5      # m/s allowed above the flow speed
 FLOW_FADE_KPH = (50.0, 70.0)   # full smoothing below, none above
@@ -170,7 +181,32 @@ def idm_cah_accel(v: float, v_lead: float, a_lead: float, s: float, v0: float,
     return float((1.0 - c) * a_iidm + c * (a_cah + blend_b * math.tanh((a_iidm - a_cah) / blend_b))), z
 
   out, z = acc(z_prev)
+  if return_z == 'cah':
+    return out, z, a_cah
   return (out, z) if return_z else out
+
+
+class JerkLimiter:
+  """Rate-limit the command, but never below what collision avoidance needs: when holding back the
+  brake would leave it gentler than CAH's minimum, the CAH deceleration goes through at once."""
+  def __init__(self, dt: float):
+    self.dt = dt
+    self.prev = None
+
+  def reset(self):
+    self.prev = None
+
+  def limit(self, a: float, a_floor: float, v: float, ttc: float = 99.0) -> float:
+    if JERK_LIMIT_V is None or self.prev is None:
+      self.prev = a
+      return a
+    step = float(np.interp(v, JERK_LIMIT_BP, JERK_LIMIT_V)) * self.dt
+    lo = -1e9 if ttc < JERK_FREE_TTC else self.prev - step
+    out = min(max(a, lo), self.prev + step)
+    if out > a and out > a_floor:
+      out = max(a, a_floor)
+    self.prev = out
+    return out
 
 
 def gap_idm_params(v: float, s_eq: float, stop_distance: float) -> tuple[float, float]:
@@ -243,6 +279,7 @@ class ResearchLongitudinal:
     self.last_a = 0.0
     self.z_prev = None       # EIDM: previous gap ratio
     self.fs_a = None         # FollowerStopper: lagged output
+    self.last_cah = 0.0      # CAH acceleration of the last update (the jerk limiter's floor)
 
   def reset(self):
     self.flow = None
@@ -274,8 +311,8 @@ class ResearchLongitudinal:
         self.fs_a += (a_fs - self.fs_a) * self.dt / (FS_LOOP_TAU + self.dt)
       return self.fs_a
     T, s0 = gap_idm_params(v_ego, s_eq, stop_distance)
-    a_out, self.z_prev = idm_cah_accel(v_ego, v_lead, a_lead, d_rel, v0, a_max,
-                                       z_prev=self.z_prev, dt=self.dt, return_z=True, T=T, s0=s0)
+    a_out, self.z_prev, self.last_cah = idm_cah_accel(v_ego, v_lead, a_lead, d_rel, v0, a_max,
+                                                      z_prev=self.z_prev, dt=self.dt, return_z='cah', T=T, s0=s0)
     return a_out
 
   def blend(self, a_research: float | None, a_mpc: float) -> float:

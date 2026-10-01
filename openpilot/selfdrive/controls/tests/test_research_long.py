@@ -262,3 +262,32 @@ def test_blend_relaxes_only_with_time_to_spare():
   near = idm_cah_accel(v, vl - 4.0, al, 11.0, 30.0, 1.5)   # TTC ~2 s
   assert far >= cah_accel(v, vl, al, 15.0) - CAH_BLEND_B - 0.05
   assert near < cah_accel(v, vl - 4.0, al, 11.0) - CAH_BLEND_B - 0.3
+
+
+# --- output jerk limit ---
+from openpilot.selfdrive.controls.lib.research_long import JerkLimiter  # noqa: E402
+
+
+# a_floor is CAH's acceleration; a positive value means collision avoidance needs no braking at all
+def test_jerk_limiter_rate_limits_the_brake_side():
+  j = JerkLimiter(0.05)
+  j.limit(0.0, 1.0, 25.0)
+  assert j.limit(-2.0, 1.0, 25.0) == pytest.approx(-2.5 * 0.05)    # 2.5 m/s^3 above 20 m/s
+
+
+def test_jerk_limiter_never_brakes_less_than_cah():
+  j = JerkLimiter(0.05)
+  j.limit(0.0, 1.0, 25.0)
+  assert j.limit(-2.0, -1.0, 25.0) == pytest.approx(-1.0)
+
+
+def test_jerk_limiter_lets_braking_through_when_time_is_short():
+  j = JerkLimiter(0.05)
+  j.limit(0.0, 1.0, 25.0)
+  assert j.limit(-2.0, 1.0, 25.0, ttc=2.0) == pytest.approx(-2.0)
+
+
+def test_jerk_limiter_is_looser_at_low_speed():
+  j = JerkLimiter(0.05)
+  j.limit(0.0, 1.0, 2.0)
+  assert j.limit(-2.0, 1.0, 2.0) == pytest.approx(-5.0 * 0.05)
