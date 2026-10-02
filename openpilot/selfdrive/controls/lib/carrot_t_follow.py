@@ -116,7 +116,7 @@ LEAD_BRAKE_BUFFER = None
 # braked less (3 m/s^2 lead -2.98 -> -2.81) at the same 4.6-5.0 m stopping gap.
 BF_ALEAD_TAU = 0.1                 # s, low-pass on the lead's acceleration (0.2: p5 -2.59; 0.1: -2.56, same jerk; 0: plan jerk 0.99 -> 1.19)
 BF_ENGAGE = (-0.7, -0.2)           # aLead (filtered): fully engaged .. not engaged
-BF_RATE_IN = 5.0                   # m/s^3, how fast the follow command may deepen
+BF_RATE_IN = 3.0                   # m/s^3, how fast the follow command may deepen (5: onset jerk 5.8, above the 4.5 of the plain planner; 3: 4.6, peak decel within 0.06; slower forces a harder peak later -- 1.5: lead-stops maneuver -2.79 -> -3.60)
 BF_RATE_OUT = 1.5                  # m/s^3, how fast it may let go
 
 
@@ -194,6 +194,42 @@ class BrakeFollow:
     self.cmd = f
     self.last_target = a_target
     return f
+
+
+# BRAKE_ONSET_JERK -- m/s^3: how fast braking may deepen in the final command. What a passenger feels
+#   as a "grab" is mostly how abruptly the brake comes on, not how deep it goes. Never limits below the
+#   deceleration that still stops the standstill gap behind the lead (buffer_brake_accel with the lead's
+#   current deceleration). None = off.
+BRAKE_ONSET_JERK = None
+
+
+class BrakeOnsetLimiter:
+  def __init__(self, dt: float):
+    self.dt = dt
+    self.prev = None
+    self.limited = 0      # frames the rate limit held the brake back (diagnostic)
+    self.overridden = 0   # frames the stop-behind-the-lead floor overrode it (diagnostic)
+
+  def reset(self):
+    self.prev = None
+
+  def update(self, a: float, lead_present: bool, d_rel: float, a_lead: float, v_ego: float, v_lead: float,
+             standstill: float) -> float:
+    if BRAKE_ONSET_JERK is None or self.prev is None:
+      self.prev = a
+      return a
+    out = a
+    if a < self.prev:
+      out = max(a, self.prev - BRAKE_ONSET_JERK * self.dt)
+      if out > a:
+        self.limited += 1
+      if lead_present and v_ego > 1.0:
+        need = buffer_brake_accel(d_rel, min(a_lead, -0.1), v_ego, v_lead, standstill, 0.25)
+        if max(need, a) < out:
+          self.overridden += 1
+        out = min(out, max(need, a))
+    self.prev = out
+    return out
 
 
 def lead_brake_accel_cap(a_target: float, lead_present: bool, d_rel: float, a_lead: float) -> float:

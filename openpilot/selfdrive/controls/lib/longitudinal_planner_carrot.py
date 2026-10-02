@@ -163,6 +163,7 @@ class _CarrotLongitudinalPlannerImpl:
     self.research_two = ResearchLongitudinal(DT_MDL)   # leadTwo: cut-ins and the target lane's lead
     self.research_jerk = JerkLimiter(DT_MDL)
     self.brake_follow = carrot_t_follow.BrakeFollow(DT_MDL)
+    self.brake_onset = carrot_t_follow.BrakeOnsetLimiter(DT_MDL)
     self.research_enabled = False
     self.research_mode = 0
     self.research_active = False
@@ -321,6 +322,8 @@ class _CarrotLongitudinalPlannerImpl:
                                                               float(lead.dRel), float(lead.aLeadK))
       output_a_target = self.brake_follow.update(output_a_target, bool(lead.present), float(lead.dRel),
                                                  float(lead.aLeadK), v_ego, float(lead.vLead))
+      output_a_target = self.brake_onset.update(output_a_target, bool(lead.present), float(lead.dRel),
+                                                float(lead.aLeadK), v_ego, float(lead.vLead), float(carrot.stop_distance))
       output_v_target_now = output_v_target_mpc
       self.output_should_stop = output_should_stop_mpc
     else:
