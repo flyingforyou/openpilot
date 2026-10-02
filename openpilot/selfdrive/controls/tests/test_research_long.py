@@ -291,3 +291,47 @@ def test_jerk_limiter_is_looser_at_low_speed():
   j = JerkLimiter(0.05)
   j.limit(0.0, 1.0, 2.0)
   assert j.limit(-2.0, 1.0, 2.0) == pytest.approx(-5.0 * 0.05)
+
+
+def test_launch_follows_the_lead_off_the_line():
+  """Stopped at s0 behind a lead pulling away at 1.5 m/s^2: IIDM's (s*/s)^2 is ~1 so it barely moves;
+  with CAH_OPEN_B the output stays within 0.1 of CAH (the lead's own acceleration)."""
+  import openpilot.selfdrive.controls.lib.research_long as rl
+  v, vl, al, s = 0.3, 1.5, 1.5, 4.8
+  a = rl.idm_cah_accel(v, vl, al, s, 30.0, 2.0, T=0.5, s0=4.5)
+  assert a > 1.35
+  old = rl.CAH_OPEN_B
+  try:
+    rl.CAH_OPEN_B = None
+    assert rl.idm_cah_accel(v, vl, al, s, 30.0, 2.0, T=0.5, s0=4.5) < a - 0.4
+  finally:
+    rl.CAH_OPEN_B = old
+
+
+def test_open_reach_leaves_braking_alone():
+  """A slower lead (v_lead < v) keeps the TTC-gated reach."""
+  import openpilot.selfdrive.controls.lib.research_long as rl
+  args = (15.0, 10.0, 0.0, 30.0, 30.0, 2.0)
+  with_open = rl.idm_cah_accel(*args)
+  old = rl.CAH_OPEN_B
+  try:
+    rl.CAH_OPEN_B = None
+    assert rl.idm_cah_accel(*args) == pytest.approx(with_open)
+  finally:
+    rl.CAH_OPEN_B = old
+
+
+def test_launch_v0_is_the_cruise_target_not_the_flow():
+  """10/01 road test: with the flow as v0 a launch topped out near the lead's (stopped) average + 1.5 m/s."""
+  import openpilot.selfdrive.controls.lib.research_long as rl
+  def launch():
+    r = ResearchLongitudinal(0.05)
+    for _ in range(100):                                # 5 s stopped behind a stopped lead
+      r.update(0.0, True, 4.5, 0.0, 0.0, 30.0, 2.0, s_eq=4.5, stop_distance=4.5)
+    return r.update(3.0, True, 15.0, 6.0, 0.0, 30.0, 2.0, s_eq=6.0, stop_distance=4.5)   # lead cruising away
+  a = launch()
+  try:
+    rl.FLOW_SMOOTHING = True
+    assert launch() < 0.0 < a                           # flow v0 ~1.5 m/s: brakes at 3 m/s behind a lead pulling away
+  finally:
+    rl.FLOW_SMOOTHING = False

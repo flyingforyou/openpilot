@@ -19,13 +19,13 @@ from multiprocessing import Pool
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, '..', '..', '..'))
 OUT = tempfile.mkdtemp(prefix='follow_reg_')
-MAP_OFF_ROUTES = ('0000017b', '0000017c', '0000017d', '0000017f')
+MAP_OFF_ROUTES = ('0000017b', '0000017c', '0000017d', '0000017f', '00000180', '00000181', '00000182', '00000183', '00000184')
 LAUNCH_A4_TOL = 0.05     # m/s^2 below the baseline's first-4 s launch accel counts as sluggish
 LAUNCH_V8_TOL = 1.0      # km/h below the baseline's speed 8 s after the lead moves
 
 
 def windows():
-    for l in open(os.path.join(HERE, 'regression_windows.txt')):
+    for l in open(os.environ.get('REGWIN', os.path.join(HERE, 'regression_windows.txt'))):
         if l.strip() and not l.startswith('#'):
             yield l.split()[:5]
 

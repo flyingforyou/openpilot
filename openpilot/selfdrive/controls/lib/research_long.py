@@ -15,7 +15,8 @@ was removed.
       control of autonomous vehicles". Rather than chase every lead fluctuation, drive toward the
       flow's average speed and let the gap absorb the rest. Here: IDM's desired speed v0 is a slow
       low-pass of the lead's speed in slow traffic, faded back to the cruise target by 70 km/h so
-      open-road catch-up (the 09-11 complaint) is untouched.
+      open-road catch-up (the 09-11 complaint) is untouched. Off for mode 0 since the 10/01 road
+      test (FLOW_SMOOTHING): it made launches and slow following lag far behind the lead.
   (2) is how it is judged -- OpenACC-style string-stability metrics in closedloop_sim.py.
 
 LongResearchMode 1 swaps (3) for the time-headway FollowerStopper itself, as published in the
@@ -33,7 +34,7 @@ import numpy as np
 # uses); a, b, delta and c are the paper's.
 IDM_T = 1.0            # s, time gap            (paper 1.5); fallback only, the gap stalk sets it
 IDM_S0 = 4.5           # m, standstill gap      (paper 2.0); fallback only, StopDistance sets it
-IDM_A = 1.4            # m/s^2, max acceleration
+IDM_A = 2.0            # m/s^2, max acceleration (paper 1.4; 22 launch replays: 8 s speed 33.1 -> 35.9 km/h, above 2.0 the carrot accel limit binds)
 IDM_B = 2.0            # m/s^2, comfortable deceleration
 IDM_DELTA = 4.0
 CAH_COOLNESS = 0.99    # Kesting 2010's c
@@ -54,6 +55,15 @@ EIDM_JMAX = 3.0        # m/s^3, Salles et al. 2020 Table 3
 #   16 synthetic maneuvers: stops 3.0-3.4 m (paper's b 3.1-3.5), 15 m cut-in 7.1 m (7.9).
 CAH_BLEND_B = 0.75
 CAH_BLEND_TTC = (3.0, 5.0)
+# The reach while the lead is pulling away (v_lead > v). Then CAH is the lead's own acceleration and
+# IIDM's (s*/s)^2 holds us back until the gap has opened -- from a stop the gap starts at s0, so the
+# launch waits on the gap. None = CAH_BLEND_B.
+# 22 launch replays (10/01 + 10/02, flow smoothing off, IDM_A 2.0): pull-away delay 0.77 -> 0.22 s
+# (MPC 0.55), first-4 s accel +1.02 -> +1.28 (MPC +1.27), gap opened 19.3 -> 11.6 m (MPC 12.3). The
+# speed 8 s in is 36.4 against the MPC's 38.0 because the MPC overshoots the lead there and brakes
+# back (median scene: 41 km/h against a 36 km/h lead, then -0.39); this peaks at 39.6. 0.2: 0.30 s,
+# +1.22, 13.2 m. Braking toward a slower car is untouched -- it needs v_lead > v.
+CAH_OPEN_B = 0.1
 # Output jerk limit, ISO 15622's ACC comfort bound: 2.5 m/s^3 above 20 m/s, 5 below 5 m/s. EIDM only
 # limits rising acceleration, so the brake side and input noise went straight through: jerk RMS 1.00
 # against the MPC's 0.42 over the 23 replays. Two exceptions keep it from costing safety: never brake
@@ -74,6 +84,11 @@ FLOW_TAU = 5.0         # s, low-pass on lead speed that defines the "flow" speed
 FLOW_MARGIN = 1.5      # m/s allowed above the flow speed
 FLOW_FADE_KPH = (50.0, 70.0)   # full smoothing below, none above
 FREE_DECEL_FLOOR = -0.5        # exceeding the flow speed only ever coasts, never brakes hard
+# Flow smoothing on IIDM's v0 (mode 0). Off: from a stop the flow is ~0, so v0 starts near 5 km/h and
+# climbs with FLOW_TAU -- the 10/01 road test's "doesn't follow" (launch 8 s speed 24.5 km/h against
+# the MPC's 38.0, time gap 5.0 s during launches). Off: 33.1 km/h; the 25 stop-and-go replays brake
+# -2.11 instead of -1.93 on average (MPC -2.49). FollowerStopper (mode 1) still uses the flow.
+FLOW_SMOOTHING = False
 
 # Time-headway FollowerStopper (CIRCLES reference implementation). Band k sits at
 #   dv_-^2 / (2 d_k) + max(dx0_k, h_k * v),   dv_- = min(v_lead - v, 0)
@@ -179,6 +194,8 @@ def idm_cah_accel(v: float, v_lead: float, a_lead: float, s: float, v0: float,
   if CAH_BLEND_B is not None:
     ttc = max(s, 0.5) / max(v - v_lead, 1e-3)
     blend_b = float(np.interp(ttc, CAH_BLEND_TTC, [b, CAH_BLEND_B]))
+    if CAH_OPEN_B is not None and v_lead > v:
+      blend_b = CAH_OPEN_B
   def acc(zp):
     a_iidm, z = iidm_accel(v, v - v_lead, s, v0, a=a, b=b, T=T, s0=s0, z_prev=zp, dt=dt)
     if a_iidm >= a_cah:
@@ -316,6 +333,8 @@ class ResearchLongitudinal:
         self.fs_a += (a_fs - self.fs_a) * self.dt / (FS_LOOP_TAU + self.dt)
       return self.fs_a
     T, s0 = gap_idm_params(v_ego, s_eq, stop_distance)
+    if not FLOW_SMOOTHING:
+      v0 = v_cruise
     a_out, self.z_prev, self.last_cah = idm_cah_accel(v_ego, v_lead, a_lead, d_rel, v0, a_max,
                                                       z_prev=self.z_prev, dt=self.dt, return_z='cah', T=T, s0=s0)
     return a_out
