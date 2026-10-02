@@ -107,3 +107,13 @@ def test_brake_follow_smoothing(monkeypatch):
   assert rel[-1] == 0.5
   # never weaker than the planner
   assert bf.update(-3.0, True, 16.0, 0.0, 13.5, 13.0) == -3.0
+
+
+def test_release_on_opening(monkeypatch):
+  monkeypatch.setattr(ct, "RELEASE_ON_OPENING", (0.3, 4.0, 0.0))
+  r = ct.ReleaseOnOpening(0.05)
+  r.update(-2.5, True, 12.0, 6.0, 6.0, 8.0)
+  out = r.update(-2.5, True, 12.0, 6.0, 7.0, 8.0)          # lead pulling away, gap above target
+  assert abs(out - (-2.5 + 4.0 * 0.05)) < 1e-9
+  assert r.update(-2.5, True, 7.0, 6.0, 7.0, 8.0) == -2.5   # gap below target: planner keeps its brake
+  assert r.update(-2.5, True, 12.0, 7.0, 6.0, 8.0) == -2.5  # still closing: no release

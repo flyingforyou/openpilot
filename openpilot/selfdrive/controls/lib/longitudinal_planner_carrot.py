@@ -164,6 +164,7 @@ class _CarrotLongitudinalPlannerImpl:
     self.research_jerk = JerkLimiter(DT_MDL)
     self.brake_follow = carrot_t_follow.BrakeFollow(DT_MDL)
     self.brake_onset = carrot_t_follow.BrakeOnsetLimiter(DT_MDL)
+    self.release_open = carrot_t_follow.ReleaseOnOpening(DT_MDL)
     self.research_enabled = False
     self.research_mode = 0
     self.research_active = False
@@ -322,6 +323,8 @@ class _CarrotLongitudinalPlannerImpl:
                                                               float(lead.dRel), float(lead.aLeadK))
       output_a_target = self.brake_follow.update(output_a_target, bool(lead.present), float(lead.dRel),
                                                  float(lead.aLeadK), v_ego, float(lead.vLead))
+      output_a_target = self.release_open.update(output_a_target, bool(lead.present), float(lead.dRel), v_ego,
+                                                 float(lead.vLead), float(self.mpc.desired_distance))
       output_a_target = self.brake_onset.update(output_a_target, bool(lead.present), float(lead.dRel),
                                                 float(lead.aLeadK), v_ego, float(lead.vLead), float(carrot.stop_distance))
       output_v_target_now = output_v_target_mpc
@@ -350,6 +353,7 @@ class _CarrotLongitudinalPlannerImpl:
       keep = self.params.get_int("LeadBrakeBufferCm") / 100.0
       carrot_t_follow.LEAD_BRAKE_BUFFER = (-0.5, keep if keep > 0 else float(carrot.stop_distance), 0.25, 60.0) if k == 1 else None
       carrot_t_follow.LEAD_BRAKE_FOLLOW = (k / 100.0, -0.5, 40.0) if k > 1 else None
+      carrot_t_follow.RELEASE_ON_OPENING = (0.3, 4.0, 0.0) if k == 1 else None
     if self.research_enabled:
       a_res = None
       if self.mpc.mode == 'acc' and int(carrot.xState.value) in (0, 1, 2):

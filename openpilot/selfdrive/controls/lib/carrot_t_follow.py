@@ -232,6 +232,37 @@ class BrakeOnsetLimiter:
     return out
 
 
+# RELEASE_ON_OPENING -- (closing threshold m/s, release rate m/s^3, gap margin m): once the lead is
+#   pulling away (gap opening) and the gap is at least the planner's target, let the brake off at
+#   `rate` instead of the planner's own slow pace. On 0x17f seg 104 the lead finished braking 1.35 s
+#   before we let go -- radar accel 0.4 s late, the planner releasing at ~2.5 m/s^3, 0.25 s actuator
+#   lag -- and we fell 6 km/h below the lead. Over the 10/01 events: 7.4 -> 5.7 km/h below the lead,
+#   launches and maneuvers unchanged. Releasing earlier still (aiming to land on the lead's speed)
+#   gained nothing measurable: the lead's easing off is not known reliably sooner than the gap opening.
+#   None = off; on with LeadBrakeFollow's buffer mode.
+RELEASE_ON_OPENING = None
+
+
+class ReleaseOnOpening:
+  def __init__(self, dt: float):
+    self.dt = dt
+    self.prev = None
+
+  def reset(self):
+    self.prev = None
+
+  def update(self, a: float, lead_present: bool, d_rel: float, v_ego: float, v_lead: float, target: float) -> float:
+    if RELEASE_ON_OPENING is None or not lead_present:
+      self.prev = a
+      return a
+    thr, rate, margin = RELEASE_ON_OPENING
+    out = a
+    if self.prev is not None and a < 0.0 and v_lead - v_ego > thr and d_rel > target + margin:
+      out = max(a, min(self.prev + rate * self.dt, 0.0))
+    self.prev = out
+    return out
+
+
 def lead_brake_accel_cap(a_target: float, lead_present: bool, d_rel: float, a_lead: float) -> float:
   """No positive acceleration toward a lead that is braking (see LEAD_BRAKE_ACCEL_CAP)."""
   if LEAD_BRAKE_ACCEL_CAP is None or not lead_present or d_rel > LEAD_BRAKE_CAP_DIST or a_target <= 0.0:
