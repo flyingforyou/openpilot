@@ -343,7 +343,9 @@ class _CarrotLongitudinalPlannerImpl:
       # Start braking when the lead does (carrot_t_follow.lead_brake_follow). 1 = sized to the buffer,
       # 2..100 = a fixed share of the lead's deceleration, 0 = off.
       k = self.params.get_int("LeadBrakeFollow")
-      carrot_t_follow.LEAD_BRAKE_BUFFER = (-0.5, float(carrot.stop_distance), 0.25, 60.0) if k == 1 else None
+      # the gap left after the lead stops: LeadBrakeBufferCm when set, otherwise the stop distance
+      keep = self.params.get_int("LeadBrakeBufferCm") / 100.0
+      carrot_t_follow.LEAD_BRAKE_BUFFER = (-0.5, keep if keep > 0 else float(carrot.stop_distance), 0.25, 60.0) if k == 1 else None
       carrot_t_follow.LEAD_BRAKE_FOLLOW = (k / 100.0, -0.5, 40.0) if k > 1 else None
     if self.research_enabled:
       a_res = None

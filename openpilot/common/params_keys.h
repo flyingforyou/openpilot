@@ -201,6 +201,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LongResearchPath", {PERSISTENT, BOOL, "1"}},
     {"LongResearchMode", {PERSISTENT, INT, "0"}},
     {"LeadBrakeFollow", {PERSISTENT, INT, "0"}},
+    {"LeadBrakeBufferCm", {PERSISTENT, INT, "0"}},
     {"CruiseMaxVals0", {PERSISTENT, INT, "130"}},
     {"CruiseMaxVals1", {PERSISTENT, INT, "150"}},
     {"CruiseMaxVals2", {PERSISTENT, INT, "185"}},
