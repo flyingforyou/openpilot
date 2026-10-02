@@ -277,7 +277,8 @@ class _CarrotLongitudinalPlannerImpl:
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality, jerk_factor = carrot.jerk_factor_apply, a_change_cost_starting = carrot.aChangeCostStarting)
     self.mpc.set_accel_limits(accel_limits_turns[0], accel_limits_turns[1])
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
-    self.mpc.update(carrot, reset_state, sm['radarState'], v_cruise, x, v, a, j, personality=sm['selfdriveState'].personality)
+    self.mpc.update(carrot, reset_state, sm['radarState'], v_cruise, x, v, a, j, personality=sm['selfdriveState'].personality,
+                    model_leads=sm['modelV2'].leadsV3)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -346,6 +347,8 @@ class _CarrotLongitudinalPlannerImpl:
     if self._research_param_count == 0:
       self.research_enabled = self.params.get_bool("LongResearchPath")
       self.research_mode = self.params.get_int("LongResearchMode")
+      # radar now + the driving model's predicted change for the matched lead (long_mpc.model_lead_traj)
+      self.mpc.lead_model_predict = self.params.get_bool("LeadModelPredict")
       # Start braking when the lead does (carrot_t_follow.lead_brake_follow). 1 = sized to the buffer,
       # 2..100 = a fixed share of the lead's deceleration, 0 = off.
       k = self.params.get_int("LeadBrakeFollow")

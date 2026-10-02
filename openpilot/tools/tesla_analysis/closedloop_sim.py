@@ -12,6 +12,7 @@ d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.
   VARIANTS='[["name", {"Param": value, ...}], ...]'   params overridden per variant; also
       "GAP": 1-7 (gap stalk), "KALMAN": 1 (lead accel from the Kalman filter instead of the radar),
       "rl.<CONST>": value (a research_long.py module constant)
+      "mpc.<CONST>": value (a long_mpc.py LEAD_MODEL_* constant)
   SIMRADARD=1   rerun today's radard over the recorded radarTracks (lead hold, radar accel, cut-in)
                 instead of trusting the radarState recorded at the time
   SIMLEAD2=1    keep leadTwo (cut-ins, the target lane's lead) instead of dropping it
@@ -72,9 +73,13 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
     import openpilot.selfdrive.controls.lib.carrot_t_follow as _ct
     if not hasattr(_ct, '_defaults'): _ct._defaults = {k: getattr(_ct, k) for k in dir(_ct) if k.isupper()}
     for k, v in _ct._defaults.items(): setattr(_ct, k, v)
+    import openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc as _mpc
+    if not hasattr(_mpc, '_defaults'): _mpc._defaults = {k: getattr(_mpc, k) for k in dir(_mpc) if k.startswith('LEAD_MODEL')}
+    for k, v in _mpc._defaults.items(): setattr(_mpc, k, v)
     for k, v in (ovr or {}).items():
         if k.startswith('rl.'): setattr(_rl, k[3:], v)
         if k.startswith('ct.'): setattr(_ct, k[3:], v)
+        if k.startswith('mpc.'): setattr(_mpc, k[4:], v)
     gap = (ovr or {}).get('GAP')
     from openpilot.selfdrive.controls.lib.carrot_functions import GAP_TO_PERSONALITY_INT
     NEEDED = ('carControl', 'carState', 'controlsState', 'radarState', 'modelV2', 'selfdriveState', 'vehicleParameters')

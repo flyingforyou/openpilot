@@ -64,6 +64,37 @@ T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
 PRED_DANGER_IDXS = (T_IDXS > 0.2) & (T_IDXS < 3.0)
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
+
+# LeadModelPredict (off by default): FrogPilot's "human-like following" -- the radar lead's current
+# distance and speed plus the *change* the driving model predicts for its matched lead (modelV2.leadsV3),
+# instead of extrapolating the radar's filtered acceleration. FrogAi/FrogPilot@728f654
+# selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py process_lead.
+# Checked against 0x17b-0x184 (stock CD210 model): leadsV3.t is [0, 2, 4, 6, 8, 10] s; x is the lead's
+# position from the camera along our current heading (x[2 s] - x[0] matches the lead's own travel, 2.3 m
+# median error, not the change in gap, 50 m); v is the lead's absolute speed in m/s. The model's own
+# reading sits +0.8 m / -0.8 m/s off the radar's (median), which the deltas cancel for position but not
+# for x, whose delta is the integral of that low speed: the published method predicts the lead 2.3 m short
+# at 2 s and 3.8 m at 4 s in steady following. LEAD_MODEL_X_FROM_V builds x from the corrected speed.
+LEAD_MODEL_T = np.array([0., 2., 4., 6., 8., 10.])
+LEAD_MODEL_MIN_PROB = 0.5
+# Same car or not: the model lead (moved to the radar's origin) must sit within these of the radar lead.
+# Matched pairs: |dx| p95 4.4 m, |dv| p95 2.4 m/s; 92 % of radar-led engaged frames pass.
+LEAD_MODEL_MAX_DX = 4.0
+LEAD_MODEL_MAX_DV = 2.5
+LEAD_MODEL_RADAR_TO_CAMERA = 1.52
+LEAD_MODEL_X_FROM_V = False
+# Below this radar lead speed the radar extrapolation is used: with the lead stopped the model keeps
+# predicting it moves off (1-8 km/h at 4 s through a 15 s stop, 0x17f seg 106), the MPC then closes in
+# and stopped 1.1 m behind instead of 3.4, and launches started before the lead moved. 0 = off.
+LEAD_MODEL_MIN_V = 2.0
+# Use the model only where it is the more cautious of the two (lead nearer / slower), point by point.
+# The model lags the radar on a braking lead: 0x17f seg 107, lead -2.8, the published method braked
+# 0.5 s later and then -2.84 against -2.20, closing to 2.1 m (radar 4.9).
+# 12 stop-and-go + 12 launch replays (10/01, IIDM off, LeadCreditCap off as driven), min gap / brake
+# peak (mean) / launch speed 8 s in -- radar 3.0 m / -3.10 / 37.9 km/h; published 0.9 m / -2.65 / 34.3
+# with a 0.00 s pull-away (moves before the lead); +MIN_V 1.6 m / -2.74 / 35.4; this 3.1 m / -2.92 /
+# 35.2. None passes the launch gate, so the option stays off.
+LEAD_MODEL_ONLY_CLOSER = True
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
 
@@ -249,6 +280,8 @@ class LongitudinalMpc:
 
     self.a_change_cost = A_CHANGE_COST
     self.j_lead = 0.0
+    self.lead_model_predict = False   # LeadModelPredict, set by the planner
+    self.lead_model_used = []
 
     self.reset()
     self.source = SOURCES[2]
@@ -357,7 +390,46 @@ class LongitudinalMpc:
     lead_xv = np.column_stack((x_lead_traj, v_lead_traj))
     return lead_xv
   
-  def process_lead(self, lead, j_lead):
+  def model_lead_traj(self, lead, model_lead):
+    """FrogPilot's model-delta lead trajectory, or None to fall back to the radar extrapolation: no radar-
+    backed lead, a low-probability model lead, or one that is not the same car as the radar's."""
+    if model_lead is None or lead is None or not lead.present or not lead.radar:
+      return None
+    if model_lead.prob < LEAD_MODEL_MIN_PROB or len(model_lead.x) != len(LEAD_MODEL_T) or len(model_lead.v) != len(LEAD_MODEL_T):
+      return None
+    mx = np.asarray(model_lead.x, dtype=np.float64)
+    mv = np.asarray(model_lead.v, dtype=np.float64)
+    if abs(mx[0] - LEAD_MODEL_RADAR_TO_CAMERA - lead.dRel) > LEAD_MODEL_MAX_DX or abs(mv[0] - lead.vLead) > LEAD_MODEL_MAX_DV:
+      return None
+    if lead.vLead < LEAD_MODEL_MIN_V:
+      return None
+    v_ego = self.x0[1]
+    x_traj = float(lead.dRel) + (mx - mx[0])
+    v_traj = float(lead.vLead) + (mv - mv[0])
+    # MPC will not converge if immediate crash is expected: clip to what is still possible to brake for
+    v0 = v_traj[0]
+    x_traj[0] = max(x_traj[0], ((v_ego + v0) / 2) * (v_ego - v0) / (-ACCEL_MIN * 2))
+    v_mpc = np.interp(T_IDXS, LEAD_MODEL_T, np.clip(v_traj, 0.0, 1e8))
+    x_by_v = x_traj[0] + np.concatenate(([0.0], np.cumsum(T_DIFFS[1:] * (v_mpc[:-1] + v_mpc[1:]) / 2)))
+    if LEAD_MODEL_X_FROM_V:
+      x_mpc = x_by_v
+    else:
+      # forward movement cannot exceed the distance covered by the corrected speed
+      x_mpc = np.minimum(np.maximum.accumulate(np.interp(T_IDXS, LEAD_MODEL_T, x_traj)), x_by_v)
+    return np.column_stack((x_mpc, v_mpc))
+
+  def process_lead(self, lead, j_lead, model_lead=None):
+    if self.lead_model_predict:
+      lead_xv = self.model_lead_traj(lead, model_lead)
+      self.lead_model_used.append(lead_xv is not None)
+      if lead_xv is not None:
+        if LEAD_MODEL_ONLY_CLOSER:
+          radar_xv, _ = self.radar_lead_traj(lead, j_lead)
+          lead_xv = np.minimum(lead_xv, radar_xv)
+        return lead_xv, float(np.clip(lead.vLead, 0.0, 1e8))
+    return self.radar_lead_traj(lead, j_lead)
+
+  def radar_lead_traj(self, lead, j_lead):
     v_ego = self.x0[1]
     if lead is not None and lead.present:
       x_lead = lead.dRel
@@ -392,7 +464,7 @@ class LongitudinalMpc:
     self.cruise_min_a = min_a
     self.max_a = max_a
 
-  def update(self, carrot, reset_state, radarstate, v_cruise, x, v, a, j, personality=log.LongitudinalPersonality.standard):
+  def update(self, carrot, reset_state, radarstate, v_cruise, x, v, a, j, personality=log.LongitudinalPersonality.standard, model_leads=None):
     v_ego = self.x0[1]
     a_ego = self.x0[2]
     t_follow = carrot.get_T_FOLLOW(personality, v_ego, a_ego)
@@ -404,8 +476,10 @@ class LongitudinalMpc:
     else:
       self.j_lead = 0.0
 
-    lead_xv_0, lead_v_0 = self.process_lead(radarstate.leadOne, np.clip(self.j_lead * carrot.j_lead_factor, -1.0, 1.0))
-    lead_xv_1, _ = self.process_lead(radarstate.leadTwo, 0.0)
+    self.lead_model_used = []
+    ml = list(model_leads) if model_leads is not None and len(model_leads) >= 2 else [None, None]
+    lead_xv_0, lead_v_0 = self.process_lead(radarstate.leadOne, np.clip(self.j_lead * carrot.j_lead_factor, -1.0, 1.0), ml[0])
+    lead_xv_1, _ = self.process_lead(radarstate.leadTwo, 0.0, ml[1])
 
     # A faster lead is credited as no faster than us -- see lead_speed_for_credit.
     credit_cap = carrot.leadCreditCap

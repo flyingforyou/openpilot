@@ -198,6 +198,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"EnableSpeedTF", {PERSISTENT, INT, "0"}},
     {"LowSpeedJerk", {PERSISTENT, INT, "100"}},
     {"LeadCreditCap", {PERSISTENT, BOOL, "1"}},
+    {"LeadModelPredict", {PERSISTENT, BOOL, "0"}},
     {"LongResearchPath", {PERSISTENT, BOOL, "1"}},
     {"LongResearchMode", {PERSISTENT, INT, "0"}},
     {"LeadBrakeFollow", {PERSISTENT, INT, "0"}},
