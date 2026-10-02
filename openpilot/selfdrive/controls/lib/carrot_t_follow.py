@@ -114,7 +114,7 @@ LEAD_BRAKE_BUFFER = None
 # Retuned (follow_regression.py): faster in, earlier engage and a lighter filter took braking p5
 # -2.70 -> -2.59 with fewer zig-zags (10.0 -> 8.6/min) and unchanged launches; lead-stops maneuvers
 # braked less (3 m/s^2 lead -2.98 -> -2.81) at the same 4.6-5.0 m stopping gap.
-BF_ALEAD_TAU = 0.2                 # s, low-pass on the lead's acceleration
+BF_ALEAD_TAU = 0.1                 # s, low-pass on the lead's acceleration (0.2: p5 -2.59; 0.1: -2.56, same jerk; 0: plan jerk 0.99 -> 1.19)
 BF_ENGAGE = (-0.7, -0.2)           # aLead (filtered): fully engaged .. not engaged
 BF_RATE_IN = 5.0                   # m/s^3, how fast the follow command may deepen
 BF_RATE_OUT = 1.5                  # m/s^3, how fast it may let go
