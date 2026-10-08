@@ -121,3 +121,55 @@ def radar_lead_accel(a_rel: float, a_ego: float) -> float | None:
     return None
   lo, hi = RADAR_LEAD_ACCEL_CLIP
   return min(max(a_rel + a_ego, lo), hi)
+
+
+# The lead's acceleration as the slope of its own speed (vRel + vEgo, aligned by radarDelay) over the
+# last few radar measurements, instead of the radar's LongAccel. 683 segments (10/01-10/08), lag to
+# register a change past 0.5 m/s^2 against a zero-lag reference (centred difference of that speed),
+# then against an independent one (second difference of range + our own acceleration):
+#
+#                          braking        accelerating    |a|>0.5 while steady   RMS
+#   a_ego + LongAccel      +0.43 s 80%    +0.43 s 74%     5.65%                  0.35
+#   speed slope, 4 samples +0.28 s 94%    +0.29 s 94%     2.64%                  0.24
+#     range reference:     +0.40 -> +0.36 s braking, +0.51 -> +0.40 s accelerating
+#
+# LongAccel trails because the radar smooths it internally; the Doppler speed it comes from does not.
+# 3 samples is faster still (+0.20 s) but no quieter than LongAccel (5.3 %); 5 samples +0.34 s. The
+# radar sends a new value every ~0.1 s and radard sees it at its own 20 Hz tick -- timing samples by
+# that tick instead of the true arrival changed nothing measurable (+0.28 s, 2.6 %).
+LEAD_SPEED_SLOPE_N = 4
+LEAD_SPEED_SLOPE_MAX_GAP = 0.3     # s between measurements before the history starts over
+LEAD_SPEED_SLOPE_MAX_SPAN = 0.6    # s, oldest sample allowed in the fit
+
+
+class LeadSpeedSlope:
+  """Per-track history of (time, lead speed) at the radar's own update rate."""
+  def __init__(self):
+    self.t: list[float] = []
+    self.v: list[float] = []
+    self.last = None
+
+  def update(self, t: float, d_rel: float, v_rel: float, v_lead: float) -> float | None:
+    if self.last is not None and (d_rel, v_rel) == self.last:
+      return self.value()                       # same measurement seen again at our 20 Hz tick
+    self.last = (d_rel, v_rel)
+    if self.t and t - self.t[-1] > LEAD_SPEED_SLOPE_MAX_GAP:
+      self.t, self.v = [], []
+    self.t.append(t)
+    self.v.append(v_lead)
+    if len(self.t) > LEAD_SPEED_SLOPE_N:
+      self.t.pop(0)
+      self.v.pop(0)
+    return self.value()
+
+  def value(self) -> float | None:
+    if len(self.t) < LEAD_SPEED_SLOPE_N or self.t[-1] - self.t[0] > LEAD_SPEED_SLOPE_MAX_SPAN:
+      return None
+    tm = sum(self.t) / len(self.t)
+    vm = sum(self.v) / len(self.v)
+    den = sum((x - tm) ** 2 for x in self.t)
+    if den < 1e-6:
+      return None
+    a = sum((x - tm) * (y - vm) for x, y in zip(self.t, self.v, strict=True)) / den
+    lo, hi = RADAR_LEAD_ACCEL_CLIP
+    return min(max(a, lo), hi)

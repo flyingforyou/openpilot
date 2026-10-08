@@ -14,7 +14,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
 from openpilot.selfdrive.controls.lib.cut_in import DEFAULT_HALF_WIDTH, VEHICLE_HALF_WIDTH, CutInDetector
 from openpilot.selfdrive.controls.lib.lane_change_guards import target_lane_lead
-from openpilot.selfdrive.controls.lib.radar_lead_hold import RADAR_LEAD_HOLD_DEFAULT_MS, RadarLeadHold, radar_lead_accel
+from openpilot.selfdrive.controls.lib.radar_lead_hold import RADAR_LEAD_HOLD_DEFAULT_MS, LeadSpeedSlope, RadarLeadHold, radar_lead_accel
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -539,6 +539,8 @@ class RadarD:
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
     self.a_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
     self.radar_lead_accel = True
+    self.lead_accel_slope = False
+    self.speed_slopes: dict[int, LeadSpeedSlope] = {}
     self.last_v_ego_frame = -1
 
     self.radar_state: capnp._DynamicStructBuilder | None = None
@@ -562,6 +564,7 @@ class RadarD:
     self.lead_hold.configure(hold_cm / 100.0, lead_hold_ms)
 
     self.radar_lead_accel = bool(self.params.get("RadarLeadAccel", return_default=True))
+    self.lead_accel_slope = bool(self.params.get("LeadAccelSlope", return_default=True))
     self.cut_in_enabled = bool(self.params.get("TeslaCutInLead", return_default=True))
     if not self.cut_in_enabled:
       self.cut_in.reset()
@@ -588,6 +591,7 @@ class RadarD:
     for ids in list(self.tracks.keys()):
       if ids not in ar_pts:
         self.tracks.pop(ids, None)
+        self.speed_slopes.pop(ids, None)
 
     # Turning makes a stationary object appear to slide sideways, so the forward projection
     # needs to know how fast we are turning. deviceMotion is the calibrated estimate; the model's
@@ -612,6 +616,14 @@ class RadarD:
         self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
       track = self.tracks[ids]
       a_lead_radar = radar_lead_accel(pt.aRel, self.a_ego_hist[0]) if self.radar_lead_accel else None
+      # LeadAccelSlope: the slope of the lead's own speed over the last radar updates, LongAccel until
+      # there are enough of them (see LeadSpeedSlope).
+      if pt.measured:
+        slope = self.speed_slopes.setdefault(ids, LeadSpeedSlope()).update(self.current_time, pt.dRel, pt.vRel, v_lead)
+        if self.lead_accel_slope and self.radar_lead_accel and slope is not None:
+          a_lead_radar = slope
+      else:
+        self.speed_slopes.pop(ids, None)
       track.update(pt.dRel, pt.yRel, pt.vRel, v_lead, pt.measured, pt.jLead, pt.yvRel, pt.aLead,
                    self.radar_reaction_factor, pt.vehicleClass, pt.classProb, pt.length,
                    a_lead_radar)

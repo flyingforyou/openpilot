@@ -13,6 +13,7 @@ d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.
       "GAP": 1-7 (gap stalk), "KALMAN": 1 (lead accel from the Kalman filter instead of the radar),
       "rl.<CONST>": value (a research_long.py module constant)
       "mpc.<CONST>": value (a long_mpc.py LEAD_MODEL_* constant)
+      "RADAR_DELAY": seconds (radard's vEgo alignment; default the log's CarParams.radarDelay)
   SIMRADARD=1   rerun today's radard over the recorded radarTracks (lead hold, radar accel, cut-in)
                 instead of trusting the radarState recorded at the time
   SIMLEAD2=1    keep leadTwo (cut-ins, the target lane's lead) instead of dropping it
@@ -88,7 +89,11 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
     rd = None; rd_state = None; syn = None; loc = None
     if os.environ.get('SIMRADARD'):
         from openpilot.selfdrive.controls.radard import RadarD
-        rd = RadarD(CP.radarDelay)
+        rd = RadarD((ovr or {}).get('RADAR_DELAY', CP.radarDelay))
+        if ovr:   # radard reads its own Params; let variants override them too
+            _rg = rd.params.get
+            rd.params.get = lambda key, *a, _g=_rg, **k: ovr[key] if key in ovr else _g(key, *a, **k)
+            rd.refresh_tuning()
     sm = _ReplaySM(); planner = None; pts = {}; t0 = None
     kp = KalmanParams(DT); kf = None
     xe = ve = ae = None; x_rec = 0.0; last_t = None

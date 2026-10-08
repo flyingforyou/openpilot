@@ -77,3 +77,43 @@ class TestOffPathGate:
     for sign in (1, -1):
       t = _track(d_rel=30.0, d_path=sign * (RADAR_LEAD_HOLD_MAX_DPATH + 0.1))
       assert _hold().candidate({1: t}) is None
+
+
+# --- LeadSpeedSlope -----------------------------------------------------------------------------
+from openpilot.selfdrive.controls.lib.radar_lead_hold import LEAD_SPEED_SLOPE_N, LeadSpeedSlope  # noqa: E402
+
+
+def _feed(s, a, n, t0=0.0, dt=0.1, v0=10.0, ticks=2):
+  out = None
+  for i in range(n):
+    t = t0 + i * dt
+    v = v0 + a * i * dt
+    for k in range(ticks):                      # radard sees each radar value at two 20 Hz ticks
+      out = s.update(t + k * 0.05, 30.0 - i * 0.1, v - 10.0, v)
+  return out
+
+
+def test_slope_recovers_a_constant_acceleration():
+  assert abs(_feed(LeadSpeedSlope(), -2.0, 6) + 2.0) < 1e-6
+
+
+def test_slope_needs_a_full_window():
+  assert _feed(LeadSpeedSlope(), -2.0, LEAD_SPEED_SLOPE_N - 1) is None
+  assert _feed(LeadSpeedSlope(), -2.0, LEAD_SPEED_SLOPE_N) is not None
+
+
+def test_repeated_measurement_is_not_a_new_sample():
+  s = LeadSpeedSlope()
+  for k in range(10):                           # one radar value seen ten times
+    assert s.update(k * 0.05, 30.0, -1.0, 9.0) is None
+  assert len(s.t) == 1
+
+
+def test_a_gap_in_measurements_starts_over():
+  s = LeadSpeedSlope()
+  _feed(s, 1.0, 6)
+  assert _feed(s, 1.0, 2, t0=5.0) is None       # history reset after the dropout
+
+
+def test_clipped_like_the_radar_value():
+  assert _feed(LeadSpeedSlope(), -40.0, 6) == -10.0

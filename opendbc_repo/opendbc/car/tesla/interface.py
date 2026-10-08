@@ -85,6 +85,11 @@ class CarInterface(CarInterfaceBase):
 
     ret.steerControlType = structs.CarParams.SteerControlType.angle
     ret.radarUnavailable = candidate in (CAR.TESLA_MODEL_S_HW2, )
+    # The legacy Bosch radar's tracks trail the car's own speed signal (ESP_B) by ~140 ms: over 197
+    # segments of the Model X HW1, d(vRel)/dt correlates best with -d(vEgo)/dt shifted 140 ms. radard
+    # adds vEgo to vRel to get the lead's speed, so at 0 our own braking leaked into the lead's speed
+    # (0.28 m/s at -2 m/s^2). Range and range-rate agree with each other at 0 ms.
+    ret.radarDelay = 0.14
 
     ret.alphaLongitudinalAvailable = True
     ret.openpilotLongitudinalControl = True
