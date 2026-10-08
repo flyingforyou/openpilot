@@ -14,6 +14,7 @@ d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.
       "rl.<CONST>": value (a research_long.py module constant)
       "mpc.<CONST>": value (a long_mpc.py LEAD_MODEL_* constant)
       "RADAR_DELAY": seconds (radard's vEgo alignment; default the log's CarParams.radarDelay)
+      "rdd.<CONST>": value (a radard.py module constant)
   SIMRADARD=1   rerun today's radard over the recorded radarTracks (lead hold, radar accel, cut-in)
                 instead of trusting the radarState recorded at the time
   SIMLEAD2=1    keep leadTwo (cut-ins, the target lane's lead) instead of dropping it
@@ -38,6 +39,9 @@ route, seg, T0, T1 = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sy
 # The recording then only supplies the background (model output, car state); T0..T1 is the scenario.
 import os, json
 LOC = bool(os.environ.get('SIMLOC'))
+NOLEAD = bool(os.environ.get('SIMNOLEAD'))
+# SIMWARMUP: seconds before T0 the sim car just follows the recording (planner running, state building)
+WARMUP = float(os.environ.get('SIMWARMUP', 3.0))
 SYN = json.loads(os.environ['SIMSYNTH']) if os.environ.get('SIMSYNTH') else None
 DELAY = float(os.environ.get('SIMDELAY', 0.15)); TAU = float(os.environ.get('SIMTAU', 0.35)); DT = 0.05
 ADDRS = {0x310 + 3*i for i in range(32)}
@@ -50,6 +54,33 @@ for _s in range(seg, seg + int(os.environ.get('SIMSEGS', 1))):
     path = f"{os.environ.get('SIMROOT', '/data/media/0/realdata')}/{route}--{_s}/rlog.zst"
     evts += list(log.Event.read_multiple_bytes(zstandard.ZstdDecompressor().stream_reader(open(path, 'rb'), read_across_frames=True).read()))
 CP = next(e.carParams for e in evts if e.which() == 'carParams') if any(e.which()=='carParams' for e in evts) else None
+
+# The device's params as they were when this segment was recorded (initData.params). Without this the
+# sim runs on this machine's unset params -- i.e. defaults -- which on 0x1a3 meant map auto-speed on
+# where the car had it off, and carrot's accel profile and gap tables from defaults: the replayed car
+# reached 87 km/h where the real one held 79 on the same approach. Variant overrides still win (they
+# wrap the planner's/radard's params objects above this). SIMNOLOGPARAMS=1 restores the old behaviour.
+LOGP = {}
+if not os.environ.get('SIMNOLOGPARAMS'):
+    _init = next((e.initData for e in evts if e.which() == 'initData'), None)
+    if _init is not None:
+        LOGP = {kv.key: bytes(kv.value) for kv in _init.params.entries}
+if LOGP:
+    from openpilot.common.params import Params as _P
+    _get, _get_bool = _P.get, _P.get_bool
+    def _logged_get(self, key, block=False, return_default=False):
+        k = key.decode() if isinstance(key, bytes) else key
+        if k in LOGP:
+            t = self.get_type(k)
+            default = self._default(self.check_key(k)) if return_default else None
+            return self._cpp2python(t, LOGP[k] if LOGP[k] != b"" else default, default, k)
+        return _get(self, key, block, return_default)
+    def _logged_get_bool(self, key, block=False):
+        k = key.decode() if isinstance(key, bytes) else key
+        if k in LOGP:
+            return LOGP[k] in (b"1", b"true", b"True")
+        return _get_bool(self, key, block)
+    _P.get, _P.get_bool = _logged_get, _logged_get_bool
 if CP is None:
     import glob
     from openpilot.common.params import Params
@@ -77,10 +108,16 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
     import openpilot.selfdrive.controls.lib.longitudinal_mpc_carrot.long_mpc as _mpc
     if not hasattr(_mpc, '_defaults'): _mpc._defaults = {k: getattr(_mpc, k) for k in dir(_mpc) if k.startswith('LEAD_MODEL')}
     for k, v in _mpc._defaults.items(): setattr(_mpc, k, v)
+    import openpilot.selfdrive.controls.radard as _rdd0
+    for k, v in getattr(_rdd0, '_defaults', {}).items(): setattr(_rdd0, k, v)
     for k, v in (ovr or {}).items():
         if k.startswith('rl.'): setattr(_rl, k[3:], v)
         if k.startswith('ct.'): setattr(_ct, k[3:], v)
         if k.startswith('mpc.'): setattr(_mpc, k[4:], v)
+        if k.startswith('rdd.'):
+            import openpilot.selfdrive.controls.radard as _rdd
+            if not hasattr(_rdd, '_defaults'): _rdd._defaults = {kk: getattr(_rdd, kk) for kk in dir(_rdd) if kk.isupper()}
+            setattr(_rdd, k[4:], v)
     gap = (ovr or {}).get('GAP')
     from openpilot.selfdrive.controls.lib.carrot_functions import GAP_TO_PERSONALITY_INT
     NEEDED = ('carControl', 'carState', 'controlsState', 'radarState', 'modelV2', 'selfdriveState', 'vehicleParameters')
@@ -131,7 +168,7 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             sm.data['carState'] = keep
         if w != 'modelV2' or len(sm.data) < len(NEEDED) or t0 is None: continue
         rt = t - t0
-        if rt < T0 - 3.0 or rt > T1: continue
+        if rt < T0 - WARMUP or rt > T1: continue
         if rec_rs is None or rec_cs is None: continue
         if SYN:
             # synthetic lead: the recording only supplies the background (model, states)
@@ -162,8 +199,18 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
         rs_rec = rd_state if (rd is not None and rd_state is not None) else rec_rs
         if not SYN:
             ld = rs_rec.leadOne
-        if not SYN and not ld.present: continue
-        if not SYN:
+        nolead = not SYN and not ld.present
+        if nolead and not NOLEAD: continue
+        if nolead:
+            # SIMNOLEAD: keep simulating with no lead, so the model-stop (e2eStop) phase before a lead
+            # exists is closed-loop too. A far phantom stands in for x_lead in the bookkeeping only;
+            # radarState goes to the planner with no lead.
+            if rt < T0 or xe is None:
+                xe, ve, ae = x_rec, rec_cs.vEgo, rec_cs.aEgo
+            x_lead, v_lead, a_lead, a_true = xe + 250.0, ve, 0.0, None
+            cs = rec_cs.as_builder(); cs.vEgo = cs.vEgoRaw = cs.vEgoCluster = float(max(ve, 0.0)); cs.aEgo = float(ae)
+            cs.standstill = ve < 0.1; cs.gasPressed = False; cs.brakePressed = False
+        elif not SYN:
             # lead: exogenous absolute state
             x_lead = x_rec + ld.dRel; v_lead = ld.vLead
             a_true = None
@@ -182,7 +229,10 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             cs.cruiseState.gapAdjust = int(gap)
             sd = sm.data['selfdriveState']; sd = sd.as_builder() if hasattr(sd, 'as_builder') else sd
             sd.personality = GAP_TO_PERSONALITY_INT[int(gap) - 1]; sm.data['selfdriveState'] = sd
-        if not SYN:
+        if nolead:
+            rs = rs_rec.as_builder() if hasattr(rs_rec, 'as_builder') else rs_rec.copy()
+            rs.leadTwo.present = False
+        elif not SYN:
             rs = rs_rec.as_builder() if hasattr(rs_rec, 'as_builder') else rs_rec.copy(); L = rs.leadOne
             # vLead and vLeadK are both absolute lead speeds, so neither depends on our simulated car:
             # keep radard's (or the recording's) filtered speed instead of copying the raw one over it
@@ -195,6 +245,13 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
                 L2.present = False
         state['d'] = float(x_lead - xe); state['ve'] = float(ve)
         sm.data['carState'] = cs; sm.data['radarState'] = rs
+        model_rec = None
+        if NOLEAD and not os.environ.get('SIMNOMODELSHIFT') and xe is not None and abs(x_rec - xe) > 0.05:
+            # the model's path is measured from the recorded car; from ours a fixed point ahead (a stop
+            # line, a stopped car) is further by however far we have fallen behind the recording
+            model_rec = sm.data['modelV2']; mb = model_rec.as_builder(); dxm = float(x_rec - xe)
+            mb.position.x = [float(xx) + dxm for xx in model_rec.position.x]
+            sm.data['modelV2'] = mb
         sm.frame += 1; sm.updated = dict.fromkeys(sm.data, True)
         if planner is None:
             planner = CarrotLongitudinalPlanner(CP)
@@ -229,6 +286,8 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
                     return min(a, w_ * near + (1 - w_) * a)
                 planner.carrot.get_carrot_accel = capped
         planner.update(sm)
+        if model_rec is not None:
+            sm.data['modelV2'] = model_rec
         cmd = float(planner.planner.output_a_target)
         if os.environ.get('SIMTRACE') and rt >= T0:
             rp = planner.planner.research
