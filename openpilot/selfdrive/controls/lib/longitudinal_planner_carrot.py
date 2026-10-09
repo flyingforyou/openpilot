@@ -165,6 +165,8 @@ class _CarrotLongitudinalPlannerImpl:
     self.brake_follow = carrot_t_follow.BrakeFollow(DT_MDL)
     self.brake_onset = carrot_t_follow.BrakeOnsetLimiter(DT_MDL)
     self.release_open = carrot_t_follow.ReleaseOnOpening(DT_MDL)
+    self.cutin_cap = carrot_t_follow.CutInSoftCap(DT_MDL)
+    self.cutin_mode = 0
     self.research_enabled = False
     self.research_mode = 0
     self.research_active = False
@@ -337,6 +339,8 @@ class _CarrotLongitudinalPlannerImpl:
       output_a_target = self.brake_onset.update(output_a_target, bool(lead.present), float(lead.dRel),
                                                 float(lead.aLeadK), v_ego, float(lead.vLead), float(carrot.stop_distance),
                                                 ttc_min, d_min)
+      output_a_target = self.cutin_cap.update(output_a_target, self.cutin_mode, getattr(sm['carState'], 'dasObjects', None),
+                                              bool(lead.present), float(lead.dRel), v_ego)
       output_v_target_now = output_v_target_mpc
       self.output_should_stop = output_should_stop_mpc
     else:
@@ -360,6 +364,7 @@ class _CarrotLongitudinalPlannerImpl:
       self.mpc.lead_model_predict = self.params.get_bool("LeadModelPredict")
       # BrakeOnsetJerk (0.1 m/s^3): how fast braking may build while the nearest lead is >= 3 s / 10 m away
       bj = self.params.get_int("BrakeOnsetJerk")
+      self.cutin_mode = self.params.get_int("CutInSoftCap")
       carrot_t_follow.BRAKE_ONSET_JERK = bj / 10.0 if bj > 0 else None
       # Start braking when the lead does (carrot_t_follow.lead_brake_follow). 1 = sized to the buffer,
       # 2..100 = a fixed share of the lead's deceleration, 0 = off.

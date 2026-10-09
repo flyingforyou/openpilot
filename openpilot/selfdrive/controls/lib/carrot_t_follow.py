@@ -275,3 +275,65 @@ def lead_brake_accel_cap(a_target: float, lead_present: bool, d_rel: float, a_le
     return a_target
   cap = float(np.interp(a_lead, LEAD_BRAKE_ACCEL_CAP, [0.0, a_target]))
   return min(a_target, cap)
+
+
+# CutInSoftCap: the factory camera (carState.dasObjects) sees a side-lane car moving into our lane
+# before our lead logic does. A car in the left/right group within CUTIN_DY_MAX of our centreline that
+# has closed CUTIN_DY_STEP on it over the last second, or one in the factory cut-in group, nearer than
+# the lead we follow: for CUTIN_HOLD s stop accelerating (1) or brake lightly (2).
+# Over 10/03-10/08 (183 engaged min above 30 km/h): 89 signals, 66 of them entered our lane (74 %),
+# 23 false (7.6/h); median 0.6 s before openpilot adopts it as the lead, 1.7 s before the factory
+# camera moves it into its own lead group. dy comes in 0.35 m steps, so the step is two of them.
+CUTIN_DY_MAX = 2.8
+CUTIN_DY_STEP = 0.7
+CUTIN_DX = (5.0, 70.0)
+CUTIN_HOLD = 2.0
+CUTIN_CAP = {1: 0.0, 2: -0.3}
+CUTIN_RATE = 2.0      # m/s^3 the cap comes in at
+# ...and only for a car that will matter: nearer than CUTIN_NEAR_T s of headway (+5 m), or closing on us
+# within CUTIN_TTC s. A merging car that is faster than us, with room, should not hold our acceleration
+# back -- unrestricted, one such signal right after a launch cost 18 km/h in replay.
+CUTIN_NEAR_T = 1.5
+CUTIN_TTC = 6.0
+
+
+class CutInSoftCap:
+  def __init__(self, dt: float):
+    self.dt = dt
+    self.t = 0.0
+    self.hist: dict[int, list] = {}
+    self.until = -1.0
+    self.cap = None
+    self.active = False
+
+  def update(self, a: float, mode: int, das_objects, lead_present: bool, lead_d: float, v_ego: float = 0.0) -> float:
+    self.t += self.dt
+    signal = False
+    for o in das_objects or []:
+      g, oid, dx, dy = int(o.group), int(o.objId), float(o.dx), float(o.dy)
+      h = self.hist.setdefault(oid, [])
+      h.append((self.t, abs(dy)))
+      while h and h[0][0] < self.t - 1.2:
+        h.pop(0)
+      if not (CUTIN_DX[0] < dx < CUTIN_DX[1]) or (lead_present and dx > lead_d - 3.0):
+        continue
+      vx_rel = float(o.vxRel)
+      near = dx < CUTIN_NEAR_T * v_ego + 5.0
+      closing = vx_rel < -0.5 and dx / -vx_rel < CUTIN_TTC
+      if not (near or closing):
+        continue
+      if g == 3:
+        signal = True
+      elif g in (1, 2) and abs(dy) <= CUTIN_DY_MAX and h and self.t - h[0][0] >= 0.9 and h[0][1] - abs(dy) >= CUTIN_DY_STEP - 1e-3:
+        signal = True
+    for oid in [k for k, h in self.hist.items() if not h or h[-1][0] < self.t - 2.0]:
+      del self.hist[oid]
+    if signal:
+      self.until = self.t + CUTIN_HOLD
+    target = CUTIN_CAP.get(mode)
+    self.active = target is not None and self.t < self.until
+    if not self.active:
+      self.cap = None
+      return a
+    self.cap = max(a, target) if self.cap is None else max(target, self.cap - CUTIN_RATE * self.dt)
+    return min(a, self.cap)

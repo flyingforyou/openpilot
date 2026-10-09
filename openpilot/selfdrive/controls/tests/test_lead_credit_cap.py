@@ -142,3 +142,25 @@ def test_brake_onset_limit_only_with_time_to_spare():
     assert lim3.update(-1.5, True, 40.0, 0.0, 20.0, 18.0, 4.5, ttc=20.0, d_min=40.0) == -1.5
   finally:
     ct.BRAKE_ONSET_JERK = old
+
+
+def test_cutin_soft_cap_holds_acceleration_for_a_merging_car():
+  """CutInSoftCap mode 1: a side-lane car closing 0.7 m on our centreline within 2.8 m, nearer than the
+  lead and within headway, stops acceleration (ramped) for CUTIN_HOLD; braking is never reduced."""
+  from types import SimpleNamespace as NS
+  import openpilot.selfdrive.controls.lib.carrot_t_follow as ct
+  cap = ct.CutInSoftCap(0.05)
+  out = None
+  for i in range(30):                       # 1.5 s: dy 3.5 -> 2.45, dx 25 m, slower than us
+    dy = 3.5 - 0.035 * i
+    out = cap.update(1.0, 1, [NS(group=2, objId=7, dx=25.0, dy=dy, vxRel=-2.0)], True, 60.0, 20.0)
+  assert cap.active and out < 1.0
+  for _ in range(20):
+    out = cap.update(1.0, 1, [], True, 60.0, 20.0)
+  assert out == 0.0                         # ramped down to no acceleration
+  assert cap.update(-1.5, 1, [], True, 60.0, 20.0) == -1.5   # braking passes through
+  # a merging car that is faster than us and far off does not trigger it
+  cap2 = ct.CutInSoftCap(0.05)
+  for i in range(30):
+    cap2.update(1.0, 1, [NS(group=2, objId=8, dx=55.0, dy=3.5 - 0.035 * i, vxRel=+3.0)], False, 0.0, 15.0)
+  assert not cap2.active
