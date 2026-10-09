@@ -201,6 +201,12 @@ class BrakeFollow:
 #   deceleration that still stops the standstill gap behind the lead (buffer_brake_accel with the lead's
 #   current deceleration). None = off.
 BRAKE_ONSET_JERK = None
+# Only rate-limit while there is time: the nearest lead (leadOne or leadTwo) at least this far off in
+# time-to-contact and distance. A lead that turns up nearer -- a cut-in, or the lead flipping to a car
+# that was there all along (most "blips": the factory camera also has a car at the new distance 2/3
+# of the time) -- then brings the brake in at BRAKE_ONSET_JERK instead of in one step.
+BRAKE_ONSET_MIN_TTC = 3.0
+BRAKE_ONSET_MIN_D = 10.0
 
 
 class BrakeOnsetLimiter:
@@ -214,12 +220,12 @@ class BrakeOnsetLimiter:
     self.prev = None
 
   def update(self, a: float, lead_present: bool, d_rel: float, a_lead: float, v_ego: float, v_lead: float,
-             standstill: float) -> float:
+             standstill: float, ttc: float = 99.0, d_min: float = 999.0) -> float:
     if BRAKE_ONSET_JERK is None or self.prev is None:
       self.prev = a
       return a
     out = a
-    if a < self.prev:
+    if a < self.prev and ttc >= BRAKE_ONSET_MIN_TTC and d_min >= BRAKE_ONSET_MIN_D:
       out = max(a, self.prev - BRAKE_ONSET_JERK * self.dt)
       if out > a:
         self.limited += 1

@@ -326,8 +326,17 @@ class _CarrotLongitudinalPlannerImpl:
                                                  float(lead.aLeadK), v_ego, float(lead.vLead))
       output_a_target = self.release_open.update(output_a_target, bool(lead.present), float(lead.dRel), v_ego,
                                                  float(lead.vLead), float(self.mpc.desired_distance))
+      # time to contact with the nearer of leadOne / leadTwo, for BrakeOnsetLimiter's gate
+      ttc_min, d_min = 99.0, 999.0
+      for ld in (lead, sm['radarState'].leadTwo):
+        if ld.present:
+          d_min = min(d_min, float(ld.dRel))
+          closing = v_ego - float(ld.vLead)
+          if closing > 0.5:
+            ttc_min = min(ttc_min, float(ld.dRel) / closing)
       output_a_target = self.brake_onset.update(output_a_target, bool(lead.present), float(lead.dRel),
-                                                float(lead.aLeadK), v_ego, float(lead.vLead), float(carrot.stop_distance))
+                                                float(lead.aLeadK), v_ego, float(lead.vLead), float(carrot.stop_distance),
+                                                ttc_min, d_min)
       output_v_target_now = output_v_target_mpc
       self.output_should_stop = output_should_stop_mpc
     else:
@@ -349,6 +358,9 @@ class _CarrotLongitudinalPlannerImpl:
       self.research_mode = self.params.get_int("LongResearchMode")
       # radar now + the driving model's predicted change for the matched lead (long_mpc.model_lead_traj)
       self.mpc.lead_model_predict = self.params.get_bool("LeadModelPredict")
+      # BrakeOnsetJerk (0.1 m/s^3): how fast braking may build while the nearest lead is >= 3 s / 10 m away
+      bj = self.params.get_int("BrakeOnsetJerk")
+      carrot_t_follow.BRAKE_ONSET_JERK = bj / 10.0 if bj > 0 else None
       # Start braking when the lead does (carrot_t_follow.lead_brake_follow). 1 = sized to the buffer,
       # 2..100 = a fixed share of the lead's deceleration, 0 = off.
       k = self.params.get_int("LeadBrakeFollow")

@@ -117,3 +117,28 @@ def test_release_on_opening(monkeypatch):
   assert abs(out - (-2.5 + 4.0 * 0.05)) < 1e-9
   assert r.update(-2.5, True, 7.0, 6.0, 7.0, 8.0) == -2.5   # gap below target: planner keeps its brake
   assert r.update(-2.5, True, 12.0, 7.0, 6.0, 8.0) == -2.5  # still closing: no release
+
+
+def test_brake_onset_limit_only_with_time_to_spare():
+  """BrakeOnsetJerk: a step in braking comes in at the set rate while the nearest lead is >= 3 s away,
+  and goes straight through when it is closer in time (a real emergency is never rate-limited)."""
+  import openpilot.selfdrive.controls.lib.carrot_t_follow as ct
+  old = ct.BRAKE_ONSET_JERK
+  try:
+    ct.BRAKE_ONSET_JERK = 2.0
+    lim = ct.BrakeOnsetLimiter(0.05)
+    lim.update(0.0, True, 40.0, 0.0, 20.0, 18.0, 4.5)
+    # plenty of time (40 m, closing 2 m/s -> 20 s): a -1.5 step comes in at ~0.1 per frame, never less
+    # than what stopping behind the lead needs (the floor, ~-0.12 here)
+    out = lim.update(-1.5, True, 40.0, 0.0, 20.0, 18.0, 4.5, ttc=20.0, d_min=40.0)
+    assert -0.2 < out < -0.05
+    lim2 = ct.BrakeOnsetLimiter(0.05)
+    lim2.update(0.0, True, 20.0, 0.0, 20.0, 10.0, 4.5)
+    # 2 s to contact: no limit
+    assert lim2.update(-2.5, True, 20.0, 0.0, 20.0, 10.0, 4.5, ttc=2.0, d_min=20.0) == -2.5
+    ct.BRAKE_ONSET_JERK = None
+    lim3 = ct.BrakeOnsetLimiter(0.05)
+    lim3.update(0.0, True, 40.0, 0.0, 20.0, 18.0, 4.5)
+    assert lim3.update(-1.5, True, 40.0, 0.0, 20.0, 18.0, 4.5, ttc=20.0, d_min=40.0) == -1.5
+  finally:
+    ct.BRAKE_ONSET_JERK = old
