@@ -48,6 +48,14 @@ class XState(Enum):
   def __str__(self):
     return self.name
 
+# e2eStop experiments (defaults = upstream behaviour); closedloop_sim overrides them as cf.<NAME>.
+STOP_X_FILTER = True            # median + smoothing filter on the model's stop point
+STOP_X_RATE_LIMIT = True        # aim point may approach no faster than ego travel + 0.5 m/frame
+STOP_SOFT_DECEL = 0.0           # decel behind the e2eStop speed ceiling; 0 = the comfort brake
+STOP_IGNORE_VISION_LEAD = False # in e2eStop, only a radar-backed lead hands over to lead following
+STOP_RED_HOLD = None            # s the stop sign stays red through a dropout; None = StopSignHoldMs param
+
+
 class DrivingMode(Enum):
   Eco = 1
   Safe = 2
@@ -185,6 +193,7 @@ class CarrotPlanner:
     self.stopSignCount = 0
 
     self.stop_distance = 6.0
+    self.stop_sign_hold = 0.0   # StopSignHoldMs / 1000
     self.trafficStopDistanceAdjust = 2.5 #params.get_float("TrafficStopDistanceAdjust") / 100.
     self.comfortBrake = 2.4
     self.comfortBrake2 = DEFAULT_COMFORT_BRAKE_2
@@ -296,6 +305,7 @@ class CarrotPlanner:
       self.cruiseMaxVals6 = self.params.get_float("CruiseMaxVals6") / 100.
     elif self.params_count == 40:
       self.stop_distance = self.params.get_float("StopDistanceCarrot") / 100.
+      self.stop_sign_hold = self.params.get_int("StopSignHoldMs") / 1000.
       self.comfortBrake2 = self.params.get_float("ComfortBrake2") / 100.
       # Clamp to keep k >= 0 (see DEFAULT_COMFORT_BRAKE_2). b1 > b2 shrinks the target gap
       # quadratically with speed, so the clamp is what makes the pair safe to tune freely.
@@ -458,6 +468,8 @@ class CarrotPlanner:
     return float(t_follow + adjust_t_follow)
 
   def update_stop_dist(self, stop_x):
+    if not STOP_X_FILTER:
+      return stop_x
     stop_x = self.xStopFilter.process(stop_x, median = True)
     stop_x = self.xStopFilter2.process(stop_x)
     return stop_x
@@ -512,8 +524,18 @@ class CarrotPlanner:
     # )
     self.stopSignCount = self.stopSignCount + 1 if stopSign else 0
     self.startSignCount = self.startSignCount + 1 if startSign and not stopSign else 0
+    # The stop sign sits on thresholds (path end vs distance, end speed vs 3 m/s) and drops for a
+    # frame or two at a time -- 200 dropouts during e2eStop over the logs, 62 % of them 0.25 s or
+    # less -- and every off frame clears the stop distance, so the planner keeps letting go of the
+    # brake. StopSignHoldMs keeps red through such gaps unless the model says go (green). Replayed over 75
+    # stops where e2eStop or a blocked model stop came before the radar lead (closed loop from the event):
+    # time spent braking harder than -2.5 35.9 -> 34.1 s, 15 -> 14 scenes; the hard-braking scenes it
+    # changes drop 0.3-0.4 m/s^2 at the peak or 0.5-1.5 s of hard braking (0x69 -3.50 -> -3.08,
+    # 0x8a 2.0 -> 1.6 s). 0.5, 1 and 2 s measured the same.
+    hold_s = self.stop_sign_hold if STOP_RED_HOLD is None else STOP_RED_HOLD
+    self.red_hold = hold_s / DT_MDL if stopSign else max(getattr(self, 'red_hold', 0.0) - 1, 0.0)
 
-    if self.stopSignCount * DT_MDL > 0.0:
+    if self.stopSignCount * DT_MDL > 0.0 or (self.red_hold > 0 and self.startSignCount * DT_MDL <= 0.2):
       self.trafficState = TrafficState.red
     elif self.startSignCount * DT_MDL > 0.2:
       self.trafficState = TrafficState.green
@@ -621,7 +643,7 @@ class CarrotPlanner:
     if self._stop_x_rl is None:
       self._stop_x_rl = stop_model_x_raw
     else:
-      max_close = v_ego * DT_MDL + 0.5
+      max_close = v_ego * DT_MDL + 0.5 if STOP_X_RATE_LIMIT else 1e9
       if stop_model_x_raw > self._stop_x_rl:
         self._stop_x_rl = stop_model_x_raw
       else:
@@ -684,7 +706,7 @@ class CarrotPlanner:
         #self.xState = XState.e2ePrepare
         self.xState = XState.e2eCruise
         self.traffic_starting_count = 10.0 / DT_MDL
-      elif lead_detected and (radarstate.leadOne.dRel - stop_model_x_raw) < 2.0:
+      elif lead_detected and (radarstate.leadOne.radar or not STOP_IGNORE_VISION_LEAD) and (radarstate.leadOne.dRel - stop_model_x_raw) < 2.0:
         self.xState = XState.lead
       else:
         if green_confirmed:
@@ -714,7 +736,10 @@ class CarrotPlanner:
         self.xState = XState.e2eCruise
     else: #XState.lead, XState.cruise, XState.e2eCruise
       self.traffic_starting_count = max(0, self.traffic_starting_count - 1)
-      if lead_detected:
+      # STOP_IGNORE_VISION_LEAD: a camera-only lead beyond the model's stop point does not block it
+      lead_blocks_stop = lead_detected and (radarstate.leadOne.radar or not STOP_IGNORE_VISION_LEAD or
+                                            radarstate.leadOne.dRel - stop_model_x_raw < 2.0)
+      if lead_blocks_stop:
         self.xState = XState.lead
       elif self.trafficState == TrafficState.red and abs(carstate.steeringAngleDeg) < 30 and self.traffic_starting_count == 0:
         self.add_event(EventName.trafficStopping)
@@ -761,7 +786,8 @@ class CarrotPlanner:
     stopping_active = (self.xState in [XState.e2eStop, XState.e2eStopped])
     if stopping_active and stop_dist < 300.0:
       stop_dist_soft = max(stop_dist - 1.0, 0.0)
-      v_soft = float(np.sqrt(max(0.0, 2.0 * self.comfort_brake * stop_dist_soft)))
+      soft_decel = STOP_SOFT_DECEL if STOP_SOFT_DECEL > 0.0 else self.comfort_brake
+      v_soft = float(np.sqrt(max(0.0, 2.0 * soft_decel * stop_dist_soft)))
       v_cruise = min(v_cruise, v_soft)
 
     self.v_cruise = v_cruise
