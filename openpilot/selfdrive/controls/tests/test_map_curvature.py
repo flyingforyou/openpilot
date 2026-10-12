@@ -215,3 +215,47 @@ class TestWiredIn:
     c = controller()
     settle(c, FullNav())
     assert not c.curve_from_map
+
+
+class TestCurveRelease:
+  """The raise dwell is for the road's limit; the curve cap lifting is taken at once."""
+
+  def _drive(self, c, nav, ks, v=12.0):
+    out = []
+    for k in ks:
+      out.append(c.update(CS(nav), v, 70 * MPH, k) * CV.MS_TO_MPH)
+    return out
+
+  def test_leaving_a_bend_restores_the_setpoint_without_the_dwell(self):
+    c = controller()
+    nav = FullNav()
+    settle(c, nav, v_ego=12.0)                      # 55 mph road, setpoint believed
+    self._drive(c, nav, [0.03] * 40, v=9.0)         # a tight bend (R=33 m): capped to the curve speed
+    assert c.v_output * CV.MS_TO_MPH < 30
+    after = self._drive(c, nav, [0.0] * 3)          # the bend is gone from the model's window
+    assert after[-1] > 55                           # back to the road's setpoint within 3 frames
+
+  def test_a_rising_limit_still_waits_for_the_dwell(self):
+    c = controller()
+    nav = FullNav()
+    nav.baseSpeedLimit = nav.mapSpeedLimit = nav.mppSpeedLimit = nav.fusedSpeedLimit = 30 * MPH
+    settle(c, nav, v_ego=12.0)
+    low = c.v_output * CV.MS_TO_MPH
+    nav.baseSpeedLimit = nav.mapSpeedLimit = nav.mppSpeedLimit = nav.fusedSpeedLimit = 55 * MPH
+    early = self._drive(c, nav, [0.0] * 20)         # 1 s: not believed yet
+    assert early[-1] == pytest.approx(low)
+    late = self._drive(c, nav, [0.0] * 50)          # past RAISE_DWELL
+    assert late[-1] > low + 10
+
+  def test_a_limit_rising_right_after_a_bend_waits_less(self):
+    """Turning onto a faster road: within CURVE_RECENT_S of the curve cap the dwell is shorter."""
+    from openpilot.selfdrive.controls.lib import map_cruise as mc
+    c = controller()
+    nav = FullNav()
+    nav.baseSpeedLimit = nav.mapSpeedLimit = nav.mppSpeedLimit = nav.fusedSpeedLimit = 30 * MPH
+    settle(c, nav, v_ego=9.0)
+    self._drive(c, nav, [0.03] * 30, v=9.0)          # the corner
+    low = c.v_output * CV.MS_TO_MPH
+    nav.baseSpeedLimit = nav.mapSpeedLimit = nav.mppSpeedLimit = nav.fusedSpeedLimit = 45 * MPH
+    out = self._drive(c, nav, [0.0] * int((mc.RAISE_DWELL_AFTER_CURVE + 0.2) / 0.05))
+    assert out[-1] > low + 10                         # taken after the short dwell, not RAISE_DWELL

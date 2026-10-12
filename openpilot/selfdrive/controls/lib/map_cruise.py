@@ -86,6 +86,21 @@ RAMP_OFF = 2
 # where the map hands over to the next road a beat before the car is on it -- entering that
 # freeway, the posted limit went 25 -> 65 mph while the car was still at 18 mph on the on-ramp.
 RAISE_DWELL = 3.0
+# ...and the dwell is for the road's limit, not for the curve cap lifting. Applied to both, every exit
+# from a bend held the setpoint at the curve speed for RAISE_DWELL after the cap had let go (and on a
+# road whose limit is rejected as stale, the "keep what we had" branch held the capped output, so the
+# road setpoint itself sank to the corner speed): replayed
+# over curve exits (10 engaged ones of 30-90 deg, radius 20-60 m, nothing ahead), the ceiling rose
+# 1-3 s before the exit while the setpoint stayed at the corner speed until up to 1.5 s after it, and
+# the plan held 0 to -0.1 on a straight road. The curve cap now applies straight to the output both
+# ways; the planner's own turn limit (limit_accel_in_turns) still bounds acceleration in the bend.
+CURVE_CAP_DWELL = False
+# A limit that rises right after a bend the curve cap acted on is the road we just turned onto, not the
+# map handing over early -- the dwell's case. Within CURVE_RECENT_S of the cap, the dwell is
+# RAISE_DWELL_AFTER_CURVE. Replayed curve exits: speed gained in the first 3 s after the exit 12.9 ->
+# 15.3 km/h median (a 90 deg turn onto a 45 mph road: 7.3 -> 15.2), peak lateral accel unchanged.
+CURVE_RECENT_S = 5.0
+RAISE_DWELL_AFTER_CURVE = 1.0
 
 # The driver pressing the accelerator is the one input here that is not a guess about the road.
 # Without this the map's number survives the override untouched, so the moment the pedal comes up
@@ -191,6 +206,8 @@ class MapCruiseController:
     self.v_target = 0.0     # what the map says, before the caps below it
     self.v_ceiling = 0.0    # v_target after every cap: the number a cluster should show as MAX
     self.v_output = 0.0     # what is handed to the planner
+    self.v_road_output = 0.0  # the dwelled road setpoint, before the curve cap
+    self.curve_recent = 0.0   # s since the curve cap last acted, counting down from CURVE_RECENT_S
     self.raise_timer = 0.0
     self.loss_timer = 0.0
     self.last_posted = 0.0
@@ -214,6 +231,7 @@ class MapCruiseController:
 
   def reset(self) -> None:
     self.v_ceiling = 0.0
+    self.v_road_output = 0.0
     self.state = MapCruiseState.off
     self.source = 'off'
     self.v_target = 0.0
@@ -393,7 +411,12 @@ class MapCruiseController:
       # every time the map blinked.
       self.state = MapCruiseState.unmapped
       self.source = source if source == 'stale' else 'hold'
-      target = self.v_output if self.v_output > 0.0 else v_cruise_driver
+      # Keep the road's setpoint, not the output: the output carries the curve cap, and holding that
+      # walked the road setpoint down to the corner speed in every bend on such a road (0x7d: a
+      # rejected-as-stale limit, 72 km/h road, held at 31 km/h through the exit until the next
+      # valid limit came back and then waited RAISE_DWELL on top).
+      held = self.v_output if CURVE_CAP_DWELL else (self.v_road_output or self.v_output)
+      target = held if held > 0.0 else v_cruise_driver
       if ceiling > 0.0:
         target = min(target, self._with_offset(ceiling))
 
@@ -425,6 +448,7 @@ class MapCruiseController:
     # whichever of the two is tighter. Tighter is the safe direction -- curve speed falls as
     # curvature rises, so max() over the sources is min() over the speeds they would allow, and
     # a source that has nothing to say returns 0 and cannot raise the cap.
+    road_target = target
     map_curvature = self._map_curvature(nav, v_ego)
     self.curve_from_map = map_curvature > curvature
     curvature = max(curvature, map_curvature)
@@ -434,6 +458,7 @@ class MapCruiseController:
       target = v_curve
       self.state = MapCruiseState.curve
       self.source = 'curve'
+      self.curve_recent = CURVE_RECENT_S
     else:
       self.curve_from_map = False
 
@@ -456,6 +481,9 @@ class MapCruiseController:
       if self.v_target > cap:
         self.v_target = float(max(MIN_TARGET, cap))
         self.source = 'capped'
+    road_target = float(np.clip(road_target, MIN_TARGET, self.v_max))
+    if posted > 0.0:
+      road_target = float(max(MIN_TARGET, min(road_target, posted + self._limit_offset(posted))))
 
     # Everything above has had its say; what is left is the ceiling for this stretch of road.
     # Deliberately taken before the slew: the slew is how the car gets there, not how fast the
@@ -467,6 +495,7 @@ class MapCruiseController:
     # so engaging on a road we already know does not slew up from a standstill target.
     if self.v_output <= 0.0:
       self.v_output = max(min(v_cruise_driver, self.v_target), v_ego)
+      self.v_road_output = max(min(v_cruise_driver, road_target), v_ego)
 
     # The setpoint is the answer, not the route to it. How fast the car closes on a new limit is
     # the planner's decision -- it has acceleration and jerk limits tuned for this car, and a
@@ -493,18 +522,25 @@ class MapCruiseController:
     if self.override_timer <= 0.0:
       self.v_override = 0.0
 
-    if self.v_target < self.v_output:
+    # The dwell runs on the road's target alone; the curve cap is applied after it, instantly.
+    dwell_target = self.v_target if CURVE_CAP_DWELL else road_target
+    dwell = RAISE_DWELL_AFTER_CURVE if (self.curve_recent > 0.0 and not CURVE_CAP_DWELL) else RAISE_DWELL
+    self.curve_recent = max(0.0, getattr(self, 'curve_recent', 0.0) - DT_MDL)
+    if getattr(self, 'v_road_output', 0.0) <= 0.0:
+      self.v_road_output = self.v_output
+    if dwell_target < self.v_road_output:
       self.raise_timer = 0.0
-      self.v_output = self.v_target
-    elif self.v_target > self.v_output:
+      self.v_road_output = dwell_target
+    elif dwell_target > self.v_road_output:
       if ramp == RAMP_OFF:
         self.raise_timer = 0.0
       else:
-        self.raise_timer = RAISE_DWELL if ramp == RAMP_ON else self.raise_timer + DT_MDL
-      if self.raise_timer >= RAISE_DWELL:
-        self.v_output = self.v_target
+        self.raise_timer = dwell if ramp == RAMP_ON else self.raise_timer + DT_MDL
+      if self.raise_timer >= dwell:
+        self.v_road_output = dwell_target
     else:
       self.raise_timer = 0.0
+    self.v_output = self.v_road_output if CURVE_CAP_DWELL else min(self.v_road_output, self.v_target)
 
     # The override floors the answer rather than replacing v_output, so the map keeps tracking the
     # road underneath and takes over again by itself once the hold runs out. Still bounded by the

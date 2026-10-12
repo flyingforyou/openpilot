@@ -16,6 +16,7 @@ d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.
       "RADAR_DELAY": seconds (radard's vEgo alignment; default the log's CarParams.radarDelay)
       "rdd.<CONST>": value (a radard.py module constant)
       "cf.<CONST>": value (a carrot_functions.py STOP_* constant)
+      "mc.<CONST>": value (a map_cruise.py module constant)
   SIMRADARD=1   rerun today's radard over the recorded radarTracks (lead hold, radar accel, cut-in)
                 instead of trusting the radarState recorded at the time
   SIMLEAD2=1    keep leadTwo (cut-ins, the target lane's lead) instead of dropping it
@@ -111,6 +112,8 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
     for k, v in _mpc._defaults.items(): setattr(_mpc, k, v)
     import openpilot.selfdrive.controls.radard as _rdd0
     import openpilot.selfdrive.controls.lib.carrot_functions as _cf0
+    import openpilot.selfdrive.controls.lib.map_cruise as _mc0
+    for k, v in getattr(_mc0, '_defaults', {}).items(): setattr(_mc0, k, v)
     for k, v in getattr(_cf0, '_defaults', {}).items(): setattr(_cf0, k, v)
     for k, v in getattr(_rdd0, '_defaults', {}).items(): setattr(_rdd0, k, v)
     for k, v in (ovr or {}).items():
@@ -121,6 +124,10 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             import openpilot.selfdrive.controls.lib.carrot_functions as _cf
             if not hasattr(_cf, '_defaults'): _cf._defaults = {kk: getattr(_cf, kk) for kk in dir(_cf) if kk.startswith('STOP_')}
             setattr(_cf, k[3:], v)
+        if k.startswith('mc.'):
+            import openpilot.selfdrive.controls.lib.map_cruise as _mc
+            if not hasattr(_mc, '_defaults'): _mc._defaults = {kk: getattr(_mc, kk) for kk in dir(_mc) if kk.isupper()}
+            setattr(_mc, k[3:], v)
         if k.startswith('rdd.'):
             import openpilot.selfdrive.controls.radard as _rdd
             if not hasattr(_rdd, '_defaults'): _rdd._defaults = {kk: getattr(_rdd, kk) for kk in dir(_rdd) if kk.isupper()}
