@@ -66,7 +66,7 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
 
   # Long control limits
   MAX_ACCEL = 2.60  # most the factory ACC asked for with the driver's feet off the pedals
-  MIN_ACCEL = -4.52  # deepest the factory ACC asked for with the driver's foot off the pedal
+  MIN_ACCEL = -5.92  # two steps inside the factory ACC's -6.0 floor in hard braking
   INACTIVE_ACCEL = 0.0
 
   cnt_epas = 0

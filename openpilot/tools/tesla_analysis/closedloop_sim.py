@@ -327,7 +327,7 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
                 lcs = types.SimpleNamespace(vEgo=float(ve), aEgo=float(ae), brakePressed=False,
                                             cruiseState=types.SimpleNamespace(standstill=False))
                 lim = loc_ci.get_pid_accel_limits(CP, ve, 0.0)
-                if (ovr or {}).get('MINACCEL') is not None: lim = (max(lim[0], float(ovr['MINACCEL'])), lim[1])
+                if (ovr or {}).get('MINACCEL') is not None: lim = (float(ovr['MINACCEL']), lim[1])
                 a_out = loc.update(True, lcs, cmd, should_stop, lim, -0.5, float(x_lead - xe), (0.0, 0.0, 1.0))
                 loc_hist.append(float(a_out)); a_in = loc_hist[0]
                 ae += (a_in - ae) * 0.01 / TAU; ve = max(ve + ae * 0.01, 0.0); xe += ve * 0.01

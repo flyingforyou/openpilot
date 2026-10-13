@@ -57,8 +57,8 @@ class CarInterface(CarInterfaceBase):
 
   @staticmethod
   def get_pid_accel_limits(CP, current_speed, cruise_speed):
-    # The generic -3.5 would clip controlsd's output above the -4.2 a legacy car is cleared for
-    # (ACCEL_MIN_LEGACY, panda -4.52), so the planner's deeper braking never reached the car.
+    # The generic -3.5 would clip controlsd's output above what a legacy car is cleared for
+    # (ACCEL_MIN_LEGACY), so the planner's deeper braking never reached the car.
     return min(ACCEL_MIN, CP.minAccel), ACCEL_MAX
 
   @staticmethod

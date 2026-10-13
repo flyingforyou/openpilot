@@ -121,12 +121,13 @@ class TestTeslaFingerprint:
 
 
 class TestTeslaBrakingFloor:
-  # 10-12 highway FCW: the legacy car is cleared for -4.2 (panda -4.52) but controlsd clipped at the
-  # generic -3.5, so the deeper braking a hard-braking lead called for never reached the DI.
+  # 10-12 highway FCW: the legacy car is cleared below -3.5 (the factory ACC's own floor, -6.0) but
+  # controlsd clipped at the generic -3.5, so the deeper braking a hard-braking lead called for
+  # never reached the DI.
   def test_legacy_pid_floor_is_car_limit(self):
     CP = CarInterface.get_params(CAR.TESLA_MODEL_X_HW1, gen_empty_fingerprint(), [], False, False, False)
     lo, hi = CarInterface.get_pid_accel_limits(CP, 30.0, 30.0)
-    assert lo == pytest.approx(-4.2)
+    assert lo == pytest.approx(-5.92)
     assert hi == pytest.approx(2.0)
 
   def test_iso_floor_kept_elsewhere(self):

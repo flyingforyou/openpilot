@@ -274,7 +274,7 @@ def gen_long_ocp():
 
 class LongitudinalMpc:
   # The car's braking floor. The planner sets it from CarParams.minAccel: a Model X HW1 is cleared
-  # for -4.2 (ACCEL_MIN_LEGACY) all the way through panda, but this stayed at the generic -3.5, so a
+  # for the factory ACC's -6.0 (ACCEL_MIN_LEGACY) through panda, but this stayed at the generic -3.5, so a
   # lead braking at -5 on the 10-12 highway drive closed from 33 m to 7.7 m with an FCW.
   min_accel = ACCEL_MIN
 

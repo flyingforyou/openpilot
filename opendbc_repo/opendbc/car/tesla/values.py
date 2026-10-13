@@ -222,14 +222,16 @@ class CarControllerParams:
   ACCEL_MAX = 2.0    # m/s^2
   # ISO 15622:2018's ACC deceleration ceiling, rounded to a whole DAS_control step (0.04 m/s^2).
   ACCEL_MIN = -3.48  # m/s^2
-  # HW1/HW2 cars brake harder than the ISO number. Measured over six drives on a Model X HW1:
-  # with the driver's foot off the pedal the factory ACC asks down to -4.52 m/s^2 on DAS_accelMin.
-  # -4.2 is the nearest whole DAS_control step (0.04) below that, so this stays inside what the
-  # factory system requests of the car on its own.
+  # HW1/HW2 cars brake harder than the ISO number. The factory AP module keeps computing its own
+  # DAS_control band on bus 2 while openpilot drives (carState.stockAccelMin), and in hard braking
+  # it asks for -6.0 m/s^2 -- a flat clamp it holds for seconds, with the driver's foot off the
+  # pedal, across six routes 0x172..0x1c2. On the 10-12 highway FCW it sat at -6.0 for 2 s while
+  # openpilot was pinned at -3.5. (The 08-04 estimate of -4.52 came from drives with no hard event.)
   # openpilot #22148 introduced the ISO limit and exempted Honda Nidec and GM in the same commit;
   # this is the same exemption, backed by this car's own behaviour. Model 3/Y stay at the ISO
   # value -- nothing has been measured there, and their panda mode still enforces it.
-  ACCEL_MIN_LEGACY = -4.2  # m/s^2, DAS_control raw 270
+  # -5.92 is two DAS_control steps inside that floor.
+  ACCEL_MIN_LEGACY = -5.92  # m/s^2, DAS_control raw 227
   JERK_LIMIT_MAX = 4.9  # m/s^3, ACC faults at 5.0
   JERK_LIMIT_MIN = -4.9  # m/s^3, ACC faults at 5.0
   JERK_RAMP_RATE = JERK_LIMIT_MAX * 0.002  # m/s^3 per control step, for smooth gas override
