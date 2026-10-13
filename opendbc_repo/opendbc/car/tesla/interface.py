@@ -1,5 +1,5 @@
 from opendbc.car import Bus, get_safety_config, structs
-from opendbc.car.interfaces import CarInterfaceBase
+from opendbc.car.interfaces import CarInterfaceBase, ACCEL_MIN, ACCEL_MAX
 from opendbc.car.tesla.carcontroller import CarController
 from opendbc.car.tesla.carstate import CarState
 from opendbc.car.tesla.values import CarControllerParams, TeslaSafetyFlags, TeslaFlags, CANBUS, CAR, DBC, FSD_14_FW, Ecu, TeslaLegacyParams, LEGACY_CARS
@@ -54,6 +54,12 @@ class CarInterface(CarInterfaceBase):
       # ret.dashcamOnly = candidate in (CAR.TESLA_MODEL_X) # dashcam only, pending find invalidLkasSetting signal
 
     return ret
+
+  @staticmethod
+  def get_pid_accel_limits(CP, current_speed, cruise_speed):
+    # The generic -3.5 would clip controlsd's output above the -4.2 a legacy car is cleared for
+    # (ACCEL_MIN_LEGACY, panda -4.52), so the planner's deeper braking never reached the car.
+    return min(ACCEL_MIN, CP.minAccel), ACCEL_MAX
 
   @staticmethod
   def _get_params_sx(ret: structs.CarParams, candidate, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:

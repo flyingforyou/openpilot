@@ -130,6 +130,8 @@ class _CarrotLongitudinalPlannerImpl:
   def __init__(self, CP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
     self.mpc = LongitudinalMpc(dt=dt)
+    # never less braking than the generic floor; more where the car's port allows it
+    self.mpc.min_accel = min(ACCEL_MIN, CP.minAccel) if CP.minAccel < 0 else ACCEL_MIN
     self.fcw = False
     # VW MEB(ID.4/ID.5)에서만 True. 가속 오버라이드 중 출발 FCW 오탐을 끄기 위한 게이트.
     # VW MEB (ID.4/ID.5) only: a closed-curvature platform whose FCW threshold and

@@ -273,6 +273,11 @@ def gen_long_ocp():
 
 
 class LongitudinalMpc:
+  # The car's braking floor. The planner sets it from CarParams.minAccel: a Model X HW1 is cleared
+  # for -4.2 (ACCEL_MIN_LEGACY) all the way through panda, but this stayed at the generic -3.5, so a
+  # lead braking at -5 on the 10-12 highway drive closed from 33 m to 7.7 m with an FCW.
+  min_accel = ACCEL_MIN
+
   def __init__(self, mode='acc', dt=DT_MDL):
     self.mode = mode
     self.dt = dt
@@ -408,7 +413,7 @@ class LongitudinalMpc:
     v_traj = float(lead.vLead) + (mv - mv[0])
     # MPC will not converge if immediate crash is expected: clip to what is still possible to brake for
     v0 = v_traj[0]
-    x_traj[0] = max(x_traj[0], ((v_ego + v0) / 2) * (v_ego - v0) / (-ACCEL_MIN * 2))
+    x_traj[0] = max(x_traj[0], ((v_ego + v0) / 2) * (v_ego - v0) / (-self.min_accel * 2))
     v_mpc = np.interp(T_IDXS, LEAD_MODEL_T, np.clip(v_traj, 0.0, 1e8))
     x_by_v = x_traj[0] + np.concatenate(([0.0], np.cumsum(T_DIFFS[1:] * (v_mpc[:-1] + v_mpc[1:]) / 2)))
     if LEAD_MODEL_X_FROM_V:
@@ -445,7 +450,7 @@ class LongitudinalMpc:
 
     # MPC will not converge if immediate crash is expected
     # Clip lead distance to what is still possible to brake for
-    min_x_lead = ((v_ego + v_lead)/2) * (v_ego - v_lead) / (-ACCEL_MIN * 2)
+    min_x_lead = ((v_ego + v_lead)/2) * (v_ego - v_lead) / (-self.min_accel * 2)
     x_lead = np.clip(x_lead, min_x_lead, 1e8)
     v_lead = np.clip(v_lead, 0.0, 1e8)
     a_lead = np.clip(a_lead, -10., 5.)
@@ -510,7 +515,7 @@ class LongitudinalMpc:
     
     self.desired_distance = desired_follow_distance(v_ego, lead_v_0, comfort_brake, stop_distance, t_follow, comfort_brake_2)
 
-    self.params[:,0] = ACCEL_MIN if not reset_state else a_ego
+    self.params[:,0] = self.min_accel if not reset_state else a_ego
     # negative accel constraint causes problems because negative speed is not allowed
     self.params[:,1] = max(0.0, self.max_a if not reset_state else a_ego)
 
