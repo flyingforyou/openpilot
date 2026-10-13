@@ -197,13 +197,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DynamicTFollowLC", {PERSISTENT, INT, "100"}},
     {"EnableSpeedTF", {PERSISTENT, INT, "0"}},
     {"LowSpeedJerk", {PERSISTENT, INT, "100"}},
-    {"LeadCreditCap", {PERSISTENT, BOOL, "1"}},
+    {"LeadCreditCap", {PERSISTENT, BOOL, "0"}},
     {"LeadModelPredict", {PERSISTENT, BOOL, "0"}},
-    {"LeadAccelSlope", {PERSISTENT, BOOL, "0"}},
-    {"StopSignHoldMs", {PERSISTENT, INT, "0"}},
-    {"BrakeOnsetJerk", {PERSISTENT, INT, "0"}},
-    {"CutInSoftCap", {PERSISTENT, INT, "0"}},
-    {"LongResearchPath", {PERSISTENT, BOOL, "1"}},
+    {"LeadAccelSlope", {PERSISTENT, BOOL, "1"}},
+    {"StopSignHoldMs", {PERSISTENT, INT, "1000"}},
+    {"BrakeOnsetJerk", {PERSISTENT, INT, "20"}},
+    {"CutInSoftCap", {PERSISTENT, INT, "1"}},
+    {"LongResearchPath", {PERSISTENT, BOOL, "0"}},
     {"LongResearchMode", {PERSISTENT, INT, "0"}},
     {"LeadBrakeFollow", {PERSISTENT, INT, "0"}},
     {"LeadBrakeBufferCm", {PERSISTENT, INT, "0"}},
@@ -221,7 +221,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // of the whole follow distance.
     {"ComfortBrake", {PERSISTENT, INT, "216"}},
     {"ComfortBrake2", {PERSISTENT, INT, "237"}},
-    {"StopDistanceCarrot", {PERSISTENT, INT, "450"}},
+    {"StopDistanceCarrot", {PERSISTENT, INT, "550"}},
     // Stopping accel: the car must already be braking at least this hard before the controller
     // commits to its stopping ramp. 0 means "use the port's own stopAccel", which is what the
     // stock planner does. Negative hundredths, matching carrot.
@@ -271,15 +271,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // a little room given to a real car in the next lane.
     // Braking jerk floor handed to the DI, in 0.1 m/s^3 steps; 0 = off (full JERK_LIMIT_MIN,
     // the shipped behaviour). See CarControllerParams.JERK_BRAKE_GAIN for why.
-    {"TeslaBrakeJerk", {PERSISTENT, INT, "25"}},
+    {"TeslaBrakeJerk", {PERSISTENT, INT, "30"}},
     // Ceiling on the braking jerk handed to the DI, 0.1 m/s^3 steps; 0 = the full limit.
     // Unlike the floor this one limits genuine hard braking.
     {"TeslaBrakeJerkMax", {PERSISTENT, INT, "40"}},
     // Metres to pull a distant lead in to on the instrument cluster only; 0 = truthful.
     // Display-only experiment to find where the IC stops drawing objects. See _ic_lead.
     {"TeslaICLeadMaxM", {PERSISTENT, INT, "80"}},
-    {"TeslaCutInLead", {PERSISTENT, BOOL, "1"}},
-    {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "150"}},
+    {"TeslaCutInLead", {PERSISTENT, BOOL, "0"}},
+    {"TeslaCoopLatAccelCms", {PERSISTENT, INT, "220"}},
     {"TeslaCoopMaxTorqueCNm", {PERSISTENT, INT, "250"}},
     // Drive the cluster's MAX number to match what openpilot is actually targeting, by
     // emulating the cruise stalk. DAS_setSpeed does not reach that display at all -- the DI
