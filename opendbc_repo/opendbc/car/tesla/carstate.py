@@ -7,7 +7,7 @@ from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
 from opendbc.car.tesla.teslacan import get_steer_ctrl_type
-from opendbc.car.tesla.das_object import parse_das_object
+from opendbc.car.tesla.das_object import LEAD_VEHICLES, parse_das_object
 from opendbc.car.tesla.values import DBC, CANBUS, GEAR_MAP, STEER_THRESHOLD, TeslaFlags, TeslaLegacyParams, CAR, LEGACY_CARS
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -273,6 +273,8 @@ class CarState(CarStateBase):
     # The factory's latest DAS_object frame per group, kept only when the cluster workaround is on.
     # (group, object id) -> [frames since last seen, DasVehicle]
     self.das_vehicles: dict[tuple[int, int], list] = {}
+    # Count of factory LEAD_VEHICLES frames seen, so the IC can answer each one straight away.
+    self.das_lead_frames = 0
     # The stalk's own last frame. Emulating a press means re-sending the SCCM's frame with one
     # field changed, so everything else on it -- turn signals, wipers, follow distance, the gear
     # stalk's own state -- goes back out as the SCCM had it rather than as something we invented.
@@ -663,6 +665,8 @@ class CarState(CarStateBase):
 
     for row in zip(*columns):
       values = dict(zip(names, row))
+      if int(values['DAS_objectId']) == LEAD_VEHICLES:
+        self.das_lead_frames += 1
       for veh in parse_das_object(values):
         self.das_vehicles[(veh.group, veh.obj_id)] = [0, veh]
 

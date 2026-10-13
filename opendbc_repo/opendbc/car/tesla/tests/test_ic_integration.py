@@ -181,3 +181,49 @@ class TestNoEmptyLeadFrames:
                                   leadTwo=SimpleNamespace(present=False, dRel=0.0, vRel=0.0, yRel=0.0))
     sends = cc.update_ic(_cc(), _carstate())
     assert any(addr == 0x309 for addr, _dat, _bus in sends)
+
+
+class TestFarLeadReachesCluster:
+  """TeslaICLeadMaxM pulls a far lead in so the cluster draws it. The factory often carries that
+  same far car itself at its true distance, which the cluster culls -- that must not count as
+  'already shown', or the feature does nothing exactly when the factory sees the car too."""
+
+  @staticmethod
+  def _factory_lead(dx):
+    from opendbc.car.tesla.das_object import DasVehicle, LEAD_VEHICLES, CAR as DAS_CAR
+    veh = DasVehicle(group=LEAD_VEHICLES, index=0, obj_type=DAS_CAR, relevant_for_control=True,
+                     dx=dx, dy=0.0, vx_rel=0.0, obj_id=7)
+    return {(LEAD_VEHICLES, 7): [0, veh]}
+
+  def test_far_factory_object_does_not_suppress(self):
+    assert not CarController._factory_already_shows(self._factory_lead(101.0), 101.2, 80.0)
+
+  def test_drawable_factory_object_still_suppresses(self):
+    assert CarController._factory_already_shows(self._factory_lead(60.0), 60.5, 80.0)
+
+  def test_truthful_mode_keeps_old_rule(self):
+    assert CarController._factory_already_shows(self._factory_lead(101.0), 101.2, 0.0)
+
+  @pytest.mark.parametrize("fingerprint", HW1)
+  def test_far_lead_injected_beside_factory_copy(self, fingerprint):
+    cc = _carcontroller(fingerprint)
+    cc.ic_enabled = True
+    cc.ic_lead_display_max = 80.0
+    cc.frame = 10
+    cc.ic_radar = SimpleNamespace(leadOne=SimpleNamespace(present=True, dRel=101.2, vRel=-1.0, yRel=0.0),
+                                  leadTwo=SimpleNamespace(present=False, dRel=0.0, vRel=0.0, yRel=0.0))
+    sends = cc.update_ic(_cc(), _carstate(das_vehicles=self._factory_lead(101.0)))
+    assert any(addr == 0x309 for addr, _dat, _bus in sends)
+
+  @pytest.mark.parametrize("fingerprint", HW1)
+  def test_answers_each_factory_lead_frame(self, fingerprint):
+    cc = _carcontroller(fingerprint)
+    cc.ic_enabled = True
+    cc.ic_radar = SimpleNamespace(leadOne=SimpleNamespace(present=True, dRel=45.0, vRel=-1.0, yRel=0.0),
+                                  leadTwo=SimpleNamespace(present=False, dRel=0.0, vRel=0.0, yRel=0.0))
+    cc.frame = 13  # off the 10 Hz grid
+    cc.update_ic(_cc(), _carstate(das_lead_frames=4))   # first sight just syncs the counter
+    quiet = cc.update_ic(_cc(), _carstate(das_lead_frames=4))
+    fresh = cc.update_ic(_cc(), _carstate(das_lead_frames=5))
+    assert not any(a == 0x309 for a, _d, _b in quiet)
+    assert any(a == 0x309 for a, _d, _b in fresh)

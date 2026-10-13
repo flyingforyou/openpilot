@@ -62,6 +62,7 @@ class CarController(CarControllerBase):
     self.ic_enabled = False
     self.ic_last_lanes_nanos = 0
     self.ic_last_status_nanos = 0
+    self.ic_last_lead_frames = 0
     # Follow the driver's hands rather than letting go of the wheel. Off unless opted in.
     self.coop_steering = bool(CP.flags & TeslaFlags.COOP_STEER) and CP.carFingerprint in LEGACY_CARS
     self.coop_steer = CoopSteeringCarController()
@@ -116,15 +117,21 @@ class CarController(CarControllerBase):
     )
 
   @staticmethod
-  def _factory_already_shows(das_vehicles, dRel):
+  def _factory_already_shows(das_vehicles, dRel, display_max=0.0):
     """Is the factory's own group-0 (LEAD_VEHICLES) object stream already carrying a car near
     this radar lead? DAS_object is never blocked -- see tesla_legacy.h's TX message comment on
     why not, it stays additive because openpilot also reads it for cut-in control -- so whatever
     openpilot injects sits on the bus alongside whatever the factory is already sending. Without
     this, the same physical car shows up as the factory's own object and openpilot's injected one
     at once, i.e. exactly the two-car/flicker symptom this exists to prevent.
+
+    A factory object beyond display_max does not count: the cluster culls it, so treating it as
+    "already shown" left nothing drawn at all. On 10-12/13 drives the factory carried 55% of the
+    100 m+ leads and 77% of the 80-100 m ones itself, and each of those suppressed the pulled-in
+    lead this feature exists to draw.
     """
     return any(group == LEAD_VEHICLES and abs(veh.dx - dRel) < IC_LEAD_MATCH_MAX_DREL
+              and (display_max <= 0.0 or veh.dx <= display_max)
               for (group, _obj_id), (_age, veh) in das_vehicles.items())
 
   def update_ic(self, CC, CS):
@@ -144,7 +151,13 @@ class CarController(CarControllerBase):
     on = self.ic_enabled
     sends = []
     new_lane_frame = CS.das_lanes is not None and CS.das_lanes_nanos != self.ic_last_lanes_nanos
-    send_leads = on and self.frame % 10 == 0 and self.ic_radar is not None
+    # The factory's own group-0 frame lands on the cluster ~6.7 times a second, carrying the
+    # lead at its true distance (culled when far) or an empty slot. Answering each one straight
+    # away makes ours the frame the cluster holds, instead of a 10 Hz stream interleaved with it.
+    lead_frames = getattr(CS, "das_lead_frames", 0)
+    factory_lead_frame = lead_frames != self.ic_last_lead_frames
+    self.ic_last_lead_frames = lead_frames
+    send_leads = on and self.ic_radar is not None and (self.frame % 10 == 0 or factory_lead_frame)
 
     if new_lane_frame:
       sends.append(self.tesla_can.create_ic_lanes(CS.das_lanes, {}))
@@ -180,7 +193,7 @@ class CarController(CarControllerBase):
       # and injecting it too drew the lead as two cars through a lead handoff -- the closer one
       # white, the farther one grey -- which read as the lead doubling as it switched.
       lead1 = self.ic_radar.leadOne
-      if lead1.present and self._factory_already_shows(CS.das_vehicles, lead1.dRel):
+      if lead1.present and self._factory_already_shows(CS.das_vehicles, lead1.dRel, self.ic_lead_display_max):
         lead1 = None
       # Say nothing rather than saying "no object". DAS_object is shared -- the factory keeps
       # publishing its own objects on this id at ~31Hz and is never blocked -- so an empty frame
