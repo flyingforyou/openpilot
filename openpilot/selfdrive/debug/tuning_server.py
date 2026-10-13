@@ -713,6 +713,23 @@ SETTINGS = {
   },
 }
 
+# Knobs folded under "고급 설정" on the page. Picked from the log set on 2026-10-13: over 187 routes'
+# initData, each of these was changed at most once in 50+ routes of history -- set once and left.
+# Knobs added recently (a handful of routes of history) stay visible until they have settled too.
+# Hiding only affects the page; the params, their defaults and /api/settings writes are unchanged.
+HIDDEN_KNOBS = {
+  # never changed
+  "DynamicTFollow", "LowSpeedJerk", "OffroadShutdownMin", "RadarLeadAccel", "StoppingAccel",
+  "TeslaBrakeJerkMax", "TeslaMapAutoSpeedCurve", "TeslaMapAutoSpeedMax", "TeslaMapAutoSpeedRatio",
+  "TeslaMapCurveUseMap", "DriverMonitorBypass", "LaneCenterOffset", "LaneCenteringPauseOnSignal",
+  "LatSmoothSec", "TeslaCoopMaxTorqueCNm", "TeslaDoubleStrokeOverride", "TeslaICIntegration",
+  "TeslaStockAutopark", "TeslaWaitForStockAP",
+  # changed once, then left
+  "ComfortBrake", "LeadCreditCap", "LongResearchPath", "TeslaCutInLead", "TeslaMapCurveLatAccel",
+  "TrafficLightGreenHold", "TrafficStopDistanceAdjust", "LaneCentering", "LaneCenteringE2EAuthority",
+  "TeslaCoopLatAccelCms", "TeslaSyncClusterSpeed",
+}
+
 STATE_SERVICES = ['carState', 'radarState', 'selfdriveState', 'longitudinalPlan', 'deviceState']
 
 def _git_commit() -> str:
@@ -911,6 +928,8 @@ class Handler(BaseHTTPRequestHandler):
           except Exception:
             v = None
           entry = {'value': v, 'label': cfg['label'], 'help': cfg['help']}
+          if k in HIDDEN_KNOBS:
+            entry['hidden'] = True
           if 'range' in cfg:
             # A continuous knob. lo/hi/step are in the param's own integer units, and scale/unit
             # only say how to write it next to the slider.
@@ -1271,6 +1290,7 @@ button.apply{flex:1;background:var(--ok);color:#04140c;border:0;border-radius:10
 padding:13px;font-size:14.5px;font-weight:600;cursor:pointer;font-family:inherit}
 button.apply[disabled]{background:var(--line);color:var(--dim);cursor:default}
 .dirtynote{font-size:12px;color:var(--mut)}
+.adv{margin-left:auto;background:none;border:1px solid var(--line);color:var(--mut);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer}
 .mrow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 0;
 border-bottom:1px solid var(--line)}.mrow:last-child{border-bottom:0}
 .mrow .dot{font-family:var(--m);color:var(--dim);margin-right:7px}
@@ -1349,6 +1369,7 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
   <div class="applybar">
     <button class="apply" id="apply" disabled>반영</button>
     <span class="dirtynote" id="dirty"></span>
+    <button class="adv" id="advToggle" onclick="toggleAdv()">고급 설정 보기</button>
   </div>
 </div>
 <div id="msg"></div>
@@ -1499,8 +1520,21 @@ function scheduleModels(){
 }
 
 let cfg={}, mapCfg={}, carrotCfg={}, staged={}, carrotActive=false, livePlanner=null;
+// Rarely-touched knobs stay folded unless asked for; remembered per browser only.
+let showAdv=false;
+try{ showAdv = localStorage.getItem('showAdv')==='1'; }catch(e){}
+function toggleAdv(){
+  showAdv=!showAdv;
+  try{ localStorage.setItem('showAdv', showAdv?'1':'0'); }catch(e){}
+  renderSettings();
+}
+function advCount(){
+  return [cfg,mapCfg,carrotCfg].reduce((n,t)=>n+Object.values(t).filter(c=>c.hidden).length,0);
+}
 
 function renderSettings(){
+  const ab=$('advToggle');
+  if(ab) ab.textContent = showAdv ? '고급 설정 숨기기' : `고급 설정 보기 (${advCount()})`;
   renderInto($('settings'), cfg);
   renderInto($('mapSettings'), mapCfg);
   renderInto($('carrotSettings'), carrotCfg);
@@ -1521,6 +1555,7 @@ function renderSettings(){
 function renderInto(box, table){
   box.innerHTML='';
   for(const[k,c]of Object.entries(table)){
+    if(c.hidden && !showAdv && !(k in staged)) continue;
     const row=document.createElement('div');row.className='row';
     const left=document.createElement('div');
     left.innerHTML=`<div class="lab">${c.label}</div><div class="hlp">${c.help}</div>`;

@@ -22,3 +22,16 @@ def test_bool_knobs_offer_both_states():
     for k, cfg in table.items():
       if cfg["type"] == "bool":
         assert {v for v, _ in cfg["options"]} == {0, 1}, k
+
+
+def _hidden():
+  for node in ast.parse(SRC.read_text()).body:
+    if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "HIDDEN_KNOBS":
+      return ast.literal_eval(node.value)
+  return set()
+
+
+def test_hidden_knobs_exist():
+  # a typo here would silently leave a knob visible, or hide nothing
+  known = {k for _, table in _tables() for k in table}
+  assert _hidden() and not (_hidden() - known), _hidden() - known
