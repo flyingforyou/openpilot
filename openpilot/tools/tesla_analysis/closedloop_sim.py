@@ -10,7 +10,7 @@ Runs locally as well as on the device. Locally (x86, ~2 s per window instead of 
 d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.137 m/s^2).
 
   VARIANTS='[["name", {"Param": value, ...}], ...]'   params overridden per variant; also
-      "GAP": 1-7 (gap stalk), "KALMAN": 1 (lead accel from the Kalman filter instead of the radar),
+      "GAP": 1-7 (gap stalk), "MINACCEL": the planner/controlsd braking floor (default CarParams.minAccel), "KALMAN": 1 (lead accel from the Kalman filter instead of the radar),
       "rl.<CONST>": value (a research_long.py module constant)
       "mpc.<CONST>": value (a long_mpc.py LEAD_MODEL_* constant)
       "RADAR_DELAY": seconds (radard's vEgo alignment; default the log's CarParams.radarDelay)
@@ -20,6 +20,7 @@ d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.
   SIMRADARD=1   rerun today's radard over the recorded radarTracks (lead hold, radar accel, cut-in)
                 instead of trusting the radarState recorded at the time
   SIMLEAD2=1    keep leadTwo (cut-ins, the target lane's lead) instead of dropping it
+  SIMJERK=<m/s^3>  cap how fast the simulated car builds braking (TeslaBrakeJerk/Max authority)
   SIMTRACE=1    print frames where the command moves;  SIMDUMP=<file.json>  per-frame traces
 
 The lead is exogenous: its recorded absolute position and speed. The planner gets a synthetic
@@ -45,7 +46,7 @@ NOLEAD = bool(os.environ.get('SIMNOLEAD'))
 # SIMWARMUP: seconds before T0 the sim car just follows the recording (planner running, state building)
 WARMUP = float(os.environ.get('SIMWARMUP', 3.0))
 SYN = json.loads(os.environ['SIMSYNTH']) if os.environ.get('SIMSYNTH') else None
-DELAY = float(os.environ.get('SIMDELAY', 0.15)); TAU = float(os.environ.get('SIMTAU', 0.35)); DT = 0.05
+JERK_DI = float(os.environ.get('SIMJERK', 0)); DELAY = float(os.environ.get('SIMDELAY', 0.15)); TAU = float(os.environ.get('SIMTAU', 0.35)); DT = 0.05
 ADDRS = {0x310 + 3*i for i in range(32)}
 def bits(d, s, n): return (int.from_bytes(bytes(d).ljust(8, b'\0')[:8], 'little') >> s) & ((1 << n) - 1)
 
@@ -269,6 +270,8 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
         sm.frame += 1; sm.updated = dict.fromkeys(sm.data, True)
         if planner is None:
             planner = CarrotLongitudinalPlanner(CP)
+            if (ovr or {}).get('MINACCEL') is not None:
+                planner.planner.mpc.min_accel = float(ovr['MINACCEL'])
             for P in (planner.carrot.params, planner.planner.params):
                 P.put = lambda *a, **k: None       # never write the device's real params from a sim
             if (ovr or {}).get('VTG'):
@@ -303,6 +306,7 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
         if model_rec is not None:
             sm.data['modelV2'] = model_rec
         cmd = float(planner.planner.output_a_target)
+        if rt >= T0: FCW_N[-1] += int(bool(planner.planner.fcw))
         if os.environ.get('SIMTRACE') and rt >= T0:
             rp = planner.planner.research
             L2s = sm.data['radarState'].leadTwo
@@ -316,18 +320,22 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             if loc is None:
                 from openpilot.selfdrive.controls.lib.longcontrol import LongControl
                 from opendbc.car.interfaces import CarInterfaceBase
+                from opendbc.car.tesla.interface import CarInterface as loc_ci
                 loc = LongControl(CP); loc_hist = collections.deque([0.0] * (int(round(DELAY / 0.01)) + 1), maxlen=int(round(DELAY / 0.01)) + 1)
             should_stop = bool(planner.planner.output_should_stop)
             for _ in range(5):
                 lcs = types.SimpleNamespace(vEgo=float(ve), aEgo=float(ae), brakePressed=False,
                                             cruiseState=types.SimpleNamespace(standstill=False))
-                lim = CarInterfaceBase.get_pid_accel_limits(CP, ve, 0.0)
+                lim = loc_ci.get_pid_accel_limits(CP, ve, 0.0)
+                if (ovr or {}).get('MINACCEL') is not None: lim = (max(lim[0], float(ovr['MINACCEL'])), lim[1])
                 a_out = loc.update(True, lcs, cmd, should_stop, lim, -0.5, float(x_lead - xe), (0.0, 0.0, 1.0))
                 loc_hist.append(float(a_out)); a_in = loc_hist[0]
                 ae += (a_in - ae) * 0.01 / TAU; ve = max(ve + ae * 0.01, 0.0); xe += ve * 0.01
         elif rt >= T0:
             cmd_hist.append(cmd); a_in = cmd_hist[0]
-            ae += (a_in - ae) * DT / TAU; ve = max(ve + ae * DT, 0.0); xe += ve * DT
+            da = (a_in - ae) * DT / TAU
+            if JERK_DI > 0: da = max(da, -JERK_DI * DT)   # the DI's braking jerk authority (DAS_jerkMin)
+            ae += da; ve = max(ve + ae * DT, 0.0); xe += ve * DT
         if rt >= T0:
             out.append((rt, ve * 3.6, float(x_lead - xe), v_lead * 3.6, a_lead, a_true if a_true is not None else float('nan'), cmd,
                         rec_cs.vEgo * 3.6, ld.dRel, sm.data['carControl'].actuators.accel, float(planner.planner.mpc.t_follow),
@@ -342,11 +350,13 @@ def stats(c, lbl):
         elif x < -0.5 and st >= 0: st = -1; sw += 1
     return f"{lbl:>26}  가속max {c.max():+.2f}  제동min {c.min():+.2f}  ±0.5교차 {sw:>2}회  |Δ|>1.5 {np.sum(np.abs(np.diff(c))>0.075):>3}"
 TRACE = []
+FCW_N = [0]
 VARIANTS = json.loads(os.environ.get('VARIANTS', 'null'))
 DUMP = {}
 if VARIANTS:
     rec = None
     for name, ovr in VARIANTS:
+        FCW_N.append(0)
         r = run('A' if ovr.get('KALMAN') else 'B', ovr=ovr)
         if rec is None:
             rec = r
@@ -362,7 +372,7 @@ if VARIANTS:
             close = np.maximum(r[:, 1] - r[:, 3], 0.01) / 3.6
             ttc = np.where(r[:, 1] > r[:, 3] + 0.5, r[:, 2] / close, 99.0)
             print(f"{name:>26}  {'충돌!!' if r[:,2].min() < 0.4 else '충돌없음'}  최소TTC {ttc.min():.1f}s  최종거리 {r[-1,2]:.1f}m  최종속도 {r[-1,1]:.1f}km/h")
-        print(stats(r[:, 6], name) + f"  증폭 {amp:.2f} p2p {p2p:.2f}  최소거리 {r[:,2].min():.1f}m 최소시간간격 {tg[ve_>7].min() if (ve_>7).any() else float('nan'):.2f}s  평균거리 {np.mean(r[:,2]):.1f}m  저크RMS {jerk:.2f}  목표시간간격 평균 {r[:,10].mean():.2f} 최소 {r[:,10].min():.2f} 최대 {r[:,10].max():.2f}s")
+        print(stats(r[:, 6], name) + f"  증폭 {amp:.2f} p2p {p2p:.2f}  최소거리 {r[:,2].min():.1f}m 최소시간간격 {tg[ve_>7].min() if (ve_>7).any() else float('nan'):.2f}s  평균거리 {np.mean(r[:,2]):.1f}m  저크RMS {jerk:.2f}  FCW {FCW_N[-1]}프레임  목표시간간격 평균 {r[:,10].mean():.2f} 최소 {r[:,10].min():.2f} 최대 {r[:,10].max():.2f}s")
     if os.environ.get('SIMDUMP'):
         json.dump(DUMP, open(os.environ['SIMDUMP'], 'w'))
     if os.environ.get('SIMTRACE'):
