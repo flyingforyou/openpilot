@@ -753,10 +753,33 @@ class State:
     self.interventions = InterventionLog()
     threading.Thread(target=self._run, daemon=True).start()
 
+  # The map signals the auto cruise is built on, and how to tell each one is actually arriving.
+  # A 0 is a real momentary value for most of them (no limit on a ramp, a blink while the map
+  # re-localises), so the page judges each on how long ago it last carried something, not on
+  # this instant. Since the 2026-10-17 car firmware, conf/base/fleet never arrive at all.
+  MAP_SIGNALS = {
+    'posted': lambda n: n.mapSpeedLimit > 0,
+    'mpp': lambda n: n.mppSpeedLimit > 0,
+    'fused': lambda n: n.fusedSpeedLimit > 0,
+    'base': lambda n: n.baseSpeedLimit > 0,
+    'conf': lambda n: n.splineConfidence > 0,
+    'fleet': lambda n: n.fleetSplineSpeed > 0,
+    'roadClass': lambda n: n.roadClass > 0,
+    'gpsMatch': lambda n: bool(n.gpsRoadMatch),
+    'navRoute': lambda n: bool(n.navRouteActive),
+    'curv': lambda n: n.curvHealth > 0 and n.curvRange > 0,
+  }
+
   def _run(self):
     sm = messaging.SubMaster(STATE_SERVICES)
+    map_seen = {}
     while True:
       sm.update(100)
+      now = time.monotonic()
+      if sm.updated['carState'] and sm['carState'].navMap.valid:
+        for name, alive in self.MAP_SIGNALS.items():
+          if alive(sm['carState'].navMap):
+            map_seen[name] = now
       # Same subscription already carries everything an intervention record needs, including
       # longitudinalPlan -- which is the shadow answer from the controller that was not driving.
       try:
@@ -810,6 +833,10 @@ class State:
             'curv150': round(2 * cs.navMap.curvC2 + 6 * cs.navMap.curvC3 * 150.0, 5),
             'curvRange': round(cs.navMap.curvRange, 0),
             'curvHealth': int(cs.navMap.curvHealth),
+            # seconds since each signal last carried a value; None = not once since the page's
+            # server started
+            'seen': {name: (round(now - map_seen[name], 1) if name in map_seen else None)
+                     for name in self.MAP_SIGNALS},
           },
         }
 
@@ -1290,6 +1317,13 @@ button.apply{flex:1;background:var(--ok);color:#04140c;border:0;border-radius:10
 padding:13px;font-size:14.5px;font-weight:600;cursor:pointer;font-family:inherit}
 button.apply[disabled]{background:var(--line);color:var(--dim);cursor:default}
 .dirtynote{font-size:12px;color:var(--mut)}
+.mapok{font-size:13px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);margin-bottom:8px}
+.mapok.good{border-color:var(--ok);color:var(--ok)}
+.mapok.part{border-color:#d9a400;color:#d9a400}
+.mapok.bad{border-color:#e5484d;color:#e5484d}
+.mapsig{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.mapsig span{font-size:11.5px;padding:3px 8px;border-radius:999px;border:1px solid var(--line);color:var(--mut)}
+.mapsig span.live{border-color:var(--ok);color:var(--ok)}
 .adv{margin-left:auto;background:none;border:1px solid var(--line);color:var(--mut);border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer}
 .mrow{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:11px 0;
 border-bottom:1px solid var(--line)}.mrow:last-child{border-bottom:0}
@@ -1357,7 +1391,10 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
   <div class="hlp" id="mdlNote" style="margin-top:10px"></div>
 </div>
 
-<div class="card"><div class="h">지도 자동 크루즈 설정</div><div id="mapSettings"></div></div>
+<div class="card"><div class="h">지도 자동 크루즈 설정</div>
+  <div class="mapok" id="mapVerdict">신호 확인 중…</div>
+  <div class="mapsig" id="mapSignals"></div>
+  <div id="mapSettings"></div></div>
 
 <div class="card"><div class="h">Settings</div><div id="settings"></div></div>
 
@@ -1387,6 +1424,38 @@ const MPS_TO_MPH=2.23694;
 const ROAD_CLASS={0:'미상',1:'고속도로',4:'간선',5:'집산',6:'국지'};
 const RAMP_TYPE={0:'—',1:'진입',2:'진출'};
 function mph(v){return (v==null||v<=0)?'–':(v*MPS_TO_MPH).toFixed(0);}
+// Which map signals are arriving, and what that means for the auto cruise. Judged on recency:
+// a limit can read 0 for a moment on a ramp, so "arriving" means "carried a value lately".
+const MAP_SIG_LABEL={posted:'지도 제한속도',mpp:'mpp 제한속도',fused:'fused 제한속도',base:'기본 제한속도',
+  conf:'위치 신뢰도',fleet:'차량흐름 속도',roadClass:'도로 등급',gpsMatch:'GPS 도로 매칭',
+  navRoute:'내비 경로',curv:'지도 곡률'};
+function updateMapHealth(m, connected, onroad){
+  const box=$('mapVerdict'), chips=$('mapSignals'); if(!box) return;
+  const seen=(m&&m.seen)||{};
+  const live=(k,win)=>seen[k]!=null && seen[k]<win;
+  chips.innerHTML=Object.keys(MAP_SIG_LABEL).map(k=>{
+    const ok=live(k, k==='navRoute'?5:30);
+    return `<span class="${ok?'live':''}">${ok?'●':'○'} ${MAP_SIG_LABEL[k]}</span>`;
+  }).join('');
+  if(!connected){ box.className='mapok'; box.textContent='openpilot 대기 중 — 차가 켜지면 신호를 확인합니다'; return; }
+  if(!m || !m.valid){ box.className='mapok bad'; box.textContent='지도 메시지가 들어오지 않습니다 — 지도 자동 크루즈를 쓸 수 없습니다'; return; }
+  const limits=live('posted',30)||live('mpp',30)||live('fused',30);
+  const fleet=live('fleet',60), nav=live('navRoute',5);
+  if(!limits){
+    box.className='mapok bad';
+    box.textContent = onroad ? '제한속도 신호 없음 — 켜도 속도를 따라가지 못합니다 (지도·GPS 확인)'
+                             : '정차 중 — 주행을 시작하면 제한속도 신호를 확인합니다';
+    return;
+  }
+  if(!fleet){
+    box.className='mapok part';
+    box.textContent = '사용 가능: 제한속도 따라가기 OK · 램프 차량흐름 속도 없음'
+      + (nav ? ' (내비 경로가 켜져 있는데도 차가 안 보냄 — 10/17 펌웨어 이후)' : ' (내비 경로를 켜면 들어올 수 있음)');
+    return;
+  }
+  box.className='mapok good'; box.textContent='사용 가능: 제한속도·램프 흐름속도 모두 들어옵니다';
+}
+
 function updateMap(m){
   m=m||{};
   const st=$('mapState');
@@ -1433,6 +1502,7 @@ async function poll(){
     b.textContent=l&&r?'L R':l?'L':r?'R':'없음';
     b.className='pill '+((l||r)?'on':'off');
     updateMap(s.map);
+    updateMapHealth(s.map, s.connected, s.onroad);
   }catch(e){$('conn').textContent='디바이스에 연결할 수 없습니다';}
 }
 
