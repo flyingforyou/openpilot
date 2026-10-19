@@ -121,6 +121,13 @@ LOSS_DEBOUNCE = 1.0
 # Confidence floor for trusting a posted limit. UI_splineLocConfidence sat at 99 for essentially
 # the whole drive and dipped only on genuine re-localisations, so this rejects little, but a
 # limit read against the wrong road is exactly the failure worth refusing.
+#
+# Only enforced once the field has been seen alive. The 2026-10-17 car firmware update stopped
+# filling UI_driverAssistRoadSign's map fields: the frames still arrive at 10 Hz, but confidence,
+# baseMapSpeedLimit and the fleet quartiles all read 0 from then on, while mapSpeedLimit, mpp and
+# fused carry on as before. Gating on a dead 0 rejected every posted limit, so the controller sat
+# in 'hold' under the class ceiling -- 30-35 mph on a 65 mph road. gpsRoadMatch and the road-class
+# cross-check still guard against a limit read for the wrong road.
 MIN_CONFIDENCE = 60
 
 # Slack on the class cross-check. Posted limits arrive as Float32 and the ceilings are computed
@@ -214,6 +221,9 @@ class MapCruiseController:
     self.curve_from_map = False   # which of the two saw the bend that is capping
     self.v_override = 0.0         # speed the driver took with the pedal
     self.override_timer = 0.0
+    # Has UI_splineLocConfidence ever been non-zero? Not cleared by reset(): it is a property of
+    # the car's firmware, not of the drive. See MIN_CONFIDENCE.
+    self.confidence_alive = False
 
 
   def set_config(self, enabled: bool, offset_ratio: float,
@@ -251,7 +261,9 @@ class MapCruiseController:
     a band and moves last; mpp and fused sit in between and are only reached when the map itself
     has nothing, which in practice means a road the map does not know.
     """
-    if nav.splineConfidence < MIN_CONFIDENCE or not nav.gpsRoadMatch:
+    if nav.splineConfidence > 0:
+      self.confidence_alive = True
+    if (self.confidence_alive and nav.splineConfidence < MIN_CONFIDENCE) or not nav.gpsRoadMatch:
       return 0.0, 'none'
 
     # Being first is not the same as being right. Over three drives base agrees with the posted

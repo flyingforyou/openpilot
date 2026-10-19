@@ -439,3 +439,31 @@ class TestAcceleratorOverride:
     self._run(c, nav, 400, 20)
     out = self._run(c, nav, 5, 90, gas=True)
     assert out <= 60 + 1e-6
+
+
+class TestDeadConfidenceField:
+  """The 2026-10-17 car firmware stopped filling UI_splineLocConfidence and baseMapSpeedLimit
+  (both read 0 forever) while mapSpeedLimit/mpp/fused kept working. A dead 0 must not reject
+  every posted limit -- that held a 65 mph freeway at the class-5/6 ceiling, 30-35 mph."""
+
+  @staticmethod
+  def _post_update_nav(limit_mph):
+    nav = FakeNav(limit_mph, road_class_for(limit_mph))
+    nav.splineConfidence = 0
+    nav.baseSpeedLimit = 0.0
+    return nav
+
+  def test_follows_posted_limit_when_field_is_dead(self):
+    c = make()
+    shown = settle(c, 65, 30, v_ego_mph=60, n=200, nav=self._post_update_nav(65))
+    assert c.source == 'map'
+    assert shown >= 65
+
+  def test_low_confidence_still_rejected_once_field_is_alive(self):
+    c = make()
+    settle(c, 45, 30, n=40)                    # firmware that reports confidence: 99
+    nav = FakeNav(45, road_class_for(45))
+    nav.splineConfidence = 10                  # a genuine re-localisation
+    for _ in range(40):
+      c.update(FakeCS(nav), 40 * MPH, 30 * MPH)
+    assert c.source != 'map'
