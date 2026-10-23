@@ -20,7 +20,15 @@ MAX_LATERAL_JERK = 5.0  # m/s^3
 # resulting torque tripped handsOnLevel 3 -- which on this platform disengages cruise as well.
 # Peak demand in those 76 episodes: median 4.29, p90 4.84, max 5.32 m/s^2; 5.0 covers 73 of them.
 # Above 5.0 panda starts clipping instead, which is a worse failure than this one.
-MAX_LATERAL_ACCEL_NO_ROLL = 5.0  # m/s^2
+#
+# Back down to 4.0, because the EPAS has its own limit and it is worse to cross. Over every engaged
+# turn in the log set, the 22 that peaked at 3.5-4.0 m/s^2 ended in one hands-on exit; the 15 that
+# went past 4.0 ended in 8 EPAS exits -- 3 hands-on, 3 EAC_ERROR_HIGH_ANGLE_REQ, and 2
+# EAC_ERROR_TMP_FAULT (0x88 at 37 km/h/121 deg, 0x1f1 at 41 km/h/108 deg, both peaking 4.6-4.8).
+# TMP_FAULT latches: the EPAS stays inhibited until the car is power-cycled, so one tight right turn
+# took lateral away for the rest of the drive. Undershooting a turn costs a hands-on disengage the
+# driver can re-engage from; this costs the drive.
+MAX_LATERAL_ACCEL_NO_ROLL = 4.0  # m/s^2
 
 
 def should_stop(v_ego: float, a_target: float) -> bool:
