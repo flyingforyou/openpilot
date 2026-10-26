@@ -92,6 +92,7 @@ class Daemon:
     self.raw: dict[int, dict] = {}
     self.target = ''
     self.started = time.time()
+    self.sniff: dict | None = None
 
   # --- Bluetooth adapter -------------------------------------------------------------------------
   def ensure_bt(self) -> bool:
@@ -184,12 +185,37 @@ class Daemon:
       st = self.mgmt.start_discovery()
       if st:
         self.error = f'검색 시작 실패 (status {st})'
+    elif c == 'sniff':
+      self.run_sniff(float(cmd.get('seconds', 10)), int(cmd.get('protocol', 6)))
     elif c == 'connect':
       self.disconnect()
       self.next_try = 0.0
     elif c == 'disconnect':
       self.disconnect()
       self.link_state = 'idle'
+
+  def run_sniff(self, seconds: float, protocol: int) -> None:
+    """Hear everything on the bus for a few seconds and keep it. Listen-only: see Elm327.sniff."""
+    from openpilot.system.btobd import capture
+    if self.elm is None:
+      self.sniff = {'status': 'error', 'error': '동글이 연결돼 있지 않습니다'}
+      return
+    seconds = min(max(seconds, 3.0), 60.0)
+    self.sniff = {'status': 'running', 'seconds': seconds, 'protocol': protocol, 'started': time.time()}
+    self._publish()
+    try:
+      frames, full, unparsed = self.elm.sniff(seconds, protocol)
+      summary = capture.summarize(frames, seconds, full, unparsed)
+      name = capture.save(frames, {'protocol': protocol, 'seconds': seconds, 'dongle': self.elm.version,
+                                   'adapterProtocol': self.elm.protocol, 'silent': self.elm.silent,
+                                   'saved': time.time()})
+      self.sniff = {'status': 'done', 'protocol': protocol, 'file': name, 'finished': time.time(), **summary}
+    except Exception as e:
+      self.sniff = {'status': 'error', 'error': f'{type(e).__name__}: {e}'}
+      if isinstance(e, (OSError, TimeoutError, ConnectionError)):
+        self.disconnect()
+        self.link_state = 'error'
+        self.next_try = time.monotonic() + RETRY_S
 
   def _publish(self) -> None:
     now = time.monotonic()
@@ -203,7 +229,8 @@ class Daemon:
       'target': self.target, 'wanted': _wanted(),
       'discovering': bool(self.mgmt and self.mgmt.discovering), 'devices': devices,
       'elm': {'version': self.elm.version if self.elm else '', 'silent': bool(self.elm and self.elm.silent),
-              'channel': getattr(self.link, 'channel', None)},
+              'protocol': self.elm.protocol if self.elm else '', 'channel': getattr(self.link, 'channel', None)},
+      'sniff': self.sniff,
       'raw': {f'{k:03X}': v for k, v in sorted(self.raw.items())},
       **self.car.snapshot(now),
     }

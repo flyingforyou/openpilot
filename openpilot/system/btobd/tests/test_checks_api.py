@@ -68,3 +68,18 @@ def test_stale_dongle_data_is_not_judged(api):
   api.write()
   r = api.check(True)
   assert r['parked'] and 'report' not in r
+
+
+@pytest.mark.parametrize('state', [dict(engaged=False, vEgo=8.0), dict(engaged=True, vEgo=0.0)])
+def test_capture_is_refused_unless_parked(api, state):
+  api.h.state = SimpleNamespace(get=lambda: state)
+  code, body = ts.Handler._sniff_request(api.h, {'seconds': 10, 'protocol': 6})
+  assert code == 409 and 'error' in body
+
+
+def test_capture_request_is_validated(api):
+  ok = lambda req: ts.Handler._sniff_request(api.h, req)
+  assert ok({'seconds': 10, 'protocol': 6}) == (200, {'seconds': 10.0, 'protocol': 6})
+  assert ok({'seconds': 61})[0] == 400 and ok({'seconds': 1})[0] == 400
+  assert ok({'protocol': 7})[0] == 400                      # only the 11-bit CAN modes are offered
+  assert ok({'seconds': 'abc'})[0] == 400

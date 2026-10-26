@@ -39,6 +39,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.debug import vehicle_state, video_source
 from openpilot.selfdrive.debug.can_source import CanSource, list_routes
 from openpilot.selfdrive.debug import shadow_replay
+from openpilot.system.btobd import capture as obd_capture
 from openpilot.system.btobd import checks as obd_checks
 from openpilot.selfdrive.debug.intervention_log import (InterventionLog, list_events,
                                                         locate_segment, read_event)
@@ -1002,6 +1003,12 @@ class Handler(BaseHTTPRequestHandler):
 
     if self.path.startswith('/api/videos'):
       return self._send(200, json.dumps({'routes': video_source.list_videos()}))
+    if self.path.startswith('/api/obd/capture/'):
+      name = self.path.split('?')[0].rsplit('/', 1)[-1]
+      path = os.path.join(obd_capture.CAPTURE_DIR, name)
+      if not obd_capture.NAME_RE.fullmatch(name) or not os.path.isfile(path):
+        return self._send(404, '{}')
+      return self._send_file(path, 'application/x-ndjson', name)
     if self.path.startswith('/api/obd'):
       return self._send(200, json.dumps(self._obd_state()))
     if self.path.startswith('/api/checks'):
@@ -1070,6 +1077,22 @@ class Handler(BaseHTTPRequestHandler):
       os.utime(OBD_VIEWER_PATH)
     except OSError:
       pass
+
+  def _sniff_request(self, req: dict) -> tuple[int, dict]:
+    """Validate a capture request. A capture is listen-only, but it is also the heaviest thing the
+    dongle does and it holds the page's polling for its duration, so it runs parked only -- checked
+    here, not just in the page."""
+    st = self._obd_state()
+    ok_parked, why = obd_checks.parked(self.state.get(), st.get('values', {}))
+    if not ok_parked:
+      return 409, {'error': '주차 중에만 캡처할 수 있습니다 — ' + why}
+    try:
+      seconds, protocol = float(req.get('seconds', 10)), int(req.get('protocol', 6))
+    except (TypeError, ValueError):
+      return 400, {'error': '캡처 설정을 읽을 수 없습니다'}
+    if not 3 <= seconds <= 60 or protocol not in (6, 8):
+      return 400, {'error': '캡처는 3~60초, 프로토콜은 6 또는 8만 됩니다'}
+    return 200, {'seconds': seconds, 'protocol': protocol}
 
   def _checks(self, save: bool = False) -> dict:
     """The parked-car check. Listen-only data in, verdicts out; nothing is sent to the car.
@@ -1219,8 +1242,14 @@ class Handler(BaseHTTPRequestHandler):
           return self._send(400, json.dumps({'error': '신품 용량은 40~120 kWh 사이로 입력하세요'}))
         self.params.put('BtObdPackNewKwh', kwh)
         return self._send(200, json.dumps({'ok': True}))
-      if cmd not in ('scan', 'connect', 'disconnect'):
+      if cmd not in ('scan', 'connect', 'disconnect', 'sniff'):
         return self._send(400, json.dumps({'error': f'알 수 없는 명령: {cmd}'}))
+      extra = {}
+      if cmd == 'sniff':
+        code, body = self._sniff_request(req)
+        if code != 200:
+          return self._send(code, json.dumps(body))
+        extra = body
       if cmd == 'connect':
         addr = str(req.get('addr', '')).upper()
         if not re.fullmatch(r'([0-9A-F]{2}:){5}[0-9A-F]{2}', addr):
@@ -1234,7 +1263,7 @@ class Handler(BaseHTTPRequestHandler):
       self._touch_obd_viewer()
       tmp = OBD_CMD_PATH + '.tmp'
       with open(tmp, 'w') as f:
-        json.dump({'cmd': cmd}, f)
+        json.dump({'cmd': cmd, **extra}, f)
       os.chmod(tmp, 0o666)
       os.replace(tmp, OBD_CMD_PATH)
       return self._send(200, json.dumps({'ok': True}))
@@ -3215,6 +3244,18 @@ th{color:var(--mut);font-weight:normal}
 <div class="grp"><div class="gt"><span>기타</span></div><div id="misc"></div></div>
 <div class="grp"><div class="gt"><span>원본 프레임</span><span class="a">ID · 길이 · 데이터 · 수신 수</span></div>
   <table><tbody id="raw"></tbody></table></div>
+<div class="grp">
+  <div class="gt"><span>버스 확인 · 캡처 (듣기 전용)</span><span class="a" id="snst"></span></div>
+  <div class="row"><span class="lb">시간
+      <select id="snsec" aria-label="캡처 시간"><option>10</option><option>30</option><option>60</option></select> 초 · 프로토콜
+      <select id="snproto" aria-label="CAN 프로토콜"><option value="6">6 · CAN 11비트 500k</option><option value="8">8 · CAN 11비트 250k</option></select></span>
+    <button id="sniff">캡처 시작</button></div>
+  <div class="hint" id="snnote">주차 중에만 됩니다. 동글이 무음 감시(ATCSM1)를 지원할 때만 시작하고, 차에는 아무것도 보내지 않습니다.
+    프로토콜 6이 이 차의 버스에 맞다고 확인된 것은 아닙니다. 아무것도 안 들어오면 8을 시도하거나 연결 위치를 확인하세요.</div>
+  <div id="snsum"></div>
+  <div class="err" id="snwarn" hidden></div>
+  <table><thead id="snhead" hidden><tr><th>ID</th><th>수신</th><th>Hz</th><th>마지막 데이터</th><th>해독</th></tr></thead><tbody id="snids"></tbody></table>
+</div>
 <div class="grp"><div class="hint">
   동글을 CAN 감시 모드(ATMA, 가능하면 무음 감시 ATCSM1)로 두고 배터리·구동장치가 원래 방송하는
   메시지를 ID별로 돌아가며 듣습니다. 차에는 요청을 보내지 않습니다. Scan My Tesla가 정확히 같은 방식인지는
@@ -3308,8 +3349,23 @@ $('packsel').onchange=()=>{const v=$('packsel').value;
   if(v==='custom'){packEditing=true;$('packkwh').hidden=false;$('packsave').hidden=false;$('packkwh').focus();return;}
   packEditing=false; post({cmd:'pack',kwh:v});};
 $('packsave').onclick=()=>{packEditing=false; post({cmd:'pack',kwh:$('packkwh').value.trim()});};
+function renderSniff(s){
+  const n=s.sniff, el=s.elm||{};
+  $('sniff').disabled=busy||s.link!=='connected'||(n&&n.status==='running');
+  if(!n){$('snst').textContent='';return;}
+  if(n.status==='running'){$('snst').textContent=`캡처 중… ${n.seconds}초`;return;}
+  if(n.status==='error'){$('snst').textContent='실패';$('snwarn').hidden=false;$('snwarn').textContent=n.error;return;}
+  $('snst').innerHTML=`${n.frames}프레임 · ${n.unique}개 ID · 초당 ${n.fps} · <a href="/api/obd/capture/${n.file}" style="color:inherit">${n.file}</a>`;
+  $('snsum').innerHTML=`<div class="row"><span class="lb">동글</span><span class="vl">${esc(el.version||'')} · ${esc(el.protocol||'')} · ${el.silent?'무음 감시':'무음 감시 미지원'}</span></div>`;
+  $('snwarn').hidden=!n.warnings.length; $('snwarn').innerHTML=n.warnings.map(esc).join('<br>');
+  $('snhead').hidden=!n.ids.length;
+  $('snids').innerHTML=n.ids.map(i=>`<tr><td>0x${i.id}</td><td>${i.n}</td><td>${i.hz}</td><td>${esc(i.last)}</td><td>${i.known?esc(i.known):'–'}</td></tr>`).join('');
+}
+function esc(x){return String(x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+$('sniff').onclick=()=>post({cmd:'sniff',seconds:parseInt($('snsec').value,10),protocol:parseInt($('snproto').value,10)});
 function render(s){
   renderHealth(s);
+  renderSniff(s);
   const b=BT[s.bt]||[s.bt,''],l=LINK[s.link]||[s.link,''];
   $('pills').innerHTML=`<span class="pill ${b[1]}">${b[0]}</span> <span class="pill ${l[1]}">${l[0]}</span>`
     +(s.elm&&s.elm.version?` <span class="pill">${s.elm.version}${s.elm.silent?' · 무음감시':''}</span>`:'');

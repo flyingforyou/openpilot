@@ -37,6 +37,7 @@ class Elm327:
     self.t = transport
     self.cmd_timeout = cmd_timeout
     self.version = ''
+    self.protocol = ''
     self.silent = False
     self._buf = b''
 
@@ -64,6 +65,8 @@ class Elm327:
       self.cmd(c)
     for c in OPTIONAL:
       self.silent = 'OK' in [ln.upper() for ln in self.cmd(c)]
+    dp = self.cmd('ATDP')
+    self.protocol = dp[-1] if dp else ''
 
   def monitor(self, msg_id: int, dwell: float, max_frames: int = 64) -> list[tuple[int, bytes]]:
     """Frames of one ID heard within `dwell` seconds."""
@@ -91,3 +94,48 @@ class Elm327:
       pass
     self._buf = b''
     return frames
+
+  def sniff(self, seconds: float, protocol: int = 6, max_frames: int = 20000):
+    """Hear every frame on the bus for `seconds`. Returns (frames, buffer_full, unparsed).
+
+    Refuses unless the adapter confirmed silent monitoring (ATCSM1): without it nothing here can
+    promise the dongle is not acknowledging frames on the car's bus. frames are (seconds since
+    start, 11-bit id, data). Only AT commands and a bare CR (to stop ATMA) are ever sent.
+    """
+    if not self.silent:
+      raise RuntimeError('이 동글은 무음 감시(ATCSM1)를 지원하지 않아 전체 감시를 시작하지 않습니다')
+    self.cmd(f'ATSP{protocol}')
+    if any('?' in ln for ln in self.cmd('ATCRA')):      # no argument clears the receive filter
+      self.cmd('ATCM000')
+      self.cmd('ATCF000')
+    self._buf = b''
+    self.t.send(b'ATMA\r')
+    frames, buffer_full, unparsed = [], False, 0
+    t0 = time.monotonic()
+    end = t0 + seconds
+    while time.monotonic() < end and len(frames) < max_frames:
+      chunk = self.t.recv(512, max(0.01, end - time.monotonic()))
+      if not chunk:
+        continue
+      self._buf += chunk
+      *lines, rest = self._buf.replace(b'\r', b'\n').split(b'\n')
+      self._buf = rest
+      for ln in lines:
+        text = ln.decode(errors='replace').strip()
+        if not text:
+          continue
+        f = parse_frame(text)
+        if f:
+          frames.append((time.monotonic() - t0, f[0], f[1]))
+        elif 'BUFFER FULL' in text.upper():
+          buffer_full = True
+        elif not any(n in text.upper() for n in NOISE):
+          unparsed += 1
+    self.t.send(b'\r')
+    try:
+      self._read_until_prompt(1.5)
+    except TimeoutError:
+      pass
+    self._buf = b''
+    self.cmd('ATSP6')
+    return frames, buffer_full, unparsed

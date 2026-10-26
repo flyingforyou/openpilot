@@ -11,6 +11,7 @@ class FakeDongle:
     self.sent = []
     self.out = b''
     self.filter = None
+    self.overflow = False
     self.monitoring = False
 
   def send(self, data: bytes):
@@ -23,12 +24,18 @@ class FakeDongle:
     if cmd == 'ATZ':
       self.out += b'\r\rELM327 v1.5\r\r>'
     elif cmd.startswith('ATCRA'):
-      self.filter = int(cmd[5:], 16)
+      self.filter = int(cmd[5:], 16) if cmd[5:] else None
       self.out += b'OK\r\r>'
+    elif cmd == 'ATDP':
+      self.out += b'ISO 15765-4 (CAN 11/500)\r\r>'
     elif cmd == 'ATMA':
       self.monitoring = True
-      for f in self.frames.get(self.filter, []):
-        self.out += f.encode() + b'\r'
+      for fid, lines in self.frames.items():
+        if self.filter is None or fid == self.filter:
+          for f in lines:
+            self.out += f.encode() + b'\r'
+      if self.overflow:
+        self.out += b'BUFFER FULL\r'
     elif cmd == 'ATCSM1':
       self.out += (b'OK' if self.silent_ok else b'?') + b'\r\r>'
     else:
