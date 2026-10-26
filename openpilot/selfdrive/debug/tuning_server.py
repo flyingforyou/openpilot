@@ -1112,7 +1112,8 @@ class Handler(BaseHTTPRequestHandler):
     st = self._obd_state()
     ok, why = obd_checks.parked(self.state.get(), st.get('values', {}))
     return {'bt': st.get('bt'), 'link': st.get('link'), 'stale': st.get('stale', True), 'error': st.get('error', ''),
-            'elm': st.get('elm') or {}, 'sniff': st.get('sniff'), 'probe': st.get('probe'), 'uds': st.get('uds'),
+            'target': st.get('target', ''), 'devices': st.get('devices') or [], 'discovering': bool(st.get('discovering')),
+            'pin': st.get('pin', '1234'), 'elm': st.get('elm') or {}, 'sniff': st.get('sniff'), 'probe': st.get('probe'), 'uds': st.get('uds'),
             'parked': ok, 'parkedWhy': why, 'captures': tdiag.list_captures(), 'profiles': tdiag.list_profiles(),
             'session': tdiag.tail_log(n=80), 'audit': tdiag.tail_log(name=tdiag.UDS_AUDIT, n=30)}
 
@@ -3569,12 +3570,19 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
 .log{font-family:var(--m);font-size:10.5px;padding:8px 13px;max-height:260px;overflow:auto;line-height:1.55}
 .log div{border-bottom:1px solid var(--line);padding:2px 0;word-break:break-all}
 </style></head><body>
-<a class="back" href="/">← 메뉴</a> &nbsp; <a class="back" href="/diag">배터리 화면 / 동글 연결 →</a>
+<a class="back" href="/">← 메뉴</a> &nbsp; <a class="back" href="/diag">배터리 화면 →</a>
 <h1>Tesla 진단 · 전체</h1>
 <div class="sub" id="sub">불러오는 중…</div>
 
 <div class="grp"><div class="gt"><span>상태</span><span id="pills"></span></div>
   <div class="hint" id="st"></div><div class="err" id="err" hidden></div></div>
+
+<div class="grp">
+  <div class="gt"><span>0 · 블루투스 동글 연결</span><span class="a" id="scanst"></span></div>
+  <div id="target"></div>
+  <div class="row"><span class="lb">주변 동글 찾기</span><span>PIN <input id="pin" value="1234" aria-label="PIN"></span><button id="scan">검색</button></div>
+  <div id="devs"></div>
+</div>
 
 <div class="grp">
   <div class="gt"><span>1 · 동글 점검 (AT 명령만)</span><span class="a" id="prst"></span></div>
@@ -3642,6 +3650,9 @@ const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;',
 let busy=false,S={},selProf={a:'',u:''},openCap='';
 async function post(b){busy=true;try{const r=await fetch('/api/tdiag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
   const j=await r.json();return {code:r.status,body:j};}finally{busy=false;}}
+async function obd(b){busy=true;try{const r=await fetch('/api/obd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+  const j=await r.json();if(j.error)alert(j.error);}finally{busy=false;tick();}}
+$('scan').onclick=()=>obd({cmd:'scan'});
 async function act(b){const r=await post(b);if(r.body.error)alert(r.body.error);tick();return r;}
 const tm=t=>t?new Date(t*1000).toLocaleString('ko-KR'):'';
 function profOpts(sel,cur){return S.profiles.map(p=>`<option value="${esc(p.name)}"${p.name===cur?' selected':''}>${esc(p.name)} (${p.source})${p.error?' ⚠':(p.blockers&&p.blockers.length?' · 실차 불가':' · 실차 가능')}</option>`).join('');}
@@ -3654,6 +3665,13 @@ function render(s){
   $('st').textContent=(s.elm&&s.elm.version?`동글 ${s.elm.version} · ${s.elm.silent?'무음 감시 확인됨':'무음 감시 미확인'} · `:'')+(s.parked?'':'캡처·UDS는 주차(P)에서만: '+s.parkedWhy);
   $('err').hidden=!s.error;$('err').textContent=s.error||'';
   const conn=s.link==='connected';
+  if(document.activeElement!==$('pin'))$('pin').value=s.pin||'1234';
+  $('target').innerHTML=s.target?`<div class="row"><span class="lb">연결 대상 <span class="a">${esc(s.target)}</span></span><button id="disc">연결 해제</button></div>`:'<div class="hint">연결된 동글이 없습니다. 검색한 뒤 목록에서 연결하세요.</div>';
+  if(s.target)$('disc').onclick=()=>obd({cmd:'disconnect'});
+  $('scanst').textContent=s.discovering?'검색 중…':'';
+  $('scan').disabled=s.bt!=='up'||s.discovering;
+  $('devs').innerHTML=(s.devices||[]).map(d=>`<div class="row"><span class="lb">${esc(d.name||'(이름 없음)')} ${d.paired?'<span class="pill ok">페어링됨</span>':''}<br><span class="a">${esc(d.addr)} · ${d.rssi==null?'–':d.rssi} dBm</span></span><button class="pri" data-a="${esc(d.addr)}">연결</button></div>`).join('');
+  document.querySelectorAll('#devs button').forEach(x=>x.onclick=()=>obd({cmd:'connect',addr:x.dataset.a,pin:$('pin').value.trim()}));
   const p=s.probe;
   $('probe').disabled=!conn||(p&&p.status==='running');
   $('prst').textContent=!p?'':p.status==='running'?'점검 중…':p.status==='error'?'실패':tm(p.time);
