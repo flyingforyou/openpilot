@@ -39,6 +39,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.debug import vehicle_state, video_source
 from openpilot.selfdrive.debug.can_source import CanSource, list_routes
 from openpilot.selfdrive.debug import shadow_replay
+from openpilot.system.btobd import checks as obd_checks
 from openpilot.selfdrive.debug.intervention_log import (InterventionLog, list_events,
                                                         locate_segment, read_event)
 from openpilot.selfdrive.modeld.model_manager import ModelManager
@@ -1003,6 +1004,8 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, json.dumps({'routes': video_source.list_videos()}))
     if self.path.startswith('/api/obd'):
       return self._send(200, json.dumps(self._obd_state()))
+    if self.path.startswith('/api/checks'):
+      return self._send(200, json.dumps(self._checks()))
 
     page = self.path.split('?')[0].rstrip('/')
 
@@ -1050,6 +1053,8 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, PAGE_SHADOW, 'text/html; charset=utf-8')
     if page == '/diag':
       return self._send(200, PAGE_DIAG, 'text/html; charset=utf-8')
+    if page == '/checks':
+      return self._send(200, PAGE_CHECKS, 'text/html; charset=utf-8')
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
 
   def _onroad(self) -> bool:
@@ -1065,6 +1070,45 @@ class Handler(BaseHTTPRequestHandler):
       os.utime(OBD_VIEWER_PATH)
     except OSError:
       pass
+
+  def _checks(self, save: bool = False) -> dict:
+    """The parked-car check. Listen-only data in, verdicts out; nothing is sent to the car.
+
+    The parked gate is enforced here, not only by the page, so a stale tab or a hand-made request
+    cannot run it while driving. A run is held back until all 96 cell voltages have arrived,
+    because the cell items are the point of it; the page polls until they have.
+    """
+    self._touch_obd_viewer()
+    st = self._obd_state()
+    values, ok_parked = st.get('values', {}), None
+    ok_parked, why = obd_checks.parked(self.state.get(), values)
+    out = {'parked': ok_parked, 'reason': why, 'bt': st.get('bt'), 'link': st.get('link'), 'stale': st.get('stale', True),
+           'history': _read_check_history()[-12:]}
+    if not ok_parked:
+      return out
+    if st.get('stale') or st.get('link') != 'connected':
+      out['reason'] = '동글이 연결되지 않았습니다. 진단 페이지에서 연결하세요'
+      return out
+    have_v = sum(1 for c in st.get('cellsV', []) if c is not None)
+    have_t = sum(1 for c in st.get('cellsT', []) if c is not None)
+    out['have'] = {'cells': have_v, 'temps': have_t}
+    pack = float(st['packNewKwh']) if st.get('packNewKwh') else None
+    report = obd_checks.evaluate(values, st.get('cellsV', []), st.get('cellsT', []), st.get('age', {}), pack)
+    out['report'] = report
+    out['waiting'] = save and (have_v < 96 or have_t < 32)
+    if save and not out['waiting']:
+      rec = obd_checks.record(report, values, time.time())
+      hist = _read_check_history() + [rec]
+      try:
+        tmp = CHECK_HISTORY_PATH + '.tmp'
+        with open(tmp, 'w') as f:
+          json.dump(hist[-200:], f)
+        os.replace(tmp, CHECK_HISTORY_PATH)
+      except OSError:
+        out['reason'] = '기록 저장에 실패했습니다 (결과는 표시됩니다)'
+      out['saved'] = True
+      out['history'] = hist[-12:]
+    return out
 
   def _obd_state(self) -> dict:
     self._touch_obd_viewer()
@@ -1147,6 +1191,15 @@ class Handler(BaseHTTPRequestHandler):
       if err:
         return self._send(400, json.dumps({'error': err}))
       return self._send(200, json.dumps({'ok': True, **self.can.state()}))
+
+    if self.path.startswith('/api/checks'):
+      try:
+        req = self._read_json()
+      except json.JSONDecodeError:
+        return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
+      if req.get('cmd') != 'run':
+        return self._send(400, json.dumps({'error': '알 수 없는 명령'}))
+      return self._send(200, json.dumps(self._checks(save=True)))
 
     if self.path.startswith('/api/obd'):
       try:
@@ -1764,6 +1817,18 @@ loadSettings();loadModels().then(scheduleModels);poll();setInterval(poll,300);
 </script></body></html>"""
 
 
+CHECK_HISTORY_PATH = '/data/btobd_checks.json'
+
+
+def _read_check_history() -> list:
+  try:
+    with open(CHECK_HISTORY_PATH) as f:
+      h = json.load(f)
+    return h if isinstance(h, list) else []
+  except (OSError, ValueError):
+    return []
+
+
 OBD_STATE_PATH = '/dev/shm/btobd.json'
 OBD_CMD_PATH = '/dev/shm/btobd_cmd.json'
 OBD_VIEWER_PATH = '/dev/shm/btobd_viewer'
@@ -1826,6 +1891,13 @@ border:1px solid var(--line);color:var(--mut)}
     나란히 보여줍니다. 상수를 고치고 다시 돌리면 새 선만 움직이므로, 바꾼 값이
     실제 상황에서 무엇을 바꾸는지 바로 확인할 수 있습니다.</div>
   <div class="st"><span class="pill" id="p-shd">–</span></div>
+</a>
+
+<a class="card" href="/checks">
+  <div class="t">점검 · 주차 중 이상 징후</div>
+  <div class="d">주차해 둔 상태에서 배터리·12V·온도·BMS 출력을 정상 범위와 비교해 이상한 곳을
+    찾습니다. 항목마다 기준을 같이 보여주고, 실행할 때마다 기록해 추세를 봅니다.
+    차에는 아무것도 보내지 않고, 주행 중에는 실행되지 않습니다.</div>
 </a>
 
 <a class="card" href="/diag">
@@ -3270,6 +3342,120 @@ tick(); setInterval(()=>{if(!busy) tick();},1000);
 </script></body></html>
 """
 
+
+
+PAGE_CHECKS = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>점검 · 이상 징후</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--ok:#4CC38A;--hot:#F5B942;--bad:#E5484D;--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--ok:#1B7F53;--hot:#9A6210;--bad:#C2292E}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);
+padding:18px;padding-bottom:calc(18px + env(safe-area-inset-bottom));max-width:860px}
+a.back{color:var(--dim);font-family:var(--m);font-size:11px;text-decoration:none}
+h1{font-size:17px;margin:8px 0 3px}
+.sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:14px}
+.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+button{font:inherit;font-size:13px;padding:9px 16px;border-radius:9px;border:1px solid var(--radar);
+background:var(--radar);color:#04131C;cursor:pointer}
+button:disabled{opacity:.45;cursor:default}
+.gate{font-size:12.5px;color:var(--mut)}.gate.no{color:var(--hot)}
+.sum{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);
+border:1px solid var(--line);border-radius:11px;overflow:hidden;margin-bottom:11px}
+.sum>div{background:var(--card);padding:11px 13px}.sum .k{font-size:11px;color:var(--mut)}
+.sum .v{font-family:var(--m);font-size:22px;margin-top:2px}
+.v.ok{color:var(--ok)}.v.warn{color:var(--hot)}.v.bad{color:var(--bad)}
+.grp{background:var(--card);border:1px solid var(--line);border-radius:11px;margin-bottom:11px;overflow:hidden}
+.gt{font-size:12px;color:var(--mut);padding:10px 13px;border-bottom:1px solid var(--line)}
+.it{padding:9px 13px;border-bottom:1px solid var(--line);display:grid;grid-template-columns:62px 1fr;gap:4px 10px}
+.it:last-child{border-bottom:none}
+.badge{font-family:var(--m);font-size:10.5px;padding:3px 0;border-radius:99px;border:1px solid var(--line);
+text-align:center;height:fit-content;color:var(--dim)}
+.badge.ok{border-color:var(--ok);color:var(--ok)}.badge.warn{border-color:var(--hot);color:var(--hot)}
+.badge.bad{border-color:var(--bad);color:var(--bad)}
+.lb{font-size:13px}.val{font-family:var(--m);font-size:12px;color:var(--tx);margin-top:1px}
+.rule{font-size:11px;color:var(--dim);margin-top:2px;line-height:1.5}
+.note{font-size:11.5px;color:var(--hot);margin-top:2px}
+table{width:100%;border-collapse:collapse;font-family:var(--m);font-size:11px}
+td,th{padding:5px 13px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--mut);font-weight:normal}
+.hint{font-size:12px;color:var(--mut);line-height:1.6;padding:11px 13px}
+@media(max-width:560px){.sum{grid-template-columns:repeat(2,1fr)}}
+</style></head><body>
+<a class="back" href="/">← 메뉴</a>
+<h1>점검 · 이상 징후</h1><div class="sub" id="sub">연결 중…</div>
+
+<div class="bar"><button id="run" disabled>점검 실행</button><span class="gate" id="gate"></span></div>
+
+<div id="result" hidden>
+  <div class="sum" id="sum"></div>
+  <div id="groups"></div>
+</div>
+
+<div class="grp" id="histbox" hidden><div class="gt">지난 점검 기록</div>
+  <table><thead><tr><th>시각</th><th>판정</th><th>SOC</th><th>셀 편차</th><th>최저 셀</th><th>공칭 용량</th></tr></thead>
+  <tbody id="hist"></tbody></table></div>
+
+<div class="grp"><div class="hint">
+  주차 중에만 실행됩니다. openpilot이 꺼져 있고, 속도가 0이고, 동글이 기어를 알려주면 P일 때만 열립니다.
+  이 점검은 차가 이미 계속 방송하는 값을 듣기만 합니다. 차에는 아무것도 보내지 않습니다.
+  판정은 경험적 기준이라 "더 살펴볼 곳"을 알려주는 용도입니다. 주의나 나쁨이 한 번 나왔다고 부품이 고장이라는 뜻은 아니고,
+  같은 항목이 기록에서 반복되는지를 보세요. 셀 밸런스는 휴지 상태에서 SOC가 낮거나 충전 직후일 때 가장 잘 보입니다.
+</div></div>
+
+<script>
+const $=i=>document.getElementById(i);
+const LAB={ok:'정상',warn:'주의',bad:'나쁨',na:'보류'};
+let running=false,deadline=0;
+function fmtT(t){const d=new Date(t*1000);return `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;}
+function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function renderReport(r){
+  $('result').hidden=false;
+  const c=r.counts;
+  $('sum').innerHTML=`<div><div class="k">종합</div><div class="v ${r.overall}">${LAB[r.overall]}</div></div>`
+    +['ok','warn','bad'].map(k=>`<div><div class="k">${LAB[k]}</div><div class="v ${c[k]?k:''}">${c[k]}</div></div>`).join('');
+  const by={};r.items.forEach(i=>(by[i.group]=by[i.group]||[]).push(i));
+  $('groups').innerHTML=Object.entries(by).map(([g,items])=>`<div class="grp"><div class="gt">${esc(g)}</div>`
+    +items.map(i=>`<div class="it"><span class="badge ${i.status}">${LAB[i.status]}</span><div><div class="lb">${esc(i.label)}</div>
+      <div class="val">${esc(i.value)}</div><div class="rule">기준: ${esc(i.rule)}</div>${i.note?`<div class="note">${esc(i.note)}</div>`:''}</div></div>`).join('')+'</div>').join('');
+}
+function renderHist(h){
+  $('histbox').hidden=!h||!h.length; if(!h) return;
+  const m=(r,k,d)=>r.metrics&&r.metrics[k]!=null?r.metrics[k].toFixed(d):'–';
+  $('hist').innerHTML=h.slice().reverse().map(r=>`<tr><td>${fmtT(r.t)}</td><td>${LAB[r.overall]} (주의 ${r.counts.warn} · 나쁨 ${r.counts.bad})</td>
+    <td>${m(r,'socUI',1)}%</td><td>${r.metrics&&r.metrics.cellDelta!=null?(r.metrics.cellDelta*1000).toFixed(0)+' mV':'–'}</td>
+    <td>${m(r,'cellMin',3)} V</td><td>${m(r,'nominalFullPackEnergy',1)} kWh</td></tr>`).join('');
+}
+async function call(save){
+  const r=await fetch('/api/checks',save?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:'run'})}:undefined);
+  return r.json();
+}
+function paint(d){
+  renderHist(d.history);
+  const g=$('gate');
+  if(!d.parked){g.className='gate no';g.textContent='주차 중이 아니라 실행할 수 없습니다 — '+d.reason;$('run').disabled=true;$('sub').textContent='대기';return;}
+  if(!d.report){g.className='gate no';g.textContent=d.reason||'동글 연결을 기다리는 중';$('run').disabled=true;$('sub').textContent='동글 대기';return;}
+  g.className='gate';g.textContent=d.waiting?`셀 데이터를 모으는 중… 전압 ${d.have.cells}/96 · 온도 ${d.have.temps}/32`:'주차 확인됨 · 동글 연결됨';
+  $('sub').textContent='실행할 수 있습니다';$('run').disabled=running;
+  if(d.report) renderReport(d.report);
+}
+async function tick(){ if(running) return; try{paint(await call(false));}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';} }
+$('run').onclick=async()=>{
+  running=true;$('run').disabled=true;deadline=Date.now()+90000;
+  try{
+    for(;;){
+      const d=await call(true);paint(d);
+      if(!d.parked||!d.report||d.saved) break;
+      if(Date.now()>deadline){$('gate').textContent='셀 데이터를 다 받지 못했습니다. 동글 상태를 확인하고 다시 실행하세요';break;}
+      await new Promise(r=>setTimeout(r,2000));
+    }
+  }finally{running=false;tick();}
+};
+tick();setInterval(tick,3000);
+</script></body></html>
+"""
 
 
 def main():
