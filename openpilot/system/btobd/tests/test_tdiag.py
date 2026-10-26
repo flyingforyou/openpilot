@@ -259,3 +259,14 @@ def test_read_service_queues_with_verified_profile(srv):
   c = {'cmd': 'uds', 'profile': 'rd', 'service': 'read_did', 'args': {'did': 'F190 F18C'},
        'allow': True, 'confirm': True}
   assert srv.cmd(c)[0] == 200 and queued()['request'] == '22F190F18C' and queued()['verify'] is False
+
+
+def test_standard_did_names_are_labelled():
+  # names come from ISO 14229-1, independent of ECU; used only to label read results
+  assert tdiag.us.did_name(0xF190) == 'VIN' and tdiag.us.did_name(0xF18C) == 'ECUSerialNumber'
+  assert tdiag.us.did_name(0x1234) == ''
+  r = tdiag.us.parse(bytes.fromhex('62F18C') + b'SN00042', bytes.fromhex('22F18C'))
+  assert r['name'] == 'ECUSerialNumber' and r['ascii'] == 'SN00042'
+  # a VIN stays masked even though it is ASCII
+  v = tdiag.us.parse(bytes.fromhex('62F190') + b'5YJSA1111FFP09999', bytes.fromhex('22F190'))
+  assert 'vin' in v and 'ascii' not in v and v['vin'].endswith('9999')

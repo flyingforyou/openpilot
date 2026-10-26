@@ -1115,7 +1115,8 @@ class Handler(BaseHTTPRequestHandler):
             'target': st.get('target', ''), 'devices': st.get('devices') or [], 'discovering': bool(st.get('discovering')),
             'pin': st.get('pin', '1234'), 'elm': st.get('elm') or {}, 'sniff': st.get('sniff'), 'probe': st.get('probe'), 'uds': st.get('uds'),
             'parked': ok, 'parkedWhy': why, 'captures': tdiag.list_captures(), 'profiles': tdiag.list_profiles(),
-            'session': tdiag.tail_log(n=80), 'audit': tdiag.tail_log(name=tdiag.UDS_AUDIT, n=30)}
+            'session': tdiag.tail_log(n=80), 'audit': tdiag.tail_log(name=tdiag.UDS_AUDIT, n=30),
+            'dids': [{'id': f'{k:04X}', 'name': v} for k, v in sorted(tdiag.us.STANDARD_DIDS.items())]}
 
   def _tdiag_get(self):
     path, _, qs = self.path.partition('?')
@@ -3634,7 +3635,7 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
     DID <input id="vdid" value="F190"></span><button class="pri" id="uverify">검증 읽기</button></div>
 
   <div class="gt" style="border-top:1px solid var(--line)"><span>읽기 서비스 (0x22 / 0x19 / 0x09)</span></div>
-  <div class="row"><span class="lb">0x22 ReadDataByIdentifier · DID(여러 개 공백) <input id="udid" value="F190" style="width:150px"></span>
+  <div class="row"><span class="lb">0x22 ReadDataByIdentifier · DID(여러 개 공백) <input id="udid" value="F190" list="dids" style="width:150px"><datalist id="dids"></datalist></span>
     <button id="udry22">미리보기</button><button class="pri rd" data-svc="read_did">읽기</button></div>
   <div class="row"><span class="lb">0x19 ReadDTCInformation · 하위기능
     <select id="usub"><option value="02">02 상태마스크</option><option value="0A">0A 전체</option><option value="01">01 개수</option></select> 마스크 <input id="umask" value="FF" style="width:50px"></span>
@@ -3720,6 +3721,7 @@ function render(s){
     <td><button data-an="${c.name}">분석</button> <a class="dl" href="/api/tdiag/file/${c.name}">받기</a> <button data-del="${c.name}">삭제</button></td></tr>`).join('')||'<tr><td colspan=5>저장된 캡처가 없습니다</td></tr>';
   document.querySelectorAll('[data-an]').forEach(b=>b.onclick=()=>analyze(b.dataset.an));
   document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{if(confirm('삭제할까요? '+b.dataset.del))act({cmd:'delete',name:b.dataset.del});});
+  if(s.dids&&!$('dids').children.length)$('dids').innerHTML=s.dids.map(d=>`<option value="${d.id}">${esc(d.id)} ${esc(d.name)}</option>`).join('');
   const u=s.uds;const pr=s.profiles.find(x=>x.name===$('uprof').value);
   $('unote').textContent=pr?(pr.error?pr.error:(pr.blockers.length?'미검증 — 읽기 버튼은 잠깁니다. 아래 "검증 읽기"로 확보하세요. 막는 항목: '+pr.blockers.join(', '):'검증됨 — 등록된 요청: '+pr.requests.join(', '))):'';
   const ready=conn&&s.parked&&pr&&!pr.error&&!(u&&u.status==='running');

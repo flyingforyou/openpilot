@@ -28,6 +28,34 @@ ALL_SIDS = LIVE_SIDS | FLASH_SIDS
 # DTC read subfunctions (ReadDTCInformation). The write-ish 0x19 subs do not exist; it is read-only.
 DTC_SUBS = frozenset({0x01, 0x02, 0x04, 0x06, 0x0A})
 
+# Standard DataIdentifier names from ISO 14229-1 (the 0xF18x-0xF19x "identification" block plus a few
+# other standardised ones). Written from the standard, not copied from any project's table; these are
+# ECU-independent and read-only, used only to label a 0x22 response. Tesla-specific DIDs are not here.
+STANDARD_DIDS = {
+  0xF180: 'bootSoftwareIdentification', 0xF181: 'applicationSoftwareIdentification',
+  0xF182: 'applicationDataIdentification', 0xF183: 'bootSoftwareFingerprint',
+  0xF184: 'applicationSoftwareFingerprint', 0xF185: 'applicationDataFingerprint',
+  0xF186: 'activeDiagnosticSession', 0xF187: 'vehicleManufacturerSparePartNumber',
+  0xF188: 'vehicleManufacturerECUSoftwareNumber', 0xF189: 'vehicleManufacturerECUSoftwareVersionNumber',
+  0xF18A: 'systemSupplierIdentifier', 0xF18B: 'ECUManufacturingDate', 0xF18C: 'ECUSerialNumber',
+  0xF18D: 'supportedFunctionalUnits', 0xF18E: 'vehicleManufacturerKitAssemblyPartNumber',
+  0xF190: 'VIN', 0xF191: 'vehicleManufacturerECUHardwareNumber',
+  0xF192: 'systemSupplierECUHardwareNumber', 0xF193: 'systemSupplierECUHardwareVersionNumber',
+  0xF194: 'systemSupplierECUSoftwareNumber', 0xF195: 'systemSupplierECUSoftwareVersionNumber',
+  0xF196: 'exhaustRegulationOrTypeApprovalNumber', 0xF197: 'systemNameOrEngineType',
+  0xF198: 'repairShopCodeOrTesterSerialNumber', 0xF199: 'programmingDate',
+  0xF19A: 'calibrationRepairShopCode', 0xF19B: 'calibrationDate',
+  0xF19C: 'calibrationEquipmentSoftwareNumber', 0xF19D: 'ECUInstallationDate', 0xF19E: 'ODXFile',
+  0xF19F: 'entity', 0xFF00: 'UDSVersion',
+}
+# Which standard DIDs carry printable ASCII (serials, part/VIN strings) vs opaque bytes.
+_ASCII_DIDS = frozenset({0xF187, 0xF188, 0xF189, 0xF18C, 0xF190, 0xF191, 0xF192, 0xF194, 0xF195,
+                         0xF197, 0xF198, 0xF18A, 0xF18E})
+
+
+def did_name(did: int) -> str:
+  return STANDARD_DIDS.get(did, '')
+
 SERVICE_NAMES = {
   0x22: 'ReadDataByIdentifier', 0x19: 'ReadDTCInformation', 0x09: 'ReadVehicleInformation',
   0x3E: 'TesterPresent', 0x10: 'DiagnosticSessionControl', 0x11: 'ECUReset',
@@ -201,13 +229,21 @@ def _parse_did(body: bytes, request: bytes) -> dict:
   if reqd and body[:2] != reqd[:2]:
     return {'kind': 'error', 'text': 'DID가 응답에 되풀이되지 않았습니다'}
   did = body[:2]
+  n = int.from_bytes(did, 'big')
   data = body[2:]
-  out = {'kind': 'positive', 'did': did.hex().upper(), 'hex': data.hex(' ').upper(),
-         'text': f'DID {did.hex().upper()} = {data.hex(" ").upper()}'}
-  if did == b'\xf1\x90':                            # VIN, masked
+  name = did_name(n)
+  label = f'{did.hex().upper()}' + (f' {name}' if name else '')
+  out = {'kind': 'positive', 'did': did.hex().upper(), 'name': name, 'hex': data.hex(' ').upper(),
+         'text': f'DID {label} = {data.hex(" ").upper()}'}
+  if n == 0xF190:                                   # VIN, masked
     s = data.decode('ascii', 'replace')
     out['vin'] = s[:3] + '*' * max(0, len(s) - 7) + s[-4:] if len(s) > 7 else '*' * len(s)
     out['text'] += f'  ({out["vin"]})'
+  elif n in _ASCII_DIDS and data:                   # serials / part numbers decode as ASCII
+    ascii_ = data.decode('ascii', 'replace').rstrip('\x00 ')
+    if ascii_.isprintable():
+      out['ascii'] = ascii_
+      out['text'] += f'  ({ascii_})'
   return out
 
 
