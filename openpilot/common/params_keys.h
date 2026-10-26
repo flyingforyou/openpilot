@@ -206,6 +206,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"BtObdEnabled", {PERSISTENT, BOOL, "1"}},
     {"BtObdAddress", {PERSISTENT, STRING}},
     {"BtObdPin", {PERSISTENT, STRING, "1234"}},
+    {"BtObdPackNewKwh", {PERSISTENT, STRING}},  // nominal full pack energy when new, for degradation
     {"CutInSoftCap", {PERSISTENT, INT, "1"}},
     {"LongResearchPath", {PERSISTENT, BOOL, "0"}},
     {"LongResearchMode", {PERSISTENT, INT, "0"}},

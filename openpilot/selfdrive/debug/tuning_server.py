@@ -1076,6 +1076,7 @@ class Handler(BaseHTTPRequestHandler):
       st = {'bt': 'absent' if not os.path.exists('/dev/btpower') else 'off', 'link': 'idle',
             'devices': [], 'values': {}, 'age': {}, 'raw': {}, 'cellsV': [], 'cellsT': [], 'stale': True}
     st['pin'] = self.params.get('BtObdPin', return_default=True) or '1234'
+    st['packNewKwh'] = self.params.get('BtObdPackNewKwh') or ''
     return st
 
   def _read_json(self):
@@ -1153,6 +1154,18 @@ class Handler(BaseHTTPRequestHandler):
       except json.JSONDecodeError:
         return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
       cmd = req.get('cmd')
+      if cmd == 'pack':
+        # The new-pack reference for degradation. Not something the bus can tell us, so the page
+        # asks; '' goes back to estimating it from the pack's own reading.
+        kwh = str(req.get('kwh', '')).strip()
+        try:
+          ok = kwh == '' or 40.0 <= float(kwh) <= 120.0
+        except ValueError:
+          ok = False
+        if not ok:
+          return self._send(400, json.dumps({'error': '신품 용량은 40~120 kWh 사이로 입력하세요'}))
+        self.params.put('BtObdPackNewKwh', kwh)
+        return self._send(200, json.dumps({'ok': True}))
       if cmd not in ('scan', 'connect', 'disconnect'):
         return self._send(400, json.dumps({'error': f'알 수 없는 명령: {cmd}'}))
       if cmd == 'connect':
@@ -3062,6 +3075,13 @@ background:var(--bg);color:var(--tx);width:90px}
 .dev .n{flex:1;min-width:0;font-size:13px}.dev .a{font-family:var(--m);font-size:10.5px;color:var(--dim)}
 .err{color:var(--bad);font-size:12.5px;padding:9px 13px;border-top:1px solid var(--line)}
 .hint{font-size:12px;color:var(--mut);line-height:1.6;padding:11px 13px}
+.hv{font-size:12px;font-weight:600}.hv.good{color:var(--ok)}.hv.mid{color:var(--hot)}.hv.bad{color:var(--bad)}
+.hv.na{color:var(--dim);font-weight:normal}
+.vl .tag{font-family:var(--s);font-size:11px;margin-left:8px}
+.ref{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:9px 13px;border-top:1px solid var(--line);font-size:12.5px}
+select{font:inherit;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--tx)}
+.crit{font-size:11.5px;color:var(--mut);line-height:1.65;padding:10px 13px;border-top:1px solid var(--line)}
+.crit b{color:var(--tx);font-weight:600}
 .cells{display:grid;grid-template-columns:repeat(12,1fr);gap:3px;padding:11px 13px}
 .cell{font-family:var(--m);font-size:9.5px;text-align:center;padding:5px 0;border-radius:4px;
 background:var(--bg);border:1px solid var(--line);font-variant-numeric:tabular-nums}
@@ -3073,6 +3093,36 @@ th{color:var(--mut);font-weight:normal}
 </style></head><body>
 <a class="back" href="/">← 메뉴</a>
 <h1>진단 · 배터리</h1><div class="sub" id="sub">연결 중…</div>
+
+<div class="grp">
+  <div class="gt"><span>배터리 건강 요약</span><span class="hv na" id="hverdict">데이터 없음</span></div>
+  <div class="big" id="hbig"></div>
+  <div id="hrows"></div>
+  <div class="ref"><span>신품 기준 용량</span>
+    <select id="packsel" aria-label="팩 종류">
+      <option value="">자동 추정</option>
+      <option value="74.5">75 kWh 팩 (신품 약 74.5)</option>
+      <option value="81.5">85 kWh 팩 (신품 약 81.5)</option>
+      <option value="85.8">90 kWh 팩 (신품 약 85.8)</option>
+      <option value="98.0">100 kWh 팩 (신품 약 98.0)</option>
+      <option value="custom">직접 입력…</option>
+    </select>
+    <input id="packkwh" placeholder="kWh" hidden aria-label="신품 용량 kWh">
+    <button id="packsave" hidden>저장</button>
+    <span class="a" id="packnote"></span></div>
+  <div class="crit">
+    <b>판정 기준</b><br>
+    · <b>열화</b> = 1 − 지금 공칭 완충 용량 ÷ 신품 기준. 10% 미만 좋음 · 10~20% 보통 · 20% 이상 나쁨.
+      신품 기준은 팩마다 다르고 버스에서 알 수 없습니다. 위 값은 커뮤니티 보고치(대략)라, 정확한 값을 알면 직접 입력하세요.
+      공칭 완충 용량은 BMS 추정치라 충전·방전 패턴에 따라 몇 % 오르내립니다.<br>
+    · <b>셀 밸런스</b> = 96개 셀 중 최고 − 최저 전압. 20 mV 미만 좋음 · 20~40 mV 보통 · 40 mV 이상 나쁨.
+      전류가 거의 없을 때(±10 A 이내)만 판정합니다. 주행·충전 중에는 편차가 원래 커집니다.
+      SOC가 아주 낮거나(20% 미만) 높을 때(90% 이상) 차이가 잘 드러납니다.<br>
+    · <b>약한 셀</b> = 평균보다 30 mV 이상 낮은 셀이 있으면 표시합니다. 같은 셀이 계속 최저로 나오면 그 셀의 노화를 의심할 수 있습니다.<br>
+    · <b>모듈 온도 편차</b> = 최고 − 최저. 5 °C 미만 좋음 · 5~10 °C 보통 · 10 °C 이상 나쁨. 충전·고출력 직후에는 일시적으로 커집니다.<br>
+    · <b>등가 사이클</b> = 누적 방전량 ÷ 신품 용량. 판정 없이 참고용입니다.
+  </div>
+</div>
 
 <div class="grp">
   <div class="gt"><span>블루투스 · OBD 동글</span><span id="pills"></span></div>
@@ -3129,7 +3179,63 @@ async function post(body){busy=true;try{const r=await fetch('/api/obd',{method:'
   const j=await r.json(); if(j.error) alert(j.error);}finally{busy=false;tick();}}
 $('scan').onclick=()=>post({cmd:'scan'});
 function connect(a){post({cmd:'connect',addr:a,pin:$('pin').value.trim()});}
+const PACKS=[74.5,81.5,85.8,98.0];
+const GRADE={good:['좋음','good'],mid:['보통','mid'],bad:['나쁨','bad'],na:['판정 보류','na']};
+const tag=g=>`<span class="tag hv ${GRADE[g][1]}">${GRADE[g][0]}</span>`;
+function grade(v,a,b){return v==null?'na':v<a?'good':v<b?'mid':'bad';}
+let packEditing=false;
+function renderHealth(s){
+  const V=s.values||{},cv=s.cellsV||[],ct=s.cellsT||[];
+  const nfp=V.nominalFullPackEnergy;
+  let ref=parseFloat(s.packNewKwh), est=false;
+  if(!(ref>0) && nfp!=null){ref=PACKS.find(p=>p>=nfp)||nfp; est=true;}
+  const degr=(nfp!=null&&ref>0)?Math.max(0,(1-nfp/ref)*100):null;
+  const gDeg=grade(degr,10,20);
+  const cur=V.packCurrent, rest=cur!=null&&Math.abs(cur)<=10;
+  const delta=V.cellDelta!=null?V.cellDelta*1000:null;
+  const gBal=(delta!=null&&rest)?grade(delta,20,40):'na';
+  let weak=[];
+  if(V.cellAvg!=null) cv.forEach((v,i)=>{if(v!=null&&(V.cellAvg-v)*1000>=30) weak.push(`#${i+1} (${((V.cellAvg-v)*1000).toFixed(0)} mV)`);});
+  let lo=-1,hi=-1; cv.forEach((v,i)=>{if(v==null)return; if(lo<0||v<cv[lo])lo=i; if(hi<0||v>cv[hi])hi=i;});
+  const tspread=(V.moduleTempMax!=null)?V.moduleTempMax-V.moduleTempMin:null;
+  const gTemp=grade(tspread,5,10);
+  const cycles=(V.kwhDischargeTotal!=null&&ref>0)?V.kwhDischargeTotal/ref:null;
+  const graded=[gDeg,gBal,gTemp].filter(g=>g!=='na');
+  const overall=!graded.length?null:graded.includes('bad')?'bad':graded.includes('mid')?'mid':'good';
+  const hv=$('hverdict');
+  hv.className='hv '+(overall?GRADE[overall][1]:'na');
+  hv.textContent=overall?('종합 '+GRADE[overall][0]+(weak.length?' · 약한 셀 있음':'')):'데이터 없음';
+  const tile=(k,v,u,g)=>`<div><div class="k">${k} ${g?tag(g):''}</div><div class="v">${v==null?'–':v}<small>${u}</small></div></div>`;
+  $('hbig').innerHTML=tile('열화',degr==null?null:degr.toFixed(1),'%',degr==null?null:gDeg)
+    +tile('공칭 완충 용량',nfp==null?null:nfp.toFixed(1),`kWh / ${ref>0?ref.toFixed(1):'–'}${est?' (추정)':''}`)
+    +tile('셀 편차',delta==null?null:delta.toFixed(0),'mV',delta==null?null:gBal)
+    +tile('SOC',V.socUI==null?null:V.socUI.toFixed(1),'%');
+  const r=(l,v,extra)=>`<div class="row"><span class="lb">${l}</span><span class="vl${v==null?' na':''}">${v==null?'–':v}${extra||''}</span></div>`;
+  $('hrows').innerHTML=
+    r('셀 밸런스 판정 조건', cur==null?null:`전류 ${cur.toFixed(1)} A`, cur==null?'':(rest?tag(gBal):'<span class="tag hv na">부하 중 · 보류</span>'))
+   +r('최저 셀', lo<0?null:`#${lo+1} · ${cv[lo].toFixed(3)} V`)
+   +r('최고 셀', hi<0?null:`#${hi+1} · ${cv[hi].toFixed(3)} V`)
+   +r('약한 셀 (평균보다 30 mV 이상 낮음)', V.cellAvg==null?null:(weak.length?weak.slice(0,6).join(', '):'없음'), V.cellAvg==null?'':tag(weak.length?'bad':'good'))
+   +r('셀 수신', V.cellCount==null?null:`${V.cellCount} / 96`)
+   +r('모듈 온도 편차', tspread==null?null:`${tspread.toFixed(1)} °C (${V.moduleTempMin.toFixed(1)} ~ ${V.moduleTempMax.toFixed(1)})`, tspread==null?'':tag(gTemp))
+   +r('남은 에너지 / 보호 버퍼', V.nominalEnergyRemaining==null?null:`${V.nominalEnergyRemaining.toFixed(1)} / ${(V.energyBuffer??0).toFixed(1)} kWh`)
+   +r('등가 충전 사이클', cycles==null?null:`약 ${cycles.toFixed(0)}회`)
+   +r('누적 방전 / 충전', V.kwhDischargeTotal==null?null:`${V.kwhDischargeTotal.toFixed(0)} / ${(V.kwhChargeTotal??0).toFixed(0)} kWh`)
+   +r('배터리 주행거리', V.batteryOdometerMi==null?null:`${V.batteryOdometerMi.toFixed(0)} mi (${(V.batteryOdometerMi*1.609344).toFixed(0)} km)`);
+  if(!packEditing){
+    const saved=s.packNewKwh||'';
+    const opt=[...$('packsel').options].some(o=>o.value===saved)?saved:(saved?'custom':'');
+    $('packsel').value=opt; $('packkwh').hidden=opt!=='custom'; $('packsave').hidden=opt!=='custom';
+    if(opt==='custom') $('packkwh').value=saved;
+    $('packnote').textContent=est&&ref>0?`지금은 ${ref.toFixed(1)} kWh로 추정 중`:'';
+  }
+}
+$('packsel').onchange=()=>{const v=$('packsel').value;
+  if(v==='custom'){packEditing=true;$('packkwh').hidden=false;$('packsave').hidden=false;$('packkwh').focus();return;}
+  packEditing=false; post({cmd:'pack',kwh:v});};
+$('packsave').onclick=()=>{packEditing=false; post({cmd:'pack',kwh:$('packkwh').value.trim()});};
 function render(s){
+  renderHealth(s);
   const b=BT[s.bt]||[s.bt,''],l=LINK[s.link]||[s.link,''];
   $('pills').innerHTML=`<span class="pill ${b[1]}">${b[0]}</span> <span class="pill ${l[1]}">${l[0]}</span>`
     +(s.elm&&s.elm.version?` <span class="pill">${s.elm.version}${s.elm.silent?' · 무음감시':''}</span>`:'');
