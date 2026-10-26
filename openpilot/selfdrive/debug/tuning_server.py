@@ -17,6 +17,7 @@ moving the target distance under a car that is already following one.
 """
 import argparse
 import json
+import re
 import os
 import subprocess
 import sys
@@ -1000,6 +1001,8 @@ class Handler(BaseHTTPRequestHandler):
 
     if self.path.startswith('/api/videos'):
       return self._send(200, json.dumps({'routes': video_source.list_videos()}))
+    if self.path.startswith('/api/obd'):
+      return self._send(200, json.dumps(self._obd_state()))
 
     page = self.path.split('?')[0].rstrip('/')
 
@@ -1045,10 +1048,35 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, PAGE_VIDEO, 'text/html; charset=utf-8')
     if page == '/shadow':
       return self._send(200, PAGE_SHADOW, 'text/html; charset=utf-8')
+    if page == '/diag':
+      return self._send(200, PAGE_DIAG, 'text/html; charset=utf-8')
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
 
   def _onroad(self) -> bool:
     return bool(self.state.get().get('onroad'))
+
+  @staticmethod
+  def _touch_obd_viewer() -> None:
+    # btobdd holds the dongle link only while someone is looking (or the car is on); this mtime
+    # is how it knows.
+    try:
+      with open(OBD_VIEWER_PATH, 'a'):
+        pass
+      os.utime(OBD_VIEWER_PATH)
+    except OSError:
+      pass
+
+  def _obd_state(self) -> dict:
+    self._touch_obd_viewer()
+    try:
+      with open(OBD_STATE_PATH) as f:
+        st = json.load(f)
+      st['stale'] = time.time() - st.get('updated', 0) > 10
+    except (OSError, ValueError):
+      st = {'bt': 'absent' if not os.path.exists('/dev/btpower') else 'off', 'link': 'idle',
+            'devices': [], 'values': {}, 'age': {}, 'raw': {}, 'cellsV': [], 'cellsT': [], 'stale': True}
+    st['pin'] = self.params.get('BtObdPin', return_default=True) or '1234'
+    return st
 
   def _read_json(self):
     n = int(self.headers.get('Content-Length', 0))
@@ -1118,6 +1146,32 @@ class Handler(BaseHTTPRequestHandler):
       if err:
         return self._send(400, json.dumps({'error': err}))
       return self._send(200, json.dumps({'ok': True, **self.can.state()}))
+
+    if self.path.startswith('/api/obd'):
+      try:
+        req = self._read_json()
+      except json.JSONDecodeError:
+        return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
+      cmd = req.get('cmd')
+      if cmd not in ('scan', 'connect', 'disconnect'):
+        return self._send(400, json.dumps({'error': f'알 수 없는 명령: {cmd}'}))
+      if cmd == 'connect':
+        addr = str(req.get('addr', '')).upper()
+        if not re.fullmatch(r'([0-9A-F]{2}:){5}[0-9A-F]{2}', addr):
+          return self._send(400, json.dumps({'error': '블루투스 주소 형식이 아닙니다'}))
+        self.params.put('BtObdAddress', addr)
+        pin = str(req.get('pin', '')).strip()
+        if pin:
+          self.params.put('BtObdPin', pin[:16])
+      elif cmd == 'disconnect':
+        self.params.put('BtObdAddress', '')
+      self._touch_obd_viewer()
+      tmp = OBD_CMD_PATH + '.tmp'
+      with open(tmp, 'w') as f:
+        json.dump({'cmd': cmd}, f)
+      os.chmod(tmp, 0o666)
+      os.replace(tmp, OBD_CMD_PATH)
+      return self._send(200, json.dumps({'ok': True}))
 
     if not self.path.startswith('/api/settings'):
       return self._send(404, '{}')
@@ -1697,6 +1751,10 @@ loadSettings();loadModels().then(scheduleModels);poll();setInterval(poll,300);
 </script></body></html>"""
 
 
+OBD_STATE_PATH = '/dev/shm/btobd.json'
+OBD_CMD_PATH = '/dev/shm/btobd_cmd.json'
+OBD_VIEWER_PATH = '/dev/shm/btobd_viewer'
+
 PAGE_INDEX = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>openpilot</title><style>
@@ -1755,6 +1813,12 @@ border:1px solid var(--line);color:var(--mut)}
     나란히 보여줍니다. 상수를 고치고 다시 돌리면 새 선만 움직이므로, 바꾼 값이
     실제 상황에서 무엇을 바꾸는지 바로 확인할 수 있습니다.</div>
   <div class="st"><span class="pill" id="p-shd">–</span></div>
+</a>
+
+<a class="card" href="/diag">
+  <div class="t">진단 · 배터리 (블루투스 OBD)</div>
+  <div class="d">진단 단자에 꽂은 블루투스 ELM327 동글로 배터리 전압·전류·SOC·에너지,
+    셀 전압 96개, 모터 출력과 온도를 Scan My Tesla처럼 실시간으로 봅니다.</div>
 </a>
 
 <a class="card" href="/videos">
@@ -2955,6 +3019,151 @@ document.addEventListener('keydown',e=>{
   }catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}
 })();
 </script></body></html>"""
+
+
+PAGE_DIAG = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>진단 · 배터리</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--ok:#4CC38A;--hot:#F5B942;--bad:#E5484D;--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--ok:#1B7F53;--hot:#9A6210;--bad:#C2292E}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);
+padding:18px;padding-bottom:calc(18px + env(safe-area-inset-bottom));max-width:860px}
+a.back{color:var(--dim);font-family:var(--m);font-size:11px;text-decoration:none}
+h1{font-size:17px;margin:8px 0 3px}
+.sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:16px}
+.grp{background:var(--card);border:1px solid var(--line);border-radius:11px;margin-bottom:11px;overflow:hidden}
+.gt{font-size:12px;color:var(--mut);padding:10px 13px;border-bottom:1px solid var(--line);
+display:flex;justify-content:space-between;gap:8px;align-items:center}
+.row{display:flex;align-items:baseline;gap:10px;padding:7px 13px;border-bottom:1px solid var(--line)}
+.row:last-child{border-bottom:none}
+.lb{font-size:13px;flex:1;min-width:0}
+.vl{font-family:var(--m);font-size:13px;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.vl.na{color:var(--dim)}
+.vl.old{color:var(--dim)}
+.big{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;background:var(--line)}
+.big>div{background:var(--card);padding:12px 13px}
+.big .k{font-size:11px;color:var(--mut)}
+.big .v{font-family:var(--m);font-size:22px;margin-top:3px;font-variant-numeric:tabular-nums}
+.big .v small{font-size:12px;color:var(--mut);margin-left:3px}
+.pill{font-family:var(--m);font-size:10.5px;padding:3px 8px;border-radius:99px;border:1px solid var(--line);color:var(--mut)}
+.pill.ok{border-color:var(--ok);color:var(--ok)}.pill.warn{border-color:var(--hot);color:var(--hot)}
+.pill.bad{border-color:var(--bad);color:var(--bad)}
+button{font:inherit;font-size:12.5px;padding:7px 12px;border-radius:8px;border:1px solid var(--line);
+background:var(--bg);color:var(--tx);cursor:pointer}
+button.pri{background:var(--radar);border-color:var(--radar);color:#04131C}
+button:disabled{opacity:.5;cursor:default}
+input{font:inherit;font-size:13px;padding:6px 9px;border-radius:8px;border:1px solid var(--line);
+background:var(--bg);color:var(--tx);width:90px}
+.dev{display:flex;align-items:center;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line)}
+.dev:last-child{border-bottom:none}
+.dev .n{flex:1;min-width:0;font-size:13px}.dev .a{font-family:var(--m);font-size:10.5px;color:var(--dim)}
+.err{color:var(--bad);font-size:12.5px;padding:9px 13px;border-top:1px solid var(--line)}
+.hint{font-size:12px;color:var(--mut);line-height:1.6;padding:11px 13px}
+.cells{display:grid;grid-template-columns:repeat(12,1fr);gap:3px;padding:11px 13px}
+.cell{font-family:var(--m);font-size:9.5px;text-align:center;padding:5px 0;border-radius:4px;
+background:var(--bg);border:1px solid var(--line);font-variant-numeric:tabular-nums}
+.cell.lo{border-color:var(--bad);color:var(--bad)}.cell.hi{border-color:var(--ok);color:var(--ok)}
+table{width:100%;border-collapse:collapse;font-family:var(--m);font-size:11px}
+td,th{padding:5px 13px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--mut);font-weight:normal}
+@media(max-width:560px){.cells{grid-template-columns:repeat(8,1fr)}}
+</style></head><body>
+<a class="back" href="/">← 메뉴</a>
+<h1>진단 · 배터리</h1><div class="sub" id="sub">연결 중…</div>
+
+<div class="grp">
+  <div class="gt"><span>블루투스 · OBD 동글</span><span id="pills"></span></div>
+  <div id="target"></div>
+  <div class="row"><span class="lb">주변 동글 찾기 <span class="a" id="scanst"></span></span>
+    <span>PIN <input id="pin" value="1234" aria-label="PIN"></span>
+    <button id="scan">검색</button></div>
+  <div id="devs"></div>
+  <div class="err" id="err" hidden></div>
+</div>
+
+<div class="grp"><div class="gt"><span>배터리</span><span class="a" id="bage"></span></div>
+  <div class="big" id="bigbat"></div><div id="bat"></div></div>
+<div class="grp"><div class="gt"><span>셀 전압 (96)</span><span class="a" id="cellsum"></span></div>
+  <div class="cells" id="cells"></div></div>
+<div class="grp"><div class="gt"><span>모듈 온도 (32)</span></div><div class="cells" id="temps"></div></div>
+<div class="grp"><div class="gt"><span>구동</span></div><div id="drive"></div></div>
+<div class="grp"><div class="gt"><span>기타</span></div><div id="misc"></div></div>
+<div class="grp"><div class="gt"><span>원본 프레임</span><span class="a">ID · 길이 · 데이터 · 수신 수</span></div>
+  <table><tbody id="raw"></tbody></table></div>
+<div class="grp"><div class="hint">
+  Scan My Tesla와 같은 방식입니다. 동글을 CAN 감시 모드(ATMA, 가능하면 무음 감시 ATCSM1)로 두고
+  배터리·구동장치가 원래 방송하는 메시지를 ID별로 돌아가며 듣습니다. 차에 아무것도 요청하지 않습니다.
+  해독은 wk057의 Model S CAN 해독 문서(2016)와 OVMS 코드 기준이라, 차 펌웨어에 따라 값이 어긋날 수 있습니다.
+  처음엔 화면의 SOC·전압과 맞는지 확인해 주세요. 동글 연결은 주행 중이거나 이 페이지를 열어 둔 동안에만 유지합니다.
+</div></div>
+
+<script>
+const $=i=>document.getElementById(i);
+const BT={absent:['블루투스 커널 없음','bad'],off:['꺼짐','warn'],starting:['켜는 중','warn'],up:['블루투스 켜짐','ok'],error:['블루투스 오류','bad']};
+const LINK={idle:['동글 대기','warn'],connecting:['연결 중','warn'],connected:['동글 연결됨','ok'],error:['연결 실패','bad']};
+const f=(v,d)=>v==null?null:(typeof v==='number'?v.toFixed(d):String(v));
+function row(label,v,unit,age){
+  const na=v==null; const old=!na&&age!=null&&age>10;
+  return `<div class="row"><span class="lb">${label}</span><span class="vl${na?' na':old?' old':''}">${na?'–':v+(unit?' '+unit:'')}</span></div>`;
+}
+function rows(spec,V,A){return spec.map(([k,l,u,d])=>row(l,f(V[k],d??1),u,A[k])).join('');}
+const BAT=[['packCurrent','전류','A',1],['socMin','SOC (최소)','%',1],['nominalFullPackEnergy','완충 용량 (공칭)','kWh',1],
+ ['expectedEnergyRemaining','남은 에너지 (예상)','kWh',1],['idealEnergyRemaining','남은 에너지 (이상)','kWh',1],
+ ['energyBuffer','보호 버퍼','kWh',1],['energyToChargeComplete','충전 완료까지','kWh',1],
+ ['maxDischargePower','최대 방전 출력','kW',1],['maxRegenPower','최대 회생 출력','kW',1],['negTerminalTemp','음극 단자 온도','°C',1]];
+const DRIVE=[['rearMechPower','뒤 모터 출력','kW',1],['frontMechPower','앞 모터 출력','kW',1],
+ ['rearTorqueMeasured','뒤 토크 (측정)','Nm',0],['frontTorqueMeasured','앞 토크 (측정)','Nm',0],['rearMotorRpm','뒤 모터 RPM','rpm',0],
+ ['rearStatorCurrent','뒤 고정자 전류','A',0],['frontStatorCurrent','앞 고정자 전류','A',0],['rearDissipation','뒤 인버터 발열','W',0],
+ ['frontDissipation','앞 인버터 발열','W',0],['rearDrivePowerMax','뒤 최대 구동','kW',0],['frontDrivePowerMax','앞 최대 구동','kW',0],
+ ['rearRegenPowerMax','뒤 최대 회생','kW',0],['inverterTemp','인버터 온도','°C',0],['motorTemp','모터 온도','°C',0],
+ ['pedalPos','가속 페달','%',1],['gear','기어','',0],['vehicleSpeedMph','속도','mph',1]];
+const MISC=[['dcdcOutputVoltage','12V (DC-DC 출력)','V',1],['dcdcOutputCurrent','DC-DC 전류','A',0],['dcdcOutputPower','DC-DC 출력','W',0],
+ ['rearInverter12V','12V (뒤 인버터)','V',1],['kwhDischargeTotal','누적 방전','kWh',1],['kwhChargeTotal','누적 충전','kWh',1],
+ ['batteryOdometerMi','배터리 주행거리','mi',0],['rangeIdealMi','주행가능 (이상)','mi',0],['rangeEstMi','주행가능 (예상)','mi',0],
+ ['consumptionWhMi','소비','Wh/mi',0]];
+let busy=false;
+async function post(body){busy=true;try{const r=await fetch('/api/obd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json(); if(j.error) alert(j.error);}finally{busy=false;tick();}}
+$('scan').onclick=()=>post({cmd:'scan'});
+function connect(a){post({cmd:'connect',addr:a,pin:$('pin').value.trim()});}
+function render(s){
+  const b=BT[s.bt]||[s.bt,''],l=LINK[s.link]||[s.link,''];
+  $('pills').innerHTML=`<span class="pill ${b[1]}">${b[0]}</span> <span class="pill ${l[1]}">${l[0]}</span>`
+    +(s.elm&&s.elm.version?` <span class="pill">${s.elm.version}${s.elm.silent?' · 무음감시':''}</span>`:'');
+  $('sub').textContent=s.stale?'데몬 응답 없음 — 블루투스 커널/데몬을 확인하세요':(s.wanted?'수신 대기 중':'시동 꺼짐 · 페이지 열림 동안만 연결');
+  if(document.activeElement!==$('pin')) $('pin').value=s.pin||'1234';
+  $('target').innerHTML=s.target?`<div class="dev"><span class="n">연결 대상 <span class="a">${s.target}</span></span>
+     <button id="disc">연결 해제</button></div>`:'<div class="hint">연결된 동글이 없습니다. 검색한 뒤 목록에서 연결하세요.</div>';
+  if(s.target) $('disc').onclick=()=>post({cmd:'disconnect'});
+  $('scanst').textContent=s.discovering?'· 검색 중…':'';
+  $('scan').disabled=busy||s.bt!=='up'||s.discovering;
+  $('devs').innerHTML=(s.devices||[]).map(d=>`<div class="dev"><span class="n">${d.name||'(이름 없음)'} ${d.paired?'<span class="pill ok">페어링됨</span>':''}<br>
+     <span class="a">${d.addr} · ${d.rssi??'–'} dBm</span></span><button class="pri" data-a="${d.addr}">연결</button></div>`).join('');
+  document.querySelectorAll('#devs button').forEach(x=>x.onclick=()=>connect(x.dataset.a));
+  $('err').hidden=!s.error; $('err').textContent=s.error||'';
+  const V=s.values||{},A=s.age||{};
+  const big=[['packVoltage','팩 전압','V',1],['packPower','출력','kW',1],['socUI','SOC','%',1],['nominalEnergyRemaining','남은 에너지','kWh',1]];
+  $('bigbat').innerHTML=big.map(([k,l,u,d])=>`<div><div class="k">${l}</div><div class="v">${V[k]==null?'–':f(V[k],d)}<small>${u}</small></div></div>`).join('');
+  $('bat').innerHTML=rows(BAT,V,A); $('drive').innerHTML=rows(DRIVE,V,A); $('misc').innerHTML=rows(MISC,V,A);
+  $('bage').textContent=A.packVoltage!=null?`${A.packVoltage}s 전`:'';
+  const cv=s.cellsV||[],avg=V.cellAvg;
+  $('cellsum').textContent=V.cellMin!=null?`최저 ${V.cellMin.toFixed(3)} · 최고 ${V.cellMax.toFixed(3)} · 편차 ${(V.cellDelta*1000).toFixed(0)} mV (${V.cellCount}/96)`:'';
+  $('cells').innerHTML=Array.from({length:96},(_,i)=>{const v=cv[i];const c=v==null?'':(avg&&v<=V.cellMin+1e-4?' lo':avg&&v>=V.cellMax-1e-4?' hi':'');
+    return `<div class="cell${c}" title="#${i+1}">${v==null?'·':v.toFixed(3)}</div>`;}).join('');
+  const ct=s.cellsT||[];
+  $('temps').innerHTML=Array.from({length:32},(_,i)=>`<div class="cell">${ct[i]==null?'·':ct[i].toFixed(1)}</div>`).join('');
+  const now=Date.now()/1000;
+  $('raw').innerHTML=Object.entries(s.raw||{}).map(([id,r])=>`<tr><td>0x${id}</td><td>${r.len}</td><td>${r.data}</td><td>${r.n}</td><td>${(now-r.t).toFixed(0)}s</td></tr>`).join('')
+    ||'<tr><td>아직 받은 프레임이 없습니다</td></tr>';
+}
+async function tick(){try{render(await(await fetch('/api/obd')).json());}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}}
+tick(); setInterval(()=>{if(!busy) tick();},1000);
+</script></body></html>
+"""
+
 
 
 def main():

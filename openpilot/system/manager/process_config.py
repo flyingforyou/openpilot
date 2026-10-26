@@ -88,6 +88,11 @@ procs = [
   # PythonProcess takes no restart_if_crash, so a crash is simply a crash here.
   PythonProcess("tuning_server", "openpilot.selfdrive.debug.tuning_server", always_run,
                 enabled=not PC),
+  # Bluetooth OBD dongle -> Model S/X battery data for the /diag page. Only on the BT-enabled
+  # kernel (no /dev/btpower on stock AGNOS). It brings the adapter up at boot and holds the
+  # dongle link only while onroad or while the page is open.
+  PythonProcess("btobdd", "openpilot.system.btobd.btobdd", always_run,
+                enabled=not PC and os.path.exists('/dev/btpower')),
 
   PythonProcess("modeld", "openpilot.selfdrive.modeld.modeld", only_onroad),
   PythonProcess("dmonitoringmodeld", "openpilot.selfdrive.modeld.dmonitoringmodeld", driverview, enabled=(WEBCAM or not PC)),

@@ -202,6 +202,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LeadAccelSlope", {PERSISTENT, BOOL, "1"}},
     {"StopSignHoldMs", {PERSISTENT, INT, "1000"}},
     {"BrakeOnsetJerk", {PERSISTENT, INT, "20"}},
+    // Bluetooth ELM327 dongle on the diagnostic port (openpilot/system/btobd)
+    {"BtObdEnabled", {PERSISTENT, BOOL, "1"}},
+    {"BtObdAddress", {PERSISTENT, STRING}},
+    {"BtObdPin", {PERSISTENT, STRING, "1234"}},
     {"CutInSoftCap", {PERSISTENT, INT, "1"}},
     {"LongResearchPath", {PERSISTENT, BOOL, "0"}},
     {"LongResearchMode", {PERSISTENT, INT, "0"}},
