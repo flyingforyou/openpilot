@@ -76,6 +76,32 @@ def parse_eir(eir: bytes) -> dict:
   return out
 
 
+HCI_RESET = bytes([0x01, 0x03, 0x0C, 0x00])
+HCI_RESET_DONE = bytes([0x04, 0x0E, 0x04, 0x01, 0x03, 0x0C, 0x00])
+
+
+def _reset_raw(tty: int, attempts: int = 5) -> None:
+  """HCI_Reset over the raw UART until it is acknowledged, before the kernel owns the line.
+
+  The btpower off/on does not always reset the chip: after a reboot it came back still running an
+  LE scan from the previous session, streaming advertising reports, and the kernel's own init
+  commands timed out in that flood (hci0 0x1003/0x1001/0x1009 tx timeout). A reset stops whatever
+  the chip was doing; draining until it is acknowledged leaves the line in sync.
+  """
+  for _ in range(attempts):
+    os.write(tty, HCI_RESET)
+    buf, end = b'', time.monotonic() + 0.6
+    while time.monotonic() < end:
+      r, _, _ = select.select([tty], [], [], 0.05)
+      if r:
+        buf += os.read(tty, 4096)
+    if HCI_RESET_DONE in buf:
+      time.sleep(0.1)
+      termios.tcflush(tty, termios.TCIOFLUSH)
+      return
+  raise OSError('Bluetooth chip did not acknowledge HCI_Reset')
+
+
 def power_up() -> int:
   """Power the chip, attach the UART as an HCI line discipline. Returns the tty fd, which must stay
   open for as long as the adapter should exist."""
@@ -104,6 +130,7 @@ def power_up() -> int:
   a[4] = a[5] = termios.B115200
   termios.tcsetattr(tty, termios.TCSANOW, a)
   termios.tcflush(tty, termios.TCIOFLUSH)
+  _reset_raw(tty)
   fcntl.ioctl(tty, TIOCSETD, struct.pack('i', N_HCI))
   fcntl.ioctl(tty, HCIUARTSETFLAGS, 0)
   fcntl.ioctl(tty, HCIUARTSETPROTO, HCI_UART_H4)
@@ -144,7 +171,16 @@ class Mgmt:
       return self._replies.pop(op)
 
   def setup(self) -> None:
-    for op, val in ((OP_SET_POWERED, 1), (OP_SET_CONNECTABLE, 1), (OP_SET_BONDABLE, 1), (OP_SET_SSP, 1)):
+    # hci0 registers and runs its own init a moment after the line discipline is attached; until
+    # then Set Powered answers Invalid Index (0x11).
+    for _ in range(20):
+      st, _ = self.command(OP_SET_POWERED, bytes([1]), timeout=10.0)
+      if st == 0:
+        break
+      time.sleep(0.5)
+    else:
+      raise OSError(f'mgmt set powered status {st}')
+    for op, val in ((OP_SET_CONNECTABLE, 1), (OP_SET_BONDABLE, 1), (OP_SET_SSP, 1)):
       st, _ = self.command(op, bytes([val]))
       if st not in (0, 0x0C):   # 0x0C: not supported / already set
         raise OSError(f'mgmt 0x{op:04x} status {st}')
