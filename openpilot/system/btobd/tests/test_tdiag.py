@@ -27,16 +27,40 @@ def test_shipped_example_is_not_live():
   assert p and tdiag.live_blockers(p) and p['signals']
 
 
-@pytest.mark.parametrize('sid', sorted(tdiag.FORBIDDEN_SIDS))
-def test_forbidden_services(sid):
+@pytest.mark.parametrize('sid', sorted(tdiag.FLASH_SIDS))
+def test_flash_services_floored_live_but_parsed_offline(sid):
+  # flash/transfer family: never a live transmit path, with or without a profile
   with pytest.raises(tdiag.SafetyRefusal):
-    tdiag.check_request_allowed(bytes([sid, 1, 2]))
+    tdiag.check_request_allowed(bytes([sid, 1, 2]), live=True)
+  tdiag.check_request_allowed(bytes([sid, 1, 2]), live=False)   # offline decoding is fine
+
+
+@pytest.mark.parametrize('sid', sorted(tdiag.CONTROL_SIDS))
+def test_control_services_frame_but_are_gated(sid):
+  # ported and allowed to build/live-gate, but refused without a verified profile that lists them
+  tdiag.check_request_allowed(bytes([sid, 0x01, 0x02, 0x03]), live=True)
+  with pytest.raises(tdiag.SafetyRefusal):
+    tdiag.preflight(verified(), bytes([sid, 0x01, 0x02, 0x03]), True, True)
+
+
+def test_verify_is_read_only():
+  p = verified(verified_on_vehicle=False, allow_live=False, supported_service_did=[])
+  tdiag.preflight(p, bytes.fromhex('22F190'), True, True, verify=True)          # read ok to earn trust
+  with pytest.raises(tdiag.SafetyRefusal, match='읽기'):
+    tdiag.preflight(p, bytes.fromhex('2EF190AA'), True, True, verify=True)      # control never in verify
+  with pytest.raises(tdiag.SafetyRefusal, match='tx_id'):
+    tdiag.preflight(verified(tx_id=None, rx_id=None), bytes.fromhex('22F190'), True, True, verify=True)
+
+
+def test_unknown_service_refused():
+  with pytest.raises(tdiag.SafetyRefusal):
+    tdiag.check_request_allowed(bytes([0x3D, 1, 2]), live=True)
 
 
 def test_only_read_subfunctions_of_19():
   tdiag.check_request_allowed(bytes([0x19, 0x02, 0xFF]))
   with pytest.raises(tdiag.SafetyRefusal):
-    tdiag.check_request_allowed(bytes([0x19, 0x04, 1, 2, 3]))
+    tdiag.check_request_allowed(bytes([0x19, 0x08, 1, 2, 3]))
 
 
 @pytest.mark.parametrize('allow,confirm', [(False, False), (True, False), (False, True)])
@@ -55,12 +79,25 @@ def test_preflight_gates():
     tdiag.preflight(verified(bitrate=125), bytes.fromhex('22F190'), True, True)
 
 
-def test_dongle_layer_refuses_forbidden_even_when_called_directly():
+def test_dongle_layer_refuses_flash_even_when_called_directly():
   d = FakeDongle({})
   e = elm327.Elm327(d)
   with pytest.raises(tdiag.SafetyRefusal):
-    e.uds_request(bytes.fromhex('2701'), 0x7E0, 0x7E8, '11', 6)
+    e.uds_request(bytes.fromhex('3400'), 0x7E0, 0x7E8, '11', 6)   # RequestDownload: hard floor
   assert d.sent == []
+
+
+def test_promote_profile_from_positive_read(tmp_path):
+  tdiag.save_profile('draft', json.dumps({'tx_id': '7E0', 'rx_id': '7E8', 'id_format': '11', 'bitrate': 500}), str(tmp_path))
+  # a negative/absent answer must NOT promote
+  assert tdiag.promote_profile('draft', bytes.fromhex('22F190'), bytes.fromhex('7F2231'), user=str(tmp_path)) is None
+  assert tdiag.live_blockers(tdiag.load_profile('draft', user=str(tmp_path)))
+  # a positive read promotes and lists the request
+  p = tdiag.promote_profile('draft', bytes.fromhex('22F190'), bytes.fromhex('62F190') + b'VIN0000000000001', user=str(tmp_path))
+  assert p and not tdiag.live_blockers(p) and '22F190' in p['supported_service_did']
+  assert p['verified_on_vehicle'] and p['hardware_or_firmware_evidence']
+  # shipped profiles can never be promoted
+  assert tdiag.promote_profile('example_unverified', bytes.fromhex('22F190'), bytes.fromhex('62F190AA'), user=str(tmp_path)) is None
 
 
 def test_describe_response():
@@ -183,6 +220,42 @@ def test_uds_queued_only_with_verified_profile_and_flags(srv):
 
 
 def test_forbidden_did_form_cannot_be_built(srv):
-  # the page only builds 0x22/0x19; a non-hex DID is rejected, never sent
+  # a non-hex DID is rejected, never sent
   assert srv.cmd({'cmd': 'uds', 'profile': 'example_unverified', 'did': 'zz', 'allow': True, 'confirm': True})[0] == 400
   assert queued() is None
+
+
+def test_flash_service_refused_at_server(srv):
+  tdiag.save_profile('ok', json.dumps(verified(supported_service_did=['3400'])))
+  code, body = srv.cmd({'cmd': 'uds', 'profile': 'ok', 'raw': '3400', 'allow': True, 'confirm': True})
+  assert code == 400 and queued() is None            # flash floored before any profile check
+
+
+def test_control_service_gated_and_queues_only_when_listed(srv):
+  # a verified profile that explicitly lists a WriteDID lets it through (buttons are disabled in the
+  # page, but the server gate is what actually guards the wire)
+  tdiag.save_profile('rw', json.dumps(verified(supported_service_did=['22F190'])))
+  base = {'cmd': 'uds', 'profile': 'rw', 'service': 'write_did', 'args': {'did': 'F190', 'data': 'AA'}}
+  assert srv.cmd(base | {'allow': True, 'confirm': True})[0] == 403 and queued() is None   # not listed
+  tdiag.save_profile('rw', json.dumps(verified(supported_service_did=['2EF190AA'])))
+  assert srv.cmd(base | {'allow': True, 'confirm': True})[0] == 200 and queued()['request'] == '2EF190AA'
+
+
+def test_verify_queues_read_against_unverified_profile(srv):
+  tdiag.save_profile('draft', json.dumps({'tx_id': '7E0', 'rx_id': '7E8', 'id_format': '11', 'bitrate': 500}))
+  c = {'cmd': 'uds_verify', 'profile': 'draft', 'did': 'F190', 'allow': True, 'confirm': True}
+  assert srv.cmd(c)[0] == 200 and queued()['verify'] is True and queued()['request'] == '22F190'
+  # a control request can never ride verify
+  assert srv.cmd({**c, 'service': 'ecu_reset', 'did': ''})[0] == 403
+
+
+def test_dry_run_reports_tier(srv):
+  code, body = srv.cmd({'cmd': 'uds_dry', 'profile': 'example_unverified', 'service': 'ecu_reset', 'args': {}})
+  assert code == 200 and body['tier'] == 'control' and queued() is None
+
+
+def test_read_service_queues_with_verified_profile(srv):
+  tdiag.save_profile('rd', json.dumps(verified(supported_service_did=['22F190F18C'])))
+  c = {'cmd': 'uds', 'profile': 'rd', 'service': 'read_did', 'args': {'did': 'F190 F18C'},
+       'allow': True, 'confirm': True}
+  assert srv.cmd(c)[0] == 200 and queued()['request'] == '22F190F18C' and queued()['verify'] is False

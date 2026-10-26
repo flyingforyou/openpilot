@@ -1172,31 +1172,39 @@ class Handler(BaseHTTPRequestHandler):
         return 400, {'error': '캡처는 3~300초, 프로토콜은 6·7·8·9만 됩니다'}
       self._queue_obd_cmd({'cmd': 'sniff', 'seconds': seconds, 'protocol': protocol})
       return 200, {'ok': True}
-    if cmd in ('uds', 'uds_dry'):
+    if cmd in ('uds', 'uds_dry', 'uds_verify'):
       prof = tdiag.load_profile(str(req.get('profile', '')))
       if prof is None:
         return 400, {'error': '프로파일을 찾을 수 없습니다'}
       try:
-        payload = tdiag.build_request(str(req.get('did', '')), bool(req.get('dtc')), str(req.get('mask', 'FF')))
-        tdiag.check_request_allowed(payload)
+        payload = tdiag.build_request(str(req.get('did', '')), bool(req.get('dtc')), str(req.get('mask', 'FF')),
+                                      service=str(req.get('service', '')), raw=str(req.get('raw', '')),
+                                      args=req.get('args') if isinstance(req.get('args'), dict) else None)
+        tdiag.check_request_allowed(payload, live=True)
       except tdiag.SafetyRefusal as e:
         return 400, {'error': str(e)}
+      sid = payload[0]
       listed = payload.hex().upper() in prof['supported_service_did']
       blockers = tdiag.live_blockers(prof)
       if cmd == 'uds_dry':
-        tdiag.log_event('uds-dry-run', request=payload.hex().upper(), profile=prof['name'], listed=listed, blockers=blockers)
+        tdiag.log_event('uds-dry-run', request=payload.hex().upper(), profile=prof['name'], listed=listed,
+                        blockers=blockers, tier=tdiag.us.tier(sid))
         return 200, {'dry': True, 'request': payload.hex(' ').upper(), 'listed': listed, 'blockers': blockers,
+                     'tier': tdiag.us.tier(sid), 'service': tdiag.us.SERVICE_NAMES.get(sid, ''),
                      'tx': prof['tx_id'], 'rx': prof['rx_id']}
       if not parked:
-        return 409, {'error': '주차 중에만 읽을 수 있습니다 — ' + why}
+        return 409, {'error': '주차(P)에서만 전송할 수 있습니다 — ' + why}
+      verify = cmd == 'uds_verify'
+      # The page only ever enables read buttons; control requests arriving here are gated the same
+      # way, but a control request can never ride the verify path (preflight enforces read-only there).
       try:
-        tdiag.preflight(prof, payload, bool(req.get('allow')), bool(req.get('confirm')))
+        tdiag.preflight(prof, payload, bool(req.get('allow')), bool(req.get('confirm')), verify=verify)
       except tdiag.SafetyRefusal as e:
-        tdiag.log_event('refused', name=tdiag.UDS_AUDIT, request=payload.hex().upper(), why=str(e))
+        tdiag.log_event('refused', name=tdiag.UDS_AUDIT, request=payload.hex().upper(), why=str(e), verify=verify)
         return 403, {'error': str(e)}
       self._queue_obd_cmd({'cmd': 'uds', 'profile': prof['name'], 'request': payload.hex().upper(),
-                           'allow': True, 'confirm': True})
-      return 200, {'ok': True}
+                           'allow': True, 'confirm': True, 'verify': verify})
+      return 200, {'ok': True, 'tier': tdiag.us.tier(sid), 'verify': verify}
     if cmd == 'delete':
       return (200, {'ok': True}) if tdiag.delete_capture(str(req.get('name', ''))) else (404, {'error': '없는 파일'})
     if cmd == 'profile_save':
@@ -3615,21 +3623,41 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
 </div>
 
 <div class="grp">
-  <div class="gt"><span>4 · 읽기 전용 UDS (0x22 / 0x19)</span><span class="a" id="udst"></span></div>
-  <div class="row"><span class="lb">프로파일 <select id="uprof"></select></span></div>
-  <div class="row"><span class="lb"><label><input type="radio" name="um" value="did" checked style="width:auto"> DID 읽기 (0x22) <input id="udid" value="F190"></label>
-    &nbsp; <label><input type="radio" name="um" value="dtc" style="width:auto"> DTC 읽기 (0x19 02) 마스크 <input id="umask" value="FF" style="width:50px"></label></span></div>
-  <div class="row"><span class="lb"><label><input type="checkbox" id="uallow" style="width:auto"> 실차 읽기 허용</label> &nbsp;
-    <label><input type="checkbox" id="uconf" style="width:auto"> 차가 주차(P)·안전한 장소임을 확인</label></span>
-    <button id="udry">미리보기 (전송 안 함)</button><button class="pri" id="uread">읽기</button></div>
+  <div class="gt"><span>4 · UDS 서비스</span><span class="a" id="udst"></span></div>
+  <div class="row"><span class="lb">프로파일 <select id="uprof"></select></span><span class="pill" id="uprofpill"></span></div>
+  <div class="row"><span class="lb"><label><input type="checkbox" id="uallow" style="width:auto"> 실차 전송 허용</label> &nbsp;
+    <label><input type="checkbox" id="uconf" style="width:auto"> 주차(P)·안전한 장소임을 확인</label></span></div>
   <div class="hint" id="unote"></div>
+
+  <div class="gt" style="border-top:1px solid var(--line)"><span>검증 — 읽기로 프로파일 확보</span></div>
+  <div class="row"><span class="lb">tx/rx·속도만 채운 프로파일에 읽기 1건(기본 F190)을 보내, 긍정응답이 오면 그 프로파일을 "검증됨"으로 올립니다.
+    DID <input id="vdid" value="F190"></span><button class="pri" id="uverify">검증 읽기</button></div>
+
+  <div class="gt" style="border-top:1px solid var(--line)"><span>읽기 서비스 (0x22 / 0x19 / 0x09)</span></div>
+  <div class="row"><span class="lb">0x22 ReadDataByIdentifier · DID(여러 개 공백) <input id="udid" value="F190" style="width:150px"></span>
+    <button id="udry22">미리보기</button><button class="pri rd" data-svc="read_did">읽기</button></div>
+  <div class="row"><span class="lb">0x19 ReadDTCInformation · 하위기능
+    <select id="usub"><option value="02">02 상태마스크</option><option value="0A">0A 전체</option><option value="01">01 개수</option></select> 마스크 <input id="umask" value="FF" style="width:50px"></span>
+    <button class="pri rd" data-svc="read_dtc">DTC 읽기</button></div>
+  <div class="row"><span class="lb">0x09 ReadVehicleInformation · infoType(hex) <input id="uinfo" value="02" style="width:60px"></span>
+    <button class="pri rd" data-svc="vehicle_info">읽기</button></div>
+
+  <div class="gt" style="border-top:1px solid var(--line)"><span>제어 서비스 — 포팅됨 · UI 비활성</span></div>
+  <div class="hint">아래 서비스는 코드로 모두 들어와 있고 검증된 프로파일 게이트도 동일하게 걸리지만, 안전을 위해 버튼을 꺼 둡니다.
+    HV 배터리·게이트웨이에 영향을 줄 수 있어 실행은 의도적으로 막아 두었습니다. (0x27 키는 프로파일 security_key의 값만 쓰고, 키 생성/추측은 하지 않습니다.)</div>
+  <div id="ctl"></div>
+
+  <div class="gt" style="border-top:1px solid var(--line)"><span>플래시/전송 — 오프라인 해석 전용</span></div>
+  <div class="hint">0x34/0x35/0x36/0x37/0x38(다운로드·업로드·전송)은 라이브 전송 경로가 없습니다. 캡처된 플래시 세션을 해석하는 용도로만 파서가 있습니다.</div>
+
   <div class="err" id="uerr" hidden></div>
   <div class="hint" id="uout"></div>
   <details style="padding:0 13px 12px"><summary class="a" style="cursor:pointer">프로파일 추가/수정 (JSON)</summary>
     <div class="row" style="padding-left:0"><span class="lb">이름 <input id="pname" style="width:160px" placeholder="verified_local"></span><button id="psave">저장</button></div>
     <textarea id="ptext" spellcheck="false"></textarea>
-    <div class="hint" id="pnote">필드: supported_service_did(요청 전체 hex, 예 22F190), tx_id, rx_id, id_format(11/29), bitrate(250/500),
-      evidence_url, hardware_or_firmware_evidence, verified_on_vehicle, allow_live, signals. 내 차의 로그로 확인한 뒤에만 verified_on_vehicle/allow_live를 true로 하세요.</div>
+    <div class="hint" id="pnote">필드: tx_id, rx_id, id_format(11/29), bitrate(250/500), supported_service_did(요청 전체 hex, 예 22F190),
+      evidence_url, hardware_or_firmware_evidence, verified_on_vehicle, allow_live, security_key, signals.
+      tx/rx·속도만 채워 저장한 뒤 위 "검증 읽기"로 확보하는 것을 권장합니다 — 수동으로 verified_on_vehicle를 올릴 필요가 없습니다.</div>
   </details>
 </div>
 
@@ -3693,11 +3721,17 @@ function render(s){
   document.querySelectorAll('[data-an]').forEach(b=>b.onclick=()=>analyze(b.dataset.an));
   document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{if(confirm('삭제할까요? '+b.dataset.del))act({cmd:'delete',name:b.dataset.del});});
   const u=s.uds;const pr=s.profiles.find(x=>x.name===$('uprof').value);
-  $('unote').textContent=pr?(pr.error?pr.error:(pr.blockers.length?'이 프로파일은 실차에 쓸 수 없습니다: '+pr.blockers.join(', ')+' — 미리보기만 됩니다.':'허용된 요청: '+pr.requests.join(', '))):'';
-  $('uread').disabled=!conn||!s.parked||!pr||(pr.blockers||[1]).length>0||(u&&u.status==='running');
-  $('udst').textContent=!u?'':u.status==='running'?'읽는 중…':tm(u.time);
+  $('unote').textContent=pr?(pr.error?pr.error:(pr.blockers.length?'미검증 — 읽기 버튼은 잠깁니다. 아래 "검증 읽기"로 확보하세요. 막는 항목: '+pr.blockers.join(', '):'검증됨 — 등록된 요청: '+pr.requests.join(', '))):'';
+  const ready=conn&&s.parked&&pr&&!pr.error&&!(u&&u.status==='running');
+  const live=ready&&pr.blockers.length===0;
+  document.querySelectorAll('button.rd').forEach(b=>b.disabled=!live);
+  $('udry22').disabled=!(conn&&pr&&!pr.error);
+  $('uverify').disabled=!ready||!pr||pr.source!=='사용자'||pr.tx_id==null||pr.rx_id==null;
+  $('uprofpill').className='pill '+(pr&&!pr.error&&!pr.blockers.length?'ok':'warn');
+  $('uprofpill').textContent=pr?(pr.error?'오류':pr.blockers.length?'미검증':'검증됨'):'';
+  $('udst').textContent=!u?'':u.status==='running'?(u.verify?'검증 중…':'전송 중…'):tm(u.time);
   $('uerr').hidden=!(u&&(u.status==='error'||u.status==='refused'));$('uerr').textContent=u&&u.error?u.error:'';
-  $('uout').innerHTML=u&&u.status==='done'?`<b>${esc(u.kind)}</b> · 요청 ${esc(u.request)}<br>${esc(u.text)}<br><span class="a">원본 응답: ${esc(u.raw)}</span>`:'';
+  $('uout').innerHTML=u&&u.status==='done'?`<b>${esc(u.kind)}</b> · 요청 ${esc(u.request)}${u.verify?(u.promoted?' · <span class="ok">프로파일 검증됨</span>':' · 검증 실패(승격 안 됨)'):''}<br>${esc(u.text)}<br><span class="a">원본 응답: ${esc(u.raw)}</span>`:'';
   $('log').innerHTML=s.session.slice().reverse().map(e=>{const {t,event,...r}=e;return `<div>${tm(t)} <b>${esc(event)}</b> ${esc(JSON.stringify(r))}</div>`;}).join('')||'<div>아직 기록이 없습니다</div>';
 }
 async function analyze(name){
@@ -3716,11 +3750,21 @@ $('anprof').onchange=()=>{selProf.a=$('anprof').value;if(openCap)analyze(openCap
 $('uprof').onchange=()=>{selProf.u=$('uprof').value;render(S);};
 $('probe').onclick=()=>act({cmd:'probe'});
 $('sniff').onclick=()=>act({cmd:'sniff',seconds:parseFloat($('snsec').value),protocol:parseInt($('snproto').value,10)});
-function ureq(c){const dtc=document.querySelector('input[name=um]:checked').value==='dtc';
-  return {cmd:c,profile:$('uprof').value,did:$('udid').value.trim(),dtc:dtc,mask:$('umask').value.trim(),allow:$('uallow').checked,confirm:$('uconf').checked};}
-$('udry').onclick=async()=>{const r=await post(ureq('uds_dry'));const b=r.body;
-  $('uout').innerHTML=b.error?`<span class="ok" style="color:var(--bad)">${esc(b.error)}</span>`:`미리보기 — 전송 안 함<br>요청 ${esc(b.request)} · tx ${b.tx==null?'–':b.tx.toString(16).toUpperCase()} / rx ${b.rx==null?'–':b.rx.toString(16).toUpperCase()}<br>프로파일 목록에 ${b.listed?'있음':'없음'}`+(b.blockers.length?'<br>실차 불가: '+esc(b.blockers.join(', ')):'<br>실차 가능');tick();};
-$('uread').onclick=()=>{if(confirm('차에 읽기 요청 1건을 보냅니다. 주차(P) 상태입니까?'))act(ureq('uds'));};
+// The page only builds READ requests. Control services are ported in the library and reachable
+// only through a verified profile's own supported_service_did; there are no control buttons here.
+function rdargs(svc){
+  if(svc==='read_did') return {did:$('udid').value.trim()};
+  if(svc==='read_dtc') return {sub:$('usub').value,mask:$('umask').value.trim()};
+  if(svc==='vehicle_info') return {info:$('uinfo').value.trim()};
+  return {};
+}
+function base(c,extra){return {cmd:c,profile:$('uprof').value,allow:$('uallow').checked,confirm:$('uconf').checked,...extra};}
+$('udry22').onclick=async()=>{const b=(await post(base('uds_dry',{service:'read_did',args:rdargs('read_did')}))).body;
+  $('uout').innerHTML=b.error?`<span style="color:var(--bad)">${esc(b.error)}</span>`:`미리보기 — 전송 안 함 · ${esc(b.service||'')} (${esc(b.tier||'')})<br>요청 ${esc(b.request)} · tx ${b.tx==null?'–':b.tx.toString(16).toUpperCase()} / rx ${b.rx==null?'–':b.rx.toString(16).toUpperCase()}<br>프로파일에 ${b.listed?'있음':'없음'}`+(b.blockers.length?'<br>실차 불가: '+esc(b.blockers.join(', ')):'<br>실차 가능');tick();};
+document.querySelectorAll('button.rd').forEach(b=>b.onclick=()=>{const svc=b.dataset.svc;
+  if(confirm('차에 읽기 요청 1건을 보냅니다. 주차(P) 상태입니까?'))act(base('uds',{service:svc,args:rdargs(svc)}));});
+$('uverify').onclick=()=>{if(confirm('tx/rx로 읽기 1건을 보내 응답이 오면 이 프로파일을 검증됨으로 올립니다. 주차(P) 상태입니까?'))
+  act(base('uds_verify',{did:$('vdid').value.trim()}));};
 $('psave').onclick=async()=>{const r=await act({cmd:'profile_save',name:$('pname').value.trim(),text:$('ptext').value});
   if(r.body.ok)alert('저장했습니다'+(r.body.blockers.length?' (실차 불가: '+r.body.blockers.join(', ')+')':''));};
 async function tick(){try{render(await(await fetch('/api/tdiag')).json());}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}}

@@ -22,17 +22,16 @@ SESSION = 'session.jsonl'
 UDS_AUDIT = 'uds_audit.jsonl'
 SESSION_MAX = 2_000_000
 PROFILE_RE = re.compile(r'[A-Za-z0-9_-]{1,40}')
-READ_SIDS = frozenset({0x22, 0x19})
-FORBIDDEN_SIDS = frozenset({0x10, 0x11, 0x14, 0x27, 0x2E, 0x2F, 0x31, 0x34, 0x35, 0x36, 0x37, 0x38, 0x3D, 0x85})
-DTC_SUBS = frozenset({0x01, 0x02, 0x0A})
+from openpilot.system.btobd import uds_services as us
+
+# The service tiers live in uds_services. Kept as names here for the rest of the module and tests.
+READ_SIDS = us.READ_SIDS                 # page enables these once a profile is verified
+CONTROL_SIDS = us.CONTROL_SIDS           # ported, page keeps buttons disabled, same gate as reads
+FLASH_SIDS = us.FLASH_SIDS               # offline parse only -- never a live transmit path
+LIVE_SIDS = us.LIVE_SIDS
+DTC_SUBS = us.DTC_SUBS
 PROTOCOLS = {6: ('11', 500), 7: ('29', 500), 8: ('11', 250), 9: ('29', 250)}
-NRC = {
-  0x10: 'generalReject', 0x11: 'serviceNotSupported', 0x12: 'subFunctionNotSupported',
-  0x13: 'incorrectMessageLengthOrInvalidFormat', 0x14: 'responseTooLong', 0x21: 'busyRepeatRequest',
-  0x22: 'conditionsNotCorrect', 0x24: 'requestSequenceError', 0x31: 'requestOutOfRange',
-  0x33: 'securityAccessDenied', 0x78: 'responsePending', 0x7E: 'subFunctionNotSupportedInActiveSession',
-  0x7F: 'serviceNotSupportedInActiveSession',
-}
+NRC = us.NRC
 
 
 # ---- session log ---------------------------------------------------------------------------------
@@ -247,37 +246,96 @@ class SafetyRefusal(Exception):
   pass
 
 
-def build_request(did: str = '', dtc: bool = False, dtc_mask: str = 'FF') -> bytes:
+def build_request(did: str = '', dtc: bool = False, dtc_mask: str = 'FF', service: str = '', raw: str = '',
+                  args: dict | None = None) -> bytes:
+  """Build a request payload. `service`/`raw`/`args` drive the full catalogue; `did`/`dtc` keep the
+  old read shortcuts working. The builders live in uds_services; this only maps the page's inputs."""
+  a = args or {}
   try:
+    if raw:
+      return us.build_from_hex(raw)
+    if service:
+      return _build_service(service, a)
     if dtc:
-      return bytes([0x19, 0x02, int(dtc_mask, 16) & 0xFF])
-    n = int(did, 16)
-  except ValueError:
-    raise SafetyRefusal('DID를 16진수로 입력하세요') from None
-  if not 0 <= n <= 0xFFFF:
-    raise SafetyRefusal('DID 범위 오류')
-  return bytes([0x22]) + n.to_bytes(2, 'big')
+      return us.read_dtc(0x02, int(dtc_mask, 16))
+    return us.read_did(did)
+  except us.BuildError as e:
+    raise SafetyRefusal(str(e)) from None
 
 
-def check_request_allowed(payload: bytes) -> None:
+def _build_service(service: str, a: dict) -> bytes:
+  def h(k, d=0):
+    v = a.get(k)
+    if v in (None, ''):
+      return d
+    try:
+      return int(str(v), 16)
+    except ValueError:
+      raise us.BuildError(f'{k}가 16진수가 아닙니다: {v!r}') from None
+  if service == 'read_did':
+    return us.read_did(str(a.get('did', '')))
+  if service == 'read_dtc':
+    return us.read_dtc(h('sub', 0x02), h('mask', 0xFF))
+  if service == 'vehicle_info':
+    return us.read_vehicle_info(h('info', 0))
+  if service == 'tester_present':
+    return us.tester_present(bool(a.get('suppress', True)))
+  if service == 'session':
+    return us.session_control(h('session', 0x03))
+  if service == 'ecu_reset':
+    return us.ecu_reset(h('kind', 0x01))
+  if service == 'clear_dtc':
+    return us.clear_dtc(h('group', 0xFFFFFF))
+  if service == 'sec_seed':
+    return us.security_request_seed(h('level', 0x01))
+  if service == 'sec_key':
+    return us.security_send_key(h('level', 0x02), us._hexbytes(str(a.get('key', ''))))
+  if service == 'write_did':
+    return us.write_did(h('did'), us._hexbytes(str(a.get('data', ''))))
+  if service == 'io_control':
+    return us.io_control(h('did'), h('control'), us._hexbytes(str(a.get('data', ''))))
+  if service == 'routine':
+    return us.routine_control(h('sub', 0x01), h('routine'), us._hexbytes(str(a.get('data', ''))))
+  if service == 'dtc_setting':
+    return us.control_dtc_setting(bool(a.get('on', True)))
+  raise us.BuildError(f'알 수 없는 서비스: {service}')
+
+
+def check_request_allowed(payload: bytes, live: bool = True) -> None:
+  """Service-level floor. Independent of any profile. `live=False` allows flash SIDs (offline parse)."""
   if not payload:
     raise SafetyRefusal('빈 요청')
   sid = payload[0]
-  if sid in FORBIDDEN_SIDS:
-    raise SafetyRefusal(f'서비스 0x{sid:02X}는 금지입니다')
-  if sid not in READ_SIDS:
-    raise SafetyRefusal(f'서비스 0x{sid:02X}는 허용 목록에 없습니다')
+  if sid in FLASH_SIDS:
+    if live:
+      raise SafetyRefusal(f'서비스 0x{sid:02X}({us.SERVICE_NAMES.get(sid, "?")})는 차로 전송할 수 없습니다 (오프라인 해석 전용)')
+    return
+  if sid not in LIVE_SIDS:
+    raise SafetyRefusal(f'서비스 0x{sid:02X}는 지원 목록에 없습니다')
   if sid == 0x22 and (len(payload) < 3 or len(payload) % 2 == 0):
     raise SafetyRefusal('0x22는 2바이트 DID 하나 이상')
   if sid == 0x19 and (len(payload) < 2 or payload[1] not in DTC_SUBS):
-    raise SafetyRefusal('0x19 하위기능이 허용 목록에 없습니다')
+    raise SafetyRefusal('0x19 하위기능이 읽기 목록에 없습니다')
+  if sid == 0x27 and len(payload) < 2:
+    raise SafetyRefusal('0x27은 레벨이 필요합니다')
 
 
-def preflight(p: dict, payload: bytes, allow: bool, confirm: bool) -> None:
-  """Every gate that needs no dongle. Raises SafetyRefusal with the reason."""
-  check_request_allowed(payload)
+def preflight(p: dict, payload: bytes, allow: bool, confirm: bool, verify: bool = False) -> None:
+  """Every gate that needs no dongle. Raises SafetyRefusal with the reason.
+
+  Normal mode: the profile must be live-capable (evidence-backed) and must list this exact request.
+  verify mode: a READ-ONLY request may run against an as-yet-unverified profile so the user can EARN
+  verification -- the profile only needs a usable address/bitrate, and a positive answer promotes it.
+  Control and flash requests are never allowed in verify mode."""
+  check_request_allowed(payload, live=True)
   if not (allow and confirm):
-    raise SafetyRefusal('"실차 읽기 허용"과 "주차 상태 확인" 둘 다 체크해야 합니다')
+    raise SafetyRefusal('"실차 전송 허용"과 "주차(P)·안전 확인" 둘 다 체크해야 합니다')
+  if verify:
+    if payload[0] not in READ_SIDS:
+      raise SafetyRefusal('검증은 읽기 서비스로만 합니다 (쓰기/제어는 검증된 프로파일에서만)')
+    for why in _addressable(p):
+      raise SafetyRefusal('검증하려면 먼저 ' + why)
+    return
   b = live_blockers(p)
   if b:
     raise SafetyRefusal('이 프로파일은 실차에 쓸 수 없습니다: ' + ', '.join(b))
@@ -285,37 +343,58 @@ def preflight(p: dict, payload: bytes, allow: bool, confirm: bool) -> None:
     raise SafetyRefusal(f'요청 {payload.hex().upper()}이(가) 프로파일의 supported_service_did에 없습니다')
 
 
+def _addressable(p: dict) -> list[str]:
+  """What a profile needs just to send a read at all (for verification), short of being verified."""
+  why = []
+  if p['tx_id'] is None or p['rx_id'] is None:
+    why.append('tx_id/rx_id를 넣으세요')
+  if not any(v == (p['id_format'], p['bitrate']) for v in PROTOCOLS.values()):
+    why.append('id_format/bitrate를 6~9번 프로토콜에 맞추세요')
+  return why
+
+
 def protocol_for(p: dict) -> int:
   return next(k for k, v in PROTOCOLS.items() if v == (p['id_format'], p['bitrate']))
 
 
 def describe_response(pdu: bytes, request: bytes) -> dict:
-  """Parse a UDS answer into something the page can show."""
-  if not pdu:
-    return {'kind': 'error', 'text': '빈 응답'}
-  if pdu[0] == 0x7F:
-    if len(pdu) != 3 or pdu[1] != request[0]:
-      return {'kind': 'error', 'text': f'이상한 부정응답 {pdu.hex(" ").upper()}'}
-    kind = 'pending' if pdu[2] == 0x78 else 'negative'
-    return {'kind': kind, 'nrc': pdu[2], 'text': f'NRC 0x{pdu[2]:02X} {NRC.get(pdu[2], "?")}'}
-  if pdu[0] != request[0] + 0x40:
-    return {'kind': 'error', 'text': f'요청과 맞지 않는 응답 SID 0x{pdu[0]:02X}'}
-  body = pdu[1:]
-  if request[0] == 0x22:
-    if body[:2] != request[1:3]:
-      return {'kind': 'error', 'text': 'DID가 응답에 되풀이되지 않았습니다'}
-    data = body[2:]
-    out = {'kind': 'positive', 'hex': data.hex(' ').upper(), 'text': f'DID {request[1:3].hex().upper()} = {data.hex(" ").upper()}'}
-    if request[1:3] == b'\xf1\x90':
-      s = data.decode('ascii', 'replace')
-      out['vin'] = s[:3] + '*' * max(0, len(s) - 7) + s[-4:] if len(s) > 7 else '*' * len(s)
-      out['text'] += f'  ({out["vin"]})'     # VIN is masked; the raw hex above is what the car sent
-    return out
-  recs = body[2:]
-  if len(recs) % 4:
-    return {'kind': 'error', 'text': 'DTC 목록 길이 오류'}
-  dtcs = [{'dtc': recs[i:i + 3].hex().upper(), 'status': recs[i + 3]} for i in range(0, len(recs), 4)]
-  return {'kind': 'positive', 'dtcs': dtcs, 'text': f'DTC {len(dtcs)}개' + (': ' + ', '.join(d['dtc'] for d in dtcs) if dtcs else '')}
+  """Parse a UDS answer into something the page can show (full catalogue, via uds_services)."""
+  return us.parse(pdu, request)
+
+
+def promote_profile(name: str, request: bytes, response: bytes, device: str = '',
+                    user: str | None = None) -> dict | None:
+  """Turn a draft user profile into a verified one, backed by a real positive read from THIS car.
+
+  Called after a successful verify-mode read. Only touches user profiles. Adds the request to
+  supported_service_did, records the response as evidence, and sets verified_on_vehicle/allow_live.
+  Returns the saved profile, or None if it could not (shipped profile, parse fail, negative answer).
+  """
+  user = user or PROFILE_DIR
+  path = os.path.join(user, name + '.json')
+  if not PROFILE_RE.fullmatch(name) or not os.path.isfile(path):
+    return None
+  parsed = us.parse(response, request)
+  if parsed['kind'] != 'positive':
+    return None
+  try:
+    with open(path) as f:
+      d = json.load(f)
+  except (OSError, ValueError):
+    return None
+  reqs = {str(x).replace(' ', '').upper() for x in d.get('supported_service_did') or []}
+  reqs.add(request.hex().upper())
+  d['supported_service_did'] = sorted(reqs)
+  d['verified_on_vehicle'] = True
+  d['allow_live'] = True
+  stamp = time.strftime('%Y-%m-%d %H:%M')
+  d['hardware_or_firmware_evidence'] = (
+    f'{stamp} {device or "comma"}에서 {request.hex().upper()} -> {response.hex().upper()} 긍정응답')
+  d['evidence_url'] = d.get('evidence_url') or f'log:{UDS_AUDIT}'
+  p = parse_profile(d, name)
+  with open(path, 'w') as f:
+    json.dump(d, f, ensure_ascii=False, indent=1)
+  return p
 
 
 # ---- offline analysis ----------------------------------------------------------------------------

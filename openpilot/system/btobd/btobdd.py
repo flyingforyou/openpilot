@@ -250,34 +250,43 @@ class Daemon:
       self._link_lost(e)
 
   def run_uds(self, cmd: dict) -> None:
-    """One read-only UDS request. The gates run again here even though the page's server already
-    checked them: this is the process that actually writes to the dongle."""
+    """One UDS request. The gates run again here even though the page's server already checked them:
+    this is the process that actually writes to the dongle. `verify` is a read-only handshake that
+    promotes a draft profile on a positive answer; control services are only reached when a profile
+    is already verified and lists them (the page keeps their buttons disabled regardless)."""
     from openpilot.system.btobd import tdiag
     name = str(cmd.get('profile', ''))
+    verify = bool(cmd.get('verify'))
     prof = tdiag.load_profile(name)
     try:
       if prof is None:
         raise tdiag.SafetyRefusal('프로파일을 찾을 수 없습니다')
       payload = bytes.fromhex(str(cmd.get('request', '')))
-      tdiag.preflight(prof, payload, bool(cmd.get('allow')), bool(cmd.get('confirm')))
+      tdiag.preflight(prof, payload, bool(cmd.get('allow')), bool(cmd.get('confirm')), verify=verify)
       if self.elm is None:
         raise tdiag.SafetyRefusal('동글이 연결돼 있지 않습니다')
     except (tdiag.SafetyRefusal, ValueError) as e:
       self.uds_result = {'status': 'refused', 'error': str(e), 'time': time.time()}
-      tdiag.log_event('refused', name=tdiag.UDS_AUDIT, request=str(cmd.get('request', '')), why=str(e))
-      tdiag.log_event('uds-refused', request=str(cmd.get('request', '')), why=str(e))
+      tdiag.log_event('refused', name=tdiag.UDS_AUDIT, request=str(cmd.get('request', '')), why=str(e), verify=verify)
+      tdiag.log_event('uds-refused', request=str(cmd.get('request', '')), why=str(e), verify=verify)
       return
     proto = tdiag.protocol_for(prof)
-    self.uds_result = {'status': 'running', 'request': payload.hex().upper(), 'time': time.time()}
+    self.uds_result = {'status': 'running', 'request': payload.hex().upper(), 'verify': verify, 'time': time.time()}
     self._publish()
     tdiag.log_event('send', name=tdiag.UDS_AUDIT, request=payload.hex().upper(), tx=prof['tx_id'], rx=prof['rx_id'],
-                    protocol=proto, profile=name)
+                    protocol=proto, profile=name, tier=tdiag.us.tier(payload[0]), verify=verify)
     try:
       pdu = self.elm.uds_request(payload, prof['tx_id'], prof['rx_id'], prof['id_format'], proto)
       res = tdiag.describe_response(pdu, payload)
-      self.uds_result = {'status': 'done', 'request': payload.hex().upper(), 'raw': pdu.hex(' ').upper(), 'time': time.time(), **res}
+      promoted = None
+      if verify and res['kind'] == 'positive':
+        p = tdiag.promote_profile(name, payload, pdu, device=getattr(self.elm, 'version', ''))
+        promoted = bool(p)
+        tdiag.log_event('verified', name=tdiag.UDS_AUDIT, profile=name, request=payload.hex().upper(), ok=promoted)
+      self.uds_result = {'status': 'done', 'request': payload.hex().upper(), 'raw': pdu.hex(' ').upper(),
+                         'verify': verify, 'promoted': promoted, 'time': time.time(), **res}
       tdiag.log_event('recv', name=tdiag.UDS_AUDIT, request=payload.hex().upper(), response=pdu.hex().upper(), kind=res['kind'])
-      tdiag.log_event('uds', request=payload.hex().upper(), response=pdu.hex().upper(), kind=res['kind'])
+      tdiag.log_event('uds', request=payload.hex().upper(), response=pdu.hex().upper(), kind=res['kind'], verify=verify)
     except Exception as e:
       self.uds_result = {'status': 'error', 'request': payload.hex().upper(), 'error': f'{type(e).__name__}: {e}', 'time': time.time()}
       tdiag.log_event('uds-error', request=payload.hex().upper(), error=str(e))
