@@ -93,6 +93,8 @@ class Daemon:
     self.target = ''
     self.started = time.time()
     self.sniff: dict | None = None
+    self.probe_result: dict | None = None
+    self.uds_result: dict | None = None
 
   # --- Bluetooth adapter -------------------------------------------------------------------------
   def ensure_bt(self) -> bool:
@@ -187,6 +189,10 @@ class Daemon:
         self.error = f'검색 시작 실패 (status {st})'
     elif c == 'sniff':
       self.run_sniff(float(cmd.get('seconds', 10)), int(cmd.get('protocol', 6)))
+    elif c == 'probe':
+      self.run_probe()
+    elif c == 'uds':
+      self.run_uds(cmd)
     elif c == 'connect':
       self.disconnect()
       self.next_try = 0.0
@@ -200,22 +206,82 @@ class Daemon:
     if self.elm is None:
       self.sniff = {'status': 'error', 'error': '동글이 연결돼 있지 않습니다'}
       return
-    seconds = min(max(seconds, 3.0), 60.0)
+    seconds = min(max(seconds, 3.0), 300.0)
     self.sniff = {'status': 'running', 'seconds': seconds, 'protocol': protocol, 'started': time.time()}
     self._publish()
     try:
-      frames, full, unparsed = self.elm.sniff(seconds, protocol)
+      frames, full, unparsed = self.elm.sniff(seconds, protocol, max_frames=60000)
       summary = capture.summarize(frames, seconds, full, unparsed)
-      name = capture.save(frames, {'protocol': protocol, 'seconds': seconds, 'dongle': self.elm.version,
+      name = capture.save(frames, {'protocol': protocol, 'frames': len(frames), 'idFormat': '29' if protocol in (7, 9) else '11', 'seconds': seconds, 'dongle': self.elm.version,
                                    'adapterProtocol': self.elm.protocol, 'silent': self.elm.silent,
                                    'saved': time.time()})
       self.sniff = {'status': 'done', 'protocol': protocol, 'file': name, 'finished': time.time(), **summary}
+      from openpilot.system.btobd import tdiag
+      tdiag.log_event('sniff', protocol=protocol, seconds=seconds, file=name, frames=summary['frames'],
+                      unique=summary['unique'], bufferFull=full, unparsed=unparsed, silent=self.elm.silent)
     except Exception as e:
       self.sniff = {'status': 'error', 'error': f'{type(e).__name__}: {e}'}
       if isinstance(e, (OSError, TimeoutError, ConnectionError)):
         self.disconnect()
         self.link_state = 'error'
         self.next_try = time.monotonic() + RETRY_S
+
+  def _link_lost(self, e: Exception) -> None:
+    if isinstance(e, (OSError, ConnectionError)):
+      self.disconnect()
+      self.link_state = 'error'
+      self.next_try = time.monotonic() + RETRY_S
+
+  def run_probe(self) -> None:
+    """AT-layer check of the dongle (Tesla diag page). Sends nothing to the car."""
+    from openpilot.system.btobd import tdiag
+    if self.elm is None:
+      self.probe_result = {'status': 'error', 'error': '동글이 연결돼 있지 않습니다', 'time': time.time()}
+      return
+    self.probe_result = {'status': 'running', 'time': time.time()}
+    self._publish()
+    try:
+      res = self.elm.probe()
+      self.probe_result = {'status': 'done', 'time': time.time(), **res}
+      tdiag.log_event('probe', **res)
+    except Exception as e:
+      self.probe_result = {'status': 'error', 'error': f'{type(e).__name__}: {e}', 'time': time.time()}
+      tdiag.log_event('probe-error', error=str(e))
+      self._link_lost(e)
+
+  def run_uds(self, cmd: dict) -> None:
+    """One read-only UDS request. The gates run again here even though the page's server already
+    checked them: this is the process that actually writes to the dongle."""
+    from openpilot.system.btobd import tdiag
+    name = str(cmd.get('profile', ''))
+    prof = tdiag.load_profile(name)
+    try:
+      if prof is None:
+        raise tdiag.SafetyRefusal('프로파일을 찾을 수 없습니다')
+      payload = bytes.fromhex(str(cmd.get('request', '')))
+      tdiag.preflight(prof, payload, bool(cmd.get('allow')), bool(cmd.get('confirm')))
+      if self.elm is None:
+        raise tdiag.SafetyRefusal('동글이 연결돼 있지 않습니다')
+    except (tdiag.SafetyRefusal, ValueError) as e:
+      self.uds_result = {'status': 'refused', 'error': str(e), 'time': time.time()}
+      tdiag.log_event('refused', name=tdiag.UDS_AUDIT, request=str(cmd.get('request', '')), why=str(e))
+      tdiag.log_event('uds-refused', request=str(cmd.get('request', '')), why=str(e))
+      return
+    proto = tdiag.protocol_for(prof)
+    self.uds_result = {'status': 'running', 'request': payload.hex().upper(), 'time': time.time()}
+    self._publish()
+    tdiag.log_event('send', name=tdiag.UDS_AUDIT, request=payload.hex().upper(), tx=prof['tx_id'], rx=prof['rx_id'],
+                    protocol=proto, profile=name)
+    try:
+      pdu = self.elm.uds_request(payload, prof['tx_id'], prof['rx_id'], prof['id_format'], proto)
+      res = tdiag.describe_response(pdu, payload)
+      self.uds_result = {'status': 'done', 'request': payload.hex().upper(), 'raw': pdu.hex(' ').upper(), 'time': time.time(), **res}
+      tdiag.log_event('recv', name=tdiag.UDS_AUDIT, request=payload.hex().upper(), response=pdu.hex().upper(), kind=res['kind'])
+      tdiag.log_event('uds', request=payload.hex().upper(), response=pdu.hex().upper(), kind=res['kind'])
+    except Exception as e:
+      self.uds_result = {'status': 'error', 'request': payload.hex().upper(), 'error': f'{type(e).__name__}: {e}', 'time': time.time()}
+      tdiag.log_event('uds-error', request=payload.hex().upper(), error=str(e))
+      self._link_lost(e)
 
   def _publish(self) -> None:
     now = time.monotonic()
@@ -230,7 +296,7 @@ class Daemon:
       'discovering': bool(self.mgmt and self.mgmt.discovering), 'devices': devices,
       'elm': {'version': self.elm.version if self.elm else '', 'silent': bool(self.elm and self.elm.silent),
               'protocol': self.elm.protocol if self.elm else '', 'channel': getattr(self.link, 'channel', None)},
-      'sniff': self.sniff,
+      'sniff': self.sniff, 'probe': self.probe_result, 'uds': self.uds_result,
       'raw': {f'{k:03X}': v for k, v in sorted(self.raw.items())},
       **self.car.snapshot(now),
     }

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tesla-diag"
+version = "0.1.0"
+description = "Read-first CAN/UDS diagnostics for Tesla Model S/X over an ELM327 Bluetooth dongle"
+requires-python = ">=3.10"
+dependencies = ["pyserial>=3.5", "pyyaml>=6"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+tesla-diag = "tesla_diag.cli:main"
+
+[tool.setuptools]
+packages = ["tesla_diag", "tesla_diag.transport", "tesla_diag.can", "tesla_diag.uds", "tesla_diag.profiles"]
+
+[tool.setuptools.package-data]
+"tesla_diag.profiles" = ["*.yaml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

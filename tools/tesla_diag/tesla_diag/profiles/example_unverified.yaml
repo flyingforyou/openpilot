@@ -1,0 +1,57 @@
+# EXAMPLE ONLY. Nothing in this file has been checked on a 2016 Model X.
+# verified_on_vehicle/allow_live are false, so live UDS reads are refused for this profile.
+name: example_unverified
+vehicle_family: Tesla Model S/X (pre-2021)
+model_year_range: "2016"
+hardware_or_firmware_evidence: ""        # empty on purpose: no log from the target car yet
+bus: "unknown - the diagnostic-connector bus the dongle is on has not been identified"
+bitrate: 0                               # 0 = not established; do NOT assume 500
+id_format: "11"
+tx_id: null                              # 0x602/0x612 appear in Battery-Emulator and PiCanScanMyTesla as BMS
+rx_id: null                              # request/response ids on the *pack-internal* bus; candidates only
+supported_service_did:                   # exact request payloads allowed live, hex. Empty = nothing allowed.
+  - "22F190"                             # standard VIN DID, shape example only (dry-run)
+evidence_url: ""
+verified_on_vehicle: false
+allow_live: false
+
+# CAN signal layouts below are community reverse engineering (wk057, "Tesla Model S CAN Bus
+# Deciphering" v0.1, 2016-01-15, via openpilot/system/btobd/tesla_sx.py). Model S layouts; not
+# confirmed for this Model X, so status stays 'community-unverified' until a capture backs them.
+signals:
+  BMS_packVoltage:
+    id: "102"
+    start: 0
+    length: 16
+    scale: 0.01
+    unit: V
+    min_dlc: 2
+    source: "wk057 0x102 bytes 0-1 LE"
+    status: community-unverified
+  BMS_socMin:
+    id: "302"
+    start: 0
+    length: 10
+    scale: 0.1
+    unit: "%"
+    min_dlc: 3
+    source: "wk057 0x302"
+    status: community-unverified
+  BMS_socUI:
+    id: "302"
+    start: 10
+    length: 10
+    scale: 0.1
+    unit: "%"
+    min_dlc: 3
+    source: "wk057 0x302"
+    status: community-unverified
+  BMS_nominalFullPackEnergy:
+    id: "382"
+    start: 0
+    length: 10
+    scale: 0.1
+    unit: kWh
+    min_dlc: 8
+    source: "wk057 0x382"
+    status: community-unverified

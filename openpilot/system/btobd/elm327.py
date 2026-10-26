@@ -21,15 +21,19 @@ NOISE = ('SEARCHING', 'STOPPED', 'OK', 'BUFFER FULL', 'CAN ERROR', 'NO DATA', '?
          'BUS BUSY', 'BUS ERROR', 'FB ERROR', '<RX ERROR', 'ELM327')
 
 
-def parse_frame(line: str) -> tuple[int, bytes] | None:
-  """One monitor line with headers on -> (11-bit id, data). Accepts spaced or unspaced output."""
+def parse_frame(line: str, id_chars: int = 3) -> tuple[int, bytes] | None:
+  """One monitor line with headers on -> (id, data). Accepts spaced or unspaced output.
+
+  id_chars is 3 for 11-bit and 8 for 29-bit; the id length comes from the protocol that was
+  selected, never from the text.
+  """
   s = line.strip().upper().replace(' ', '')
-  if len(s) < 5 or not HEX_RE.match(s) or (len(s) - 3) % 2:
+  if len(s) < id_chars + 2 or not HEX_RE.match(s) or (len(s) - id_chars) % 2:
     return None
-  data = bytes.fromhex(s[3:])
+  data = bytes.fromhex(s[id_chars:])
   if not 1 <= len(data) <= 8:
     return None
-  return int(s[:3], 16), data
+  return int(s[:id_chars], 16), data
 
 
 class Elm327:
@@ -105,6 +109,7 @@ class Elm327:
     if not self.silent:
       raise RuntimeError('이 동글은 무음 감시(ATCSM1)를 지원하지 않아 전체 감시를 시작하지 않습니다')
     self.cmd(f'ATSP{protocol}')
+    id_chars = 8 if protocol in (7, 9) else 3
     if any('?' in ln for ln in self.cmd('ATCRA')):      # no argument clears the receive filter
       self.cmd('ATCM000')
       self.cmd('ATCF000')
@@ -124,7 +129,7 @@ class Elm327:
         text = ln.decode(errors='replace').strip()
         if not text:
           continue
-        f = parse_frame(text)
+        f = parse_frame(text, id_chars)
         if f:
           frames.append((time.monotonic() - t0, f[0], f[1]))
         elif 'BUFFER FULL' in text.upper():
@@ -139,3 +144,77 @@ class Elm327:
     self._buf = b''
     self.cmd('ATSP6')
     return frames, buffer_full, unparsed
+
+  # ---- Tesla diag page additions ---------------------------------------------------------------
+  def probe(self) -> dict:
+    """AT layer only: what this firmware accepts. Nothing is sent to the car."""
+    lines = self.cmd('ATZ', 4.0)
+    out = {'version': next((ln for ln in lines if 'ELM' in ln.upper()), lines[-1] if lines else ''), 'commands': {}}
+    for c in ('ATE0', 'ATL0', 'ATS0', 'ATH1'):
+      self.cmd(c)
+    for c, key in (('ATI', 'ati'), ('AT@1', 'description'), ('ATRV', 'voltage')):
+      out[key] = ' '.join(ln for ln in self.cmd(c) if ln != '?')
+    for c in ('ATCAF0', 'ATCAF1', 'ATCFC0', 'ATCFC1', 'ATSH7E0', 'ATCRA7E8', 'ATCRA', 'ATCSM1', 'ATD'):
+      lines = self.cmd(c)
+      out['commands'][c] = 'unsupported' if '?' in lines else ('ok' if 'OK' in [ln.upper() for ln in lines] else ' '.join(lines))
+    out['silent'] = out['commands']['ATCSM1'] == 'ok'
+    self.silent = out['silent']
+    self.restore()
+    return out
+
+  def restore(self) -> None:
+    """Back to the monitor settings the battery page polls with."""
+    for c in INIT[1:]:
+      self.cmd(c)
+    if self.silent:
+      self.cmd('ATCSM1')
+
+  def uds_request(self, payload: bytes, tx_id: int, rx_id: int, id_format: str, protocol: int, p2: float = 2.0) -> bytes:
+    """One read-only request; the dongle frames it (ATCAF1) so no PCI is added here."""
+    from openpilot.system.btobd import tdiag
+    tdiag.check_request_allowed(payload)
+    self.cmd(f'ATSP{protocol}')
+    for c in ('ATCAF1', 'ATCFC1', 'ATH0', 'ATS1'):
+      self.cmd(c)
+    self.cmd(f'ATSH{tx_id:03X}' if id_format == '11' else f'ATSH{tx_id:08X}')
+    self.cmd(f'ATCRA{rx_id:03X}' if id_format == '11' else f'ATCRA{rx_id:08X}')
+    try:
+      lines = self.cmd(payload.hex().upper(), p2 + 2.0)
+      return parse_reply(lines)
+    finally:
+      try:
+        self.restore()
+      except (TimeoutError, OSError):
+        pass
+
+
+MULTI_HEAD = re.compile(r'^[0-9A-F]{3}$')
+MULTI_LINE = re.compile(r'^[0-9A-F]:\s*(.*)$')
+BAD_REPLIES = ('NO DATA', 'UNABLE TO CONNECT', 'BUS BUSY', 'CAN ERROR', 'BUFFER FULL', 'BUS ERROR', 'FB ERROR', 'DATA ERROR', 'STOPPED')
+
+
+def parse_reply(lines: list[str]) -> bytes:
+  """Reply of a CAF1 dongle: 'XX XX ..' for one frame, or '014' + '0: ..' '1: ..' for several."""
+  lines = [ln for ln in lines if not ln.upper().startswith(('SEARCHING', 'BUS INIT'))]
+  for ln in lines:
+    u = ln.upper()
+    if u == '?':
+      raise RuntimeError('동글이 ?로 답했습니다')
+    for bad in BAD_REPLIES:
+      if u.startswith(bad):
+        raise TimeoutError(bad) if bad == 'NO DATA' else RuntimeError(bad)
+  if not lines:
+    raise TimeoutError('빈 응답')
+  if MULTI_HEAD.match(lines[0].replace(' ', '')) and len(lines) > 1 and MULTI_LINE.match(lines[1]):
+    total, body = int(lines[0], 16), b''
+    for ln in lines[1:]:
+      m = MULTI_LINE.match(ln)
+      if m:
+        body += bytes.fromhex(m.group(1).replace(' ', ''))
+    if len(body) < total:
+      raise RuntimeError(f'멀티프레임 응답이 짧습니다 ({len(body)}/{total})')
+    return body[:total]
+  try:
+    return bytes.fromhex(lines[-1].replace(' ', ''))
+  except ValueError:
+    raise RuntimeError(f'해석할 수 없는 응답 {lines!r}') from None

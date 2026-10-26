@@ -1,0 +1,22 @@
+{
+  "name": "example_unverified",
+  "note": "예시입니다. 어떤 것도 2016 Model X에서 확인되지 않았습니다. verified_on_vehicle/allow_live가 false라 실차 UDS 읽기는 거절됩니다.",
+  "vehicle_family": "Tesla Model S/X (pre-2021)",
+  "model_year_range": "2016",
+  "hardware_or_firmware_evidence": "",
+  "bus": "",
+  "bitrate": 0,
+  "id_format": "11",
+  "tx_id": null,
+  "rx_id": null,
+  "supported_service_did": ["22F190"],
+  "evidence_url": "",
+  "verified_on_vehicle": false,
+  "allow_live": false,
+  "signals": {
+    "BMS_packVoltage": {"id": "102", "start": 0, "length": 16, "scale": 0.01, "unit": "V", "min_dlc": 2, "source": "wk057 0x102", "status": "community-unverified"},
+    "BMS_socMin": {"id": "302", "start": 0, "length": 10, "scale": 0.1, "unit": "%", "min_dlc": 3, "source": "wk057 0x302", "status": "community-unverified"},
+    "BMS_socUI": {"id": "302", "start": 10, "length": 10, "scale": 0.1, "unit": "%", "min_dlc": 3, "source": "wk057 0x302", "status": "community-unverified"},
+    "BMS_nominalFullPackEnergy": {"id": "382", "start": 0, "length": 10, "scale": 0.1, "unit": "kWh", "min_dlc": 8, "source": "wk057 0x382", "status": "community-unverified"}
+  }
+}

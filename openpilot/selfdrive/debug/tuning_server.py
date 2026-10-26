@@ -41,6 +41,7 @@ from openpilot.selfdrive.debug.can_source import CanSource, list_routes
 from openpilot.selfdrive.debug import shadow_replay
 from openpilot.system.btobd import capture as obd_capture
 from openpilot.system.btobd import checks as obd_checks
+from openpilot.system.btobd import tdiag
 from openpilot.selfdrive.debug.intervention_log import (InterventionLog, list_events,
                                                         locate_segment, read_event)
 from openpilot.selfdrive.modeld.model_manager import ModelManager
@@ -1003,6 +1004,8 @@ class Handler(BaseHTTPRequestHandler):
 
     if self.path.startswith('/api/videos'):
       return self._send(200, json.dumps({'routes': video_source.list_videos()}))
+    if self.path.startswith('/api/tdiag'):
+      return self._tdiag_get()
     if self.path.startswith('/api/obd/capture/'):
       name = self.path.split('?')[0].rsplit('/', 1)[-1]
       path = os.path.join(obd_capture.CAPTURE_DIR, name)
@@ -1062,6 +1065,8 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, PAGE_DIAG, 'text/html; charset=utf-8')
     if page == '/checks':
       return self._send(200, PAGE_CHECKS, 'text/html; charset=utf-8')
+    if page == '/tdiag':
+      return self._send(200, PAGE_TDIAG, 'text/html; charset=utf-8')
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
 
   def _onroad(self) -> bool:
@@ -1093,6 +1098,114 @@ class Handler(BaseHTTPRequestHandler):
     if not 3 <= seconds <= 60 or protocol not in (6, 8):
       return 400, {'error': '캡처는 3~60초, 프로토콜은 6 또는 8만 됩니다'}
     return 200, {'seconds': seconds, 'protocol': protocol}
+
+  # ---- Tesla diag page (/tdiag) ------------------------------------------------------------------
+  def _queue_obd_cmd(self, cmd: dict) -> None:
+    self._touch_obd_viewer()
+    tmp = OBD_CMD_PATH + '.tmp'
+    with open(tmp, 'w') as f:
+      json.dump(cmd, f)
+    os.chmod(tmp, 0o666)
+    os.replace(tmp, OBD_CMD_PATH)
+
+  def _tdiag_state(self) -> dict:
+    st = self._obd_state()
+    ok, why = obd_checks.parked(self.state.get(), st.get('values', {}))
+    return {'bt': st.get('bt'), 'link': st.get('link'), 'stale': st.get('stale', True), 'error': st.get('error', ''),
+            'elm': st.get('elm') or {}, 'sniff': st.get('sniff'), 'probe': st.get('probe'), 'uds': st.get('uds'),
+            'parked': ok, 'parkedWhy': why, 'captures': tdiag.list_captures(), 'profiles': tdiag.list_profiles(),
+            'session': tdiag.tail_log(n=80), 'audit': tdiag.tail_log(name=tdiag.UDS_AUDIT, n=30)}
+
+  def _tdiag_get(self):
+    path, _, qs = self.path.partition('?')
+    rest = path[len('/api/tdiag'):].strip('/')
+    if rest == '':
+      return self._send(200, json.dumps(self._tdiag_state(), ensure_ascii=False))
+    if rest == 'zip':
+      data = tdiag.zip_logs()
+      self.send_response(200)
+      self.send_header('Content-Type', 'application/zip')
+      self.send_header('Content-Length', str(len(data)))
+      self.send_header('Content-Disposition', 'attachment; filename="tesla-diag-logs.zip"')
+      self.end_headers()
+      self.wfile.write(data)
+      return None
+    kind, _, name = rest.partition('/')
+    if kind == 'file':
+      p = tdiag.downloadable_path(name)
+      return self._send_file(p, 'application/x-ndjson', name) if p else self._send(404, '{}')
+    if kind == 'analyze':
+      p = tdiag.downloadable_path(name)
+      if not p or not tdiag.CAP_RE.fullmatch(name):
+        return self._send(404, '{}')
+      prof_name = next((x[8:] for x in qs.split('&') if x.startswith('profile=')), '')
+      prof = tdiag.load_profile(prof_name) if prof_name else None
+      try:
+        meta, frames = tdiag.read_capture(p)
+      except (OSError, ValueError) as e:
+        return self._send(500, json.dumps({'error': f'캡처를 읽을 수 없습니다: {e}'}))
+      from openpilot.system.btobd.capture import NAMES
+      out = tdiag.analyze(frames, prof, NAMES)
+      out.update(name=name, meta=meta, profile=prof_name if prof else '')
+      return self._send(200, json.dumps(out, ensure_ascii=False))
+    return self._send(404, '{}')
+
+  def _tdiag_cmd(self, req: dict) -> tuple[int, dict]:
+    """Every request gate is here, not only in the page. Probe is AT-only; capture and UDS need a
+    parked car; UDS additionally needs a verified profile and both confirmations -- and btobdd
+    checks the same rules again before writing to the dongle."""
+    cmd = req.get('cmd')
+    st = self._obd_state()
+    parked, why = obd_checks.parked(self.state.get(), st.get('values', {}))
+    if cmd == 'probe':
+      self._queue_obd_cmd({'cmd': 'probe'})
+      return 200, {'ok': True}
+    if cmd == 'sniff':
+      if not parked:
+        return 409, {'error': '주차 중에만 캡처할 수 있습니다 — ' + why}
+      try:
+        seconds, protocol = float(req.get('seconds', 10)), int(req.get('protocol', 6))
+      except (TypeError, ValueError):
+        return 400, {'error': '캡처 설정을 읽을 수 없습니다'}
+      if not 3 <= seconds <= 300 or protocol not in tdiag.PROTOCOLS:
+        return 400, {'error': '캡처는 3~300초, 프로토콜은 6·7·8·9만 됩니다'}
+      self._queue_obd_cmd({'cmd': 'sniff', 'seconds': seconds, 'protocol': protocol})
+      return 200, {'ok': True}
+    if cmd in ('uds', 'uds_dry'):
+      prof = tdiag.load_profile(str(req.get('profile', '')))
+      if prof is None:
+        return 400, {'error': '프로파일을 찾을 수 없습니다'}
+      try:
+        payload = tdiag.build_request(str(req.get('did', '')), bool(req.get('dtc')), str(req.get('mask', 'FF')))
+        tdiag.check_request_allowed(payload)
+      except tdiag.SafetyRefusal as e:
+        return 400, {'error': str(e)}
+      listed = payload.hex().upper() in prof['supported_service_did']
+      blockers = tdiag.live_blockers(prof)
+      if cmd == 'uds_dry':
+        tdiag.log_event('uds-dry-run', request=payload.hex().upper(), profile=prof['name'], listed=listed, blockers=blockers)
+        return 200, {'dry': True, 'request': payload.hex(' ').upper(), 'listed': listed, 'blockers': blockers,
+                     'tx': prof['tx_id'], 'rx': prof['rx_id']}
+      if not parked:
+        return 409, {'error': '주차 중에만 읽을 수 있습니다 — ' + why}
+      try:
+        tdiag.preflight(prof, payload, bool(req.get('allow')), bool(req.get('confirm')))
+      except tdiag.SafetyRefusal as e:
+        tdiag.log_event('refused', name=tdiag.UDS_AUDIT, request=payload.hex().upper(), why=str(e))
+        return 403, {'error': str(e)}
+      self._queue_obd_cmd({'cmd': 'uds', 'profile': prof['name'], 'request': payload.hex().upper(),
+                           'allow': True, 'confirm': True})
+      return 200, {'ok': True}
+    if cmd == 'delete':
+      return (200, {'ok': True}) if tdiag.delete_capture(str(req.get('name', ''))) else (404, {'error': '없는 파일'})
+    if cmd == 'profile_save':
+      try:
+        p = tdiag.save_profile(str(req.get('name', '')), str(req.get('text', '')))
+      except (tdiag.ProfileError, OSError) as e:
+        return 400, {'error': str(e)}
+      tdiag.log_event('profile-saved', profile=p['name'], blockers=tdiag.live_blockers(p))
+      return 200, {'ok': True, 'blockers': tdiag.live_blockers(p)}
+    return 400, {'error': f'알 수 없는 명령: {cmd}'}
 
   def _checks(self, save: bool = False) -> dict:
     """The parked-car check. Listen-only data in, verdicts out; nothing is sent to the car.
@@ -1223,6 +1336,14 @@ class Handler(BaseHTTPRequestHandler):
       if req.get('cmd') != 'run':
         return self._send(400, json.dumps({'error': '알 수 없는 명령'}))
       return self._send(200, json.dumps(self._checks(save=True)))
+
+    if self.path.startswith('/api/tdiag'):
+      try:
+        req = self._read_json()
+      except json.JSONDecodeError:
+        return self._send(400, json.dumps({'error': '요청을 읽을 수 없습니다'}))
+      code, body = self._tdiag_cmd(req)
+      return self._send(code, json.dumps(body, ensure_ascii=False))
 
     if self.path.startswith('/api/obd'):
       try:
@@ -1933,6 +2054,13 @@ border:1px solid var(--line);color:var(--mut)}
   <div class="t">진단 · 배터리 (블루투스 OBD)</div>
   <div class="d">진단 단자에 꽂은 블루투스 ELM327 동글로 배터리 전압·전류·SOC·에너지,
     셀 전압 96개, 모터 출력과 온도를 Scan My Tesla처럼 실시간으로 봅니다.</div>
+</a>
+
+<a class="card" href="/tdiag">
+  <div class="t">Tesla 진단 · 전체 (캡처·해독·UDS·로그)</div>
+  <div class="d">동글 점검, 버스 캡처(프로토콜 6~9), 캡처 로그 분석·다운로드, 프로파일 기반 신호 해독,
+    조건이 갖춰졌을 때만 열리는 읽기 전용 UDS(0x22/0x19), 전체 작업 로그와 zip 내려받기까지 한 곳에서 합니다.
+    쓰기·삭제·보안접근 같은 서비스는 어떤 경우에도 보내지 않습니다.</div>
 </a>
 
 <a class="card" href="/videos">
@@ -3401,6 +3529,186 @@ tick(); setInterval(()=>{if(!busy) tick();},1000);
 """
 
 
+
+PAGE_TDIAG = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Tesla 진단 · 전체</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--ok:#4CC38A;--hot:#F5B942;--bad:#E5484D;--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--ok:#1B7F53;--hot:#9A6210;--bad:#C2292E}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);
+padding:18px;padding-bottom:calc(18px + env(safe-area-inset-bottom));max-width:900px}
+a.back{color:var(--dim);font-family:var(--m);font-size:11px;text-decoration:none}
+h1{font-size:17px;margin:8px 0 3px}
+.sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:16px}
+.grp{background:var(--card);border:1px solid var(--line);border-radius:11px;margin-bottom:11px;overflow:hidden}
+.gt{font-size:12px;color:var(--mut);padding:10px 13px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
+.row{display:flex;align-items:center;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.row:last-child{border-bottom:none}
+.lb{font-size:13px;flex:1;min-width:140px}
+.a{font-family:var(--m);font-size:10.5px;color:var(--dim)}
+.pill{font-family:var(--m);font-size:10.5px;padding:3px 8px;border-radius:99px;border:1px solid var(--line);color:var(--mut)}
+.pill.ok{border-color:var(--ok);color:var(--ok)}.pill.warn{border-color:var(--hot);color:var(--hot)}.pill.bad{border-color:var(--bad);color:var(--bad)}
+button{font:inherit;font-size:12.5px;padding:7px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--tx);cursor:pointer}
+button.pri{background:var(--radar);border-color:var(--radar);color:#04131C}
+button:disabled{opacity:.5;cursor:default}
+input,select,textarea{font:inherit;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--tx)}
+input{width:90px}textarea{width:100%;font-family:var(--m);font-size:11px;min-height:150px}
+.err{color:var(--bad);font-size:12.5px;padding:9px 13px;border-top:1px solid var(--line)}
+.ok{color:var(--ok)}
+.hint{font-size:12px;color:var(--mut);line-height:1.6;padding:11px 13px}
+table{width:100%;border-collapse:collapse;font-family:var(--m);font-size:11px}
+td,th{padding:5px 13px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+th{color:var(--mut);font-weight:normal}
+.sc{overflow-x:auto}
+.bars{display:flex;align-items:flex-end;gap:1px;height:46px;padding:8px 13px 0}
+.bars i{flex:1;min-width:1px;background:var(--radar);opacity:.8}
+a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px}
+.log{font-family:var(--m);font-size:10.5px;padding:8px 13px;max-height:260px;overflow:auto;line-height:1.55}
+.log div{border-bottom:1px solid var(--line);padding:2px 0;word-break:break-all}
+</style></head><body>
+<a class="back" href="/">← 메뉴</a> &nbsp; <a class="back" href="/diag">배터리 화면 / 동글 연결 →</a>
+<h1>Tesla 진단 · 전체</h1>
+<div class="sub" id="sub">불러오는 중…</div>
+
+<div class="grp"><div class="gt"><span>상태</span><span id="pills"></span></div>
+  <div class="hint" id="st"></div><div class="err" id="err" hidden></div></div>
+
+<div class="grp">
+  <div class="gt"><span>1 · 동글 점검 (AT 명령만)</span><span class="a" id="prst"></span></div>
+  <div class="row"><span class="lb">동글이 어떤 명령을 지원하는지 확인합니다. 차에는 아무것도 보내지 않습니다.</span><button id="probe">점검</button></div>
+  <div id="prout"></div>
+</div>
+
+<div class="grp">
+  <div class="gt"><span>2 · 버스 캡처 (듣기 전용)</span><span class="a" id="snst"></span></div>
+  <div class="row"><span class="lb">시간 <input id="snsec" value="30" aria-label="초"> 초 (3~300) · 프로토콜
+    <select id="snproto" aria-label="프로토콜"><option value="6">6 · CAN 11비트 500k</option><option value="8">8 · CAN 11비트 250k</option>
+    <option value="7">7 · CAN 29비트 500k</option><option value="9">9 · CAN 29비트 250k</option></select></span>
+    <button class="pri" id="sniff">캡처 시작</button></div>
+  <div class="hint">주차(P)일 때만 됩니다. 동글이 무음 감시(ATCSM1)를 확인해 줄 때만 시작합니다. 이 차의 연결 위치가 어느 버스·속도인지는
+    확인된 바 없어서 기본값을 정하지 않습니다. 아무것도 안 들어오면 다른 프로토콜을 시도하세요. 끝나면 아래 로그 목록에 저장됩니다.</div>
+  <div class="err" id="snwarn" hidden></div>
+</div>
+
+<div class="grp">
+  <div class="gt"><span>3 · 캡처 로그 · 분석</span><span><a class="dl" href="/api/tdiag/zip">전체 로그 zip</a></span></div>
+  <div class="row"><span class="lb">분석에 쓸 프로파일 <select id="anprof"></select></span></div>
+  <div class="sc"><table><thead><tr><th>파일</th><th>크기</th><th>프로토콜</th><th>프레임</th><th></th></tr></thead><tbody id="caps"></tbody></table></div>
+  <div id="an" hidden>
+    <div class="gt"><span id="antitle"></span><span class="a" id="ansum"></span></div>
+    <div class="bars" id="anbars"></div><div class="a" style="padding:2px 13px 8px">초당 프레임 수</div>
+    <div class="err" id="anwarn" hidden></div>
+    <div class="sc"><table><thead><tr><th>신호</th><th>마지막</th><th>최소</th><th>최대</th><th>수</th><th>상태</th></tr></thead><tbody id="ansig"></tbody></table></div>
+    <div class="sc"><table><thead><tr><th>ID</th><th>수신</th><th>Hz</th><th>DLC</th><th>마지막 데이터</th><th>해독</th></tr></thead><tbody id="anids"></tbody></table></div>
+  </div>
+</div>
+
+<div class="grp">
+  <div class="gt"><span>4 · 읽기 전용 UDS (0x22 / 0x19)</span><span class="a" id="udst"></span></div>
+  <div class="row"><span class="lb">프로파일 <select id="uprof"></select></span></div>
+  <div class="row"><span class="lb"><label><input type="radio" name="um" value="did" checked style="width:auto"> DID 읽기 (0x22) <input id="udid" value="F190"></label>
+    &nbsp; <label><input type="radio" name="um" value="dtc" style="width:auto"> DTC 읽기 (0x19 02) 마스크 <input id="umask" value="FF" style="width:50px"></label></span></div>
+  <div class="row"><span class="lb"><label><input type="checkbox" id="uallow" style="width:auto"> 실차 읽기 허용</label> &nbsp;
+    <label><input type="checkbox" id="uconf" style="width:auto"> 차가 주차(P)·안전한 장소임을 확인</label></span>
+    <button id="udry">미리보기 (전송 안 함)</button><button class="pri" id="uread">읽기</button></div>
+  <div class="hint" id="unote"></div>
+  <div class="err" id="uerr" hidden></div>
+  <div class="hint" id="uout"></div>
+  <details style="padding:0 13px 12px"><summary class="a" style="cursor:pointer">프로파일 추가/수정 (JSON)</summary>
+    <div class="row" style="padding-left:0"><span class="lb">이름 <input id="pname" style="width:160px" placeholder="verified_local"></span><button id="psave">저장</button></div>
+    <textarea id="ptext" spellcheck="false"></textarea>
+    <div class="hint" id="pnote">필드: supported_service_did(요청 전체 hex, 예 22F190), tx_id, rx_id, id_format(11/29), bitrate(250/500),
+      evidence_url, hardware_or_firmware_evidence, verified_on_vehicle, allow_live, signals. 내 차의 로그로 확인한 뒤에만 verified_on_vehicle/allow_live를 true로 하세요.</div>
+  </details>
+</div>
+
+<div class="grp">
+  <div class="gt"><span>5 · 작업 로그</span><span><a class="dl" href="/api/tdiag/file/session.jsonl">session.jsonl</a> · <a class="dl" href="/api/tdiag/file/uds_audit.jsonl">uds_audit.jsonl</a></span></div>
+  <div class="log" id="log"></div>
+</div>
+
+<div class="grp"><div class="hint">
+  모든 점검·캡처·UDS 시도(거절 포함)는 /data/btobd_logs/session.jsonl에 시각과 함께 기록되고, 캡처 원본은 capture-*.jsonl로 남습니다.
+  UDS는 서버와 동글 데몬이 같은 규칙을 두 번 확인하며, 0x22·0x19 외의 서비스(세션 전환, 리셋, DTC 삭제, 보안접근, 쓰기, 루틴 등)는 보낼 수 없습니다.
+  검증된 프로파일이 없으면 실차 읽기는 열리지 않습니다. 이 도구는 아직 2016 Model X에서 검증되지 않았습니다.
+</div></div>
+
+<script>
+const $=i=>document.getElementById(i);
+const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let busy=false,S={},selProf={a:'',u:''},openCap='';
+async function post(b){busy=true;try{const r=await fetch('/api/tdiag',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+  const j=await r.json();return {code:r.status,body:j};}finally{busy=false;}}
+async function act(b){const r=await post(b);if(r.body.error)alert(r.body.error);tick();return r;}
+const tm=t=>t?new Date(t*1000).toLocaleString('ko-KR'):'';
+function profOpts(sel,cur){return S.profiles.map(p=>`<option value="${esc(p.name)}"${p.name===cur?' selected':''}>${esc(p.name)} (${p.source})${p.error?' ⚠':(p.blockers&&p.blockers.length?' · 실차 불가':' · 실차 가능')}</option>`).join('');}
+function render(s){
+  S=s;
+  const bt={up:['블루투스 켜짐','ok'],absent:['블루투스 커널 없음','bad'],error:['블루투스 오류','bad']}[s.bt]||[s.bt,'warn'];
+  const lk={connected:['동글 연결됨','ok'],connecting:['연결 중','warn'],error:['연결 실패','bad']}[s.link]||['동글 대기','warn'];
+  $('pills').innerHTML=`<span class="pill ${bt[1]}">${bt[0]}</span> <span class="pill ${lk[1]}">${lk[0]}</span> <span class="pill ${s.parked?'ok':'warn'}">${s.parked?'주차 상태':'주차 아님'}</span>`;
+  $('sub').textContent=s.stale?'데몬 응답 없음':'';
+  $('st').textContent=(s.elm&&s.elm.version?`동글 ${s.elm.version} · ${s.elm.silent?'무음 감시 확인됨':'무음 감시 미확인'} · `:'')+(s.parked?'':'캡처·UDS는 주차(P)에서만: '+s.parkedWhy);
+  $('err').hidden=!s.error;$('err').textContent=s.error||'';
+  const conn=s.link==='connected';
+  const p=s.probe;
+  $('probe').disabled=!conn||(p&&p.status==='running');
+  $('prst').textContent=!p?'':p.status==='running'?'점검 중…':p.status==='error'?'실패':tm(p.time);
+  $('prout').innerHTML=!p?'':p.status==='error'?`<div class="err">${esc(p.error)}</div>`:p.status!=='done'?'':
+    `<div class="sc"><table><tr><td>버전</td><td>${esc(p.version)}</td></tr><tr><td>설명</td><td>${esc(p.description||p.ati||'')}</td></tr><tr><td>전압</td><td>${esc(p.voltage||'')}</td></tr>`+
+    Object.entries(p.commands).map(([k,v])=>`<tr><td>${k}</td><td class="${v==='ok'?'ok':''}">${esc(v)}</td></tr>`).join('')+
+    `<tr><td>무음 감시</td><td class="${p.silent?'ok':''}">${p.silent?'확인됨 (클론은 거짓 OK 가능)':'미확인 → 캡처 거절'}</td></tr></table></div>`;
+  const n=s.sniff;
+  $('sniff').disabled=!conn||!s.parked||(n&&n.status==='running');
+  if(n&&n.status==='running')$('snst').textContent=`캡처 중… ${n.seconds}초 (끝날 때까지 다른 명령은 대기)`;
+  else if(n&&n.status==='error'){$('snst').textContent='실패';$('snwarn').hidden=false;$('snwarn').textContent=n.error;}
+  else if(n&&n.status==='done'){$('snst').textContent=`${n.frames}프레임 · ${n.unique}개 ID · 초당 ${n.fps} · ${n.file}`;
+    $('snwarn').hidden=!n.warnings.length;$('snwarn').innerHTML=n.warnings.map(esc).join('<br>');}
+  else $('snst').textContent='';
+  if(document.activeElement!==$('anprof'))$('anprof').innerHTML='<option value="">(프로파일 없이)</option>'+profOpts('a',selProf.a);
+  if(document.activeElement!==$('uprof')){const c=selProf.u||(s.profiles[0]||{}).name;$('uprof').innerHTML=profOpts('u',c);}
+  $('caps').innerHTML=s.captures.map(c=>`<tr><td>${esc(c.name)}</td><td>${(c.size/1024).toFixed(0)} KB</td><td>${esc((c.meta||{}).protocol||'')}</td><td>${esc((c.meta||{}).frames||'')}</td>
+    <td><button data-an="${c.name}">분석</button> <a class="dl" href="/api/tdiag/file/${c.name}">받기</a> <button data-del="${c.name}">삭제</button></td></tr>`).join('')||'<tr><td colspan=5>저장된 캡처가 없습니다</td></tr>';
+  document.querySelectorAll('[data-an]').forEach(b=>b.onclick=()=>analyze(b.dataset.an));
+  document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{if(confirm('삭제할까요? '+b.dataset.del))act({cmd:'delete',name:b.dataset.del});});
+  const u=s.uds;const pr=s.profiles.find(x=>x.name===$('uprof').value);
+  $('unote').textContent=pr?(pr.error?pr.error:(pr.blockers.length?'이 프로파일은 실차에 쓸 수 없습니다: '+pr.blockers.join(', ')+' — 미리보기만 됩니다.':'허용된 요청: '+pr.requests.join(', '))):'';
+  $('uread').disabled=!conn||!s.parked||!pr||(pr.blockers||[1]).length>0||(u&&u.status==='running');
+  $('udst').textContent=!u?'':u.status==='running'?'읽는 중…':tm(u.time);
+  $('uerr').hidden=!(u&&(u.status==='error'||u.status==='refused'));$('uerr').textContent=u&&u.error?u.error:'';
+  $('uout').innerHTML=u&&u.status==='done'?`<b>${esc(u.kind)}</b> · 요청 ${esc(u.request)}<br>${esc(u.text)}<br><span class="a">원본 응답: ${esc(u.raw)}</span>`:'';
+  $('log').innerHTML=s.session.slice().reverse().map(e=>{const {t,event,...r}=e;return `<div>${tm(t)} <b>${esc(event)}</b> ${esc(JSON.stringify(r))}</div>`;}).join('')||'<div>아직 기록이 없습니다</div>';
+}
+async function analyze(name){
+  openCap=name;const prof=$('anprof').value;
+  const j=await (await fetch('/api/tdiag/analyze/'+name+(prof?'?profile='+encodeURIComponent(prof):''))).json();
+  if(j.error){alert(j.error);return;}
+  $('an').hidden=false;$('antitle').textContent=name+(j.profile?' · 프로파일 '+j.profile:'');
+  $('ansum').textContent=`${j.frames}프레임 · ${j.span}초 · ID ${j.ids.length}개`;
+  const mx=Math.max(1,...j.perSecond);
+  $('anbars').innerHTML=j.perSecond.map(v=>`<i style="height:${Math.round(100*v/mx)}%" title="${v}"></i>`).join('');
+  $('anwarn').hidden=!j.unknown.length;$('anwarn').textContent=j.unknown.length?'프로파일/내장 해독에 없는 ID: '+j.unknown.join(', '):'';
+  $('ansig').innerHTML=Object.entries(j.decoded).map(([k,e])=>`<tr><td>${esc(k)}</td><td>${e.last} ${esc(e.unit)}</td><td>${e.min}</td><td>${e.max}</td><td>${e.n}</td><td>${esc(e.status)}</td></tr>`).join('')||'<tr><td colspan=6>해독된 신호가 없습니다 (프로파일을 고르세요)</td></tr>';
+  $('anids').innerHTML=j.ids.map(i=>`<tr><td>0x${i.id}</td><td>${i.n}</td><td>${i.hz==null?'–':i.hz}</td><td>${i.dlc.join(',')}</td><td>${esc(i.last)}</td><td>${i.builtin?esc(i.builtin):i.known?'프로파일':'–'}</td></tr>`).join('');
+}
+$('anprof').onchange=()=>{selProf.a=$('anprof').value;if(openCap)analyze(openCap);};
+$('uprof').onchange=()=>{selProf.u=$('uprof').value;render(S);};
+$('probe').onclick=()=>act({cmd:'probe'});
+$('sniff').onclick=()=>act({cmd:'sniff',seconds:parseFloat($('snsec').value),protocol:parseInt($('snproto').value,10)});
+function ureq(c){const dtc=document.querySelector('input[name=um]:checked').value==='dtc';
+  return {cmd:c,profile:$('uprof').value,did:$('udid').value.trim(),dtc:dtc,mask:$('umask').value.trim(),allow:$('uallow').checked,confirm:$('uconf').checked};}
+$('udry').onclick=async()=>{const r=await post(ureq('uds_dry'));const b=r.body;
+  $('uout').innerHTML=b.error?`<span class="ok" style="color:var(--bad)">${esc(b.error)}</span>`:`미리보기 — 전송 안 함<br>요청 ${esc(b.request)} · tx ${b.tx==null?'–':b.tx.toString(16).toUpperCase()} / rx ${b.rx==null?'–':b.rx.toString(16).toUpperCase()}<br>프로파일 목록에 ${b.listed?'있음':'없음'}`+(b.blockers.length?'<br>실차 불가: '+esc(b.blockers.join(', ')):'<br>실차 가능');tick();};
+$('uread').onclick=()=>{if(confirm('차에 읽기 요청 1건을 보냅니다. 주차(P) 상태입니까?'))act(ureq('uds'));};
+$('psave').onclick=async()=>{const r=await act({cmd:'profile_save',name:$('pname').value.trim(),text:$('ptext').value});
+  if(r.body.ok)alert('저장했습니다'+(r.body.blockers.length?' (실차 불가: '+r.body.blockers.join(', ')+')':''));};
+async function tick(){try{render(await(await fetch('/api/tdiag')).json());}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}}
+tick();setInterval(()=>{if(!busy)tick();},1500);
+</script></body></html>
+"""
 
 PAGE_CHECKS = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">

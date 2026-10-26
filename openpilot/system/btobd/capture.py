@@ -15,7 +15,7 @@ import time
 from openpilot.system.btobd import tesla_sx as t
 
 CAPTURE_DIR = '/data/btobd_logs'
-KEEP = 10
+KEEP = 40
 NAME_RE = re.compile(r'capture-\d{8}-\d{6}\.jsonl')
 CORE_IDS = (0x102, 0x302, 0x382, 0x6F2)    # what the battery page needs
 NAMES = {i: d.__name__ for i, d in t.DECODERS.items()} | {t.CELL_ID: 'bricks'}

@@ -72,7 +72,7 @@ def test_save_and_replay_round_trip(tmp_path):
 
 
 def test_old_captures_are_pruned(tmp_path):
-  for i in range(14):
+  for i in range(capture.KEEP + 4):
     (tmp_path / f'capture-20260101-0000{i:02d}.jsonl').write_text('{}')
   capture.save([], {}, str(tmp_path))
   assert len(list(tmp_path.iterdir())) == capture.KEEP
