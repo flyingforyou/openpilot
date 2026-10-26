@@ -1,6 +1,7 @@
-"""ELM327 client for CAN monitoring, the way Scan My Tesla drives a dongle on a Model S/X.
+"""ELM327 client for listen-only CAN monitoring on a Model S/X.
 
-Nothing is requested from the car. The adapter is set to ISO 15765-4 CAN 11-bit 500 kbps (ATSP6),
+Nothing is requested from the car. (Whether Scan My Tesla works the same way is not documented on
+its site -- it only says it records "all packets as fast as the car sends them" and filters.) The adapter is set to ISO 15765-4 CAN 11-bit 500 kbps (ATSP6),
 silent monitoring where the firmware supports it (ATCSM1: no ACKs from the dongle on the bus), and
 then pointed at one ID at a time (ATCRA <id>; ATMA) for a short dwell. Cheap clones overflow if
 asked to monitor everything on a busy bus, so filtering per ID is the only reliable way.

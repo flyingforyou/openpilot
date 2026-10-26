@@ -1,9 +1,10 @@
 """Decoders for the 2012-2021 Model S/X powertrain broadcasts a diagnostic-port dongle can hear.
 
-This is what Scan My Tesla shows on these cars: it does not query anything, it puts an ELM327 into
-CAN monitor mode and reads frames the BMS and drive units broadcast anyway. None of these IDs are
-on the buses the comma harness taps (checked 2026-10-26: 0x302/0x382 there are radar tracks), so
-the dongle is the only way to get them.
+These are frames the BMS and drive units broadcast on the powertrain CAN (wk057 lists them at
+1-100 Hz), so an ELM327 in monitor mode can read them without asking the car for anything. None of
+these IDs are on the buses the comma harness taps (checked 2026-10-26: 0x302/0x382 there are radar
+tracks). Reaching that bus takes the diagnostic connector and its adapter cable: Scan My Tesla's
+adapter page lists a cable for Model S/X 09/2015-09/2021, and the plain OBD-II port may not carry it.
 
 Sources, both community reverse engineering, neither official:
   - wk057 (Jason Hughes), "Tesla Model S CAN Bus Deciphering" v0.1, 2016-01-15. Every message

@@ -3216,8 +3216,10 @@ th{color:var(--mut);font-weight:normal}
 <div class="grp"><div class="gt"><span>원본 프레임</span><span class="a">ID · 길이 · 데이터 · 수신 수</span></div>
   <table><tbody id="raw"></tbody></table></div>
 <div class="grp"><div class="hint">
-  Scan My Tesla와 같은 방식입니다. 동글을 CAN 감시 모드(ATMA, 가능하면 무음 감시 ATCSM1)로 두고
-  배터리·구동장치가 원래 방송하는 메시지를 ID별로 돌아가며 듣습니다. 차에 아무것도 요청하지 않습니다.
+  동글을 CAN 감시 모드(ATMA, 가능하면 무음 감시 ATCSM1)로 두고 배터리·구동장치가 원래 방송하는
+  메시지를 ID별로 돌아가며 듣습니다. 차에는 요청을 보내지 않습니다. Scan My Tesla가 정확히 같은 방식인지는
+  확인하지 못했습니다. 이 값들은 구형 S/X의 진단 커넥터(전용 어댑터 케이블)에서만 나오고, 일반 OBD-II
+  단자에는 이 CAN이 없을 수 있습니다. 아래 "원본 프레임"이 비어 있으면 연결 위치부터 확인하세요.
   해독은 wk057의 Model S CAN 해독 문서(2016)와 OVMS 코드 기준이라, 차 펌웨어에 따라 값이 어긋날 수 있습니다.
   처음엔 화면의 SOC·전압과 맞는지 확인해 주세요. 동글 연결은 주행 중이거나 이 페이지를 열어 둔 동안에만 유지합니다.
 </div></div>
