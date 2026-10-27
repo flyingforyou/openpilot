@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from openpilot.system.btobd.tesla_sx import TeslaSXState
 
@@ -207,9 +207,9 @@ def summarize(frames: list[tuple[float, int, bytes]], meta: dict | None = None) 
   clock = [(t, int.from_bytes(d[:4], 'big')) for t, d in by_id.get(CLOCK_ID, ()) if len(d) >= 4]
   if clock:
     t, car = clock[-1]
-    kst = datetime.fromtimestamp(car, timezone(timedelta(hours=9)))
-    row = {'key': 'clock', 'label': '차량 시계', 'id': f'{CLOCK_ID:03X}', 'n': len(clock), 'value': kst.strftime('%m/%d %H:%M:%S'),
-           'unit': 'KST', 'status': 'ok', 'detail': ''}
+    # the page re-renders `ts` in the viewer's local time
+    row = {'key': 'clock', 'label': '차량 시계', 'id': f'{CLOCK_ID:03X}', 'n': len(clock), 'ts': car,
+           'value': datetime.fromtimestamp(car, timezone.utc).strftime('%m/%d %H:%M:%S'), 'unit': 'UTC', 'status': 'ok', 'detail': ''}
     end_t = max(f[0] for f in frames)
     if meta.get('saved'):
       skew = car - (meta['saved'] - end_t + t)

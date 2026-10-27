@@ -3,7 +3,7 @@
 The expected values are what the car was doing then (J1772 state C, 206 V single phase, heater off),
 so a failure means a field moved. The VIN here is made up; the real capture is not in the repo.
 """
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import pytest
 
@@ -71,6 +71,7 @@ def test_vin_is_masked_and_decoded():
   frames = [(0.0, 0x508, bytes([k]) + vin[k * 7:k * 7 + 7].ljust(7, '\0').encode()) for k in range(3)]
   out = p.summarize(frames, {})
   row = next(r for r in out['groups'][2]['rows'] if r['key'] == 'vin')
+  assert row['ts'] == 1793116253
   assert row['value'] == 'TESXC0000GF••••••'
   assert '123456' not in str(out)
   assert row['detail'] == 'Model X · 2016년식 · 프리몬트'
@@ -86,4 +87,5 @@ def test_car_clock_skew():
   frames = [(110.0, 0x528, (1793116253).to_bytes(4, 'big')), (112.0, 0x212, b(REAL[0x212]))]
   row = next(r for r in p.summarize(frames, {'saved': 1793116257.25})['groups'][2]['rows'] if r['key'] == 'clock')
   assert '-2 초' in row['detail'] and row['status'] == 'ok'
-  assert row['value'] == datetime.fromtimestamp(1793116253, timezone(timedelta(hours=9))).strftime('%m/%d %H:%M:%S')
+  assert row['ts'] == 1793116253
+  assert row['value'] == datetime.fromtimestamp(1793116253, timezone.utc).strftime('%m/%d %H:%M:%S')

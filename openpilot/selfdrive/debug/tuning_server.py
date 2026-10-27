@@ -3809,7 +3809,7 @@ async function summary(name){
   $('smsub').textContent=`${j.name} · ${tm(j.saved)} · ${j.frames}프레임${j.filter?'':' · 필터 없이 찍힌 표본'}`;
   $('smbody').innerHTML=j.groups.map(g=>`<div class="smg"><div class="smh"><b>${esc(g.title)}</b><span class="a">${g.heard}/${g.rows.length} 들림</span></div>`+
     g.rows.map(r=>`<div class="smr"><span class="l">${esc(r.label)}${r.id?`<span class="a">0x${esc(r.id)}${r.n?' · '+r.n:''}</span>`:''}</span>
-      <span class="v ${r.status}">${esc(r.value)}</span><span class="u">${esc(r.unit)}</span>${r.detail?`<span class="d">${esc(r.detail)}</span>`:''}</div>`).join('')+
+      <span class="v ${r.status}">${esc(r.ts?new Date(r.ts*1000).toLocaleString('ko-KR'):r.value)}</span><span class="u">${esc(r.ts?'':r.unit)}</span>${r.detail?`<span class="d">${esc(r.detail)}</span>`:''}</div>`).join('')+
     (g.note?`<div class="hint" style="border-top:1px solid var(--line)">${esc(g.note)}</div>`:'')+'</div>').join('');
 }
 summary('');
