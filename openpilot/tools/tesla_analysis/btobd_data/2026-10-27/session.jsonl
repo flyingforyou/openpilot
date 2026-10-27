@@ -1,0 +1,7 @@
+{"t": 1793050398.39, "event": "uds-dry-run", "request": "22F190", "profile": "example_unverified", "listed": true, "blockers": ["verified_on_vehicle이 false", "allow_live가 false", "evidence_url 없음", "hardware_or_firmware_evidence 없음", "tx_id/rx_id 없음", "id_format/bitrate가 6~9번 프로토콜 중 어느 것에도 해당하지 않음"]}
+{"t": 1793052776.582, "event": "uds-dry-run", "request": "1101", "profile": "example_unverified", "listed": false, "blockers": ["verified_on_vehicle이 false", "allow_live가 false", "evidence_url 없음", "hardware_or_firmware_evidence 없음", "tx_id/rx_id 없음", "id_format/bitrate가 6~9번 프로토콜 중 어느 것에도 해당하지 않음"], "tier": "control"}
+{"t": 1793113273.348, "event": "probe", "version": "ELM327 v1.5", "commands": {"ATCAF0": "ok", "ATCAF1": "ok", "ATCFC0": "ok", "ATCFC1": "ok", "ATSH7E0": "ok", "ATCRA7E8": "ok", "ATCRA": "unsupported", "ATCSM1": "unsupported", "ATD": "ok"}, "ati": "ELM327 v1.5", "description": "OBDII to RS232 Interpreter", "voltage": "14.7V", "silent": false}
+{"t": 1793114954.455, "event": "sniff", "protocol": 6, "seconds": 30.0, "file": "capture-20261027-152914.jsonl", "frames": 21, "unique": 20, "bufferFull": true, "unparsed": 0, "silent": false}
+{"t": 1793115692.697, "event": "uds-error", "request": "22F190", "error": "NO DATA"}
+{"t": 1793115714.309, "event": "uds-error", "request": "22F190", "error": "NO DATA"}
+{"t": 1793116257.61, "event": "sniff", "protocol": 6, "seconds": 120.0, "file": "capture-20261027-155057.jsonl", "frames": 13676, "unique": 216, "bufferFull": true, "unparsed": 429, "silent": false}

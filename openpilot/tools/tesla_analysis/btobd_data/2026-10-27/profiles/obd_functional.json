@@ -1,0 +1,17 @@
+{
+  "name": "obd_functional",
+  "note": "표준 OBD-II(ISO 15765-4) 기능 주소: 요청 7DF, 응답 7E8~7EF. Tesla 고유 진단 ID(0x64C IC, 0x649 DAS)에 아무 응답이 없어서, 표준 OBD 요청에 답하는 ECU가 있는지 확인하는 용도입니다.",
+  "vehicle_family": "Tesla Model S/X (pre-2021)",
+  "model_year_range": "2016",
+  "hardware_or_firmware_evidence": "",
+  "bus": "diagnostic connector, protocol 6",
+  "bitrate": 500,
+  "id_format": "11",
+  "tx_id": "7DF",
+  "rx_id": "7E8",
+  "supported_service_did": ["0900"],
+  "evidence_url": "ISO 15765-4 / SAE J1979 functional addressing",
+  "verified_on_vehicle": false,
+  "allow_live": false,
+  "signals": {}
+}

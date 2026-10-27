@@ -1,0 +1,17 @@
+{
+  "name": "das_draft",
+  "note": "검증 전 초안. 요청 ID 0x649는 talas9/tesla_can_signals ModelS CH 버스 파일의 UDS_dasRequest(송신: gtw/tool)에서 가져왔습니다. 응답 ID 0x651는 그 파일에 없어서 ISO-TP 관례(요청+8)로 둔 추정입니다. 대상은 DAS (AP1 Autopilot computer) -- 차를 움직이는 모듈(EPAS/ESP/EPB)은 첫 시험에서 일부러 뺐습니다. '검증'으로 22F190(VIN 읽기)을 보내 긍정 응답이 오면 승격됩니다. 응답이 없으면 응답 ID 추정이 틀렸거나 이 진단 포트에서 해당 모듈에 닿지 않는 것입니다.",
+  "vehicle_family": "Tesla Model S/X (pre-2021)",
+  "model_year_range": "2016",
+  "hardware_or_firmware_evidence": "",
+  "bus": "CH (diagnostic connector; 0x102/0x302/0x382/0x6F2 heard here on protocol 6)",
+  "bitrate": 500,
+  "id_format": "11",
+  "tx_id": "649",
+  "rx_id": "651",
+  "supported_service_did": ["22F190"],
+  "evidence_url": "https://github.com/talas9/tesla_can_signals/blob/main/ModelS/ModelS_CH.compact.json.json",
+  "verified_on_vehicle": false,
+  "allow_live": false,
+  "signals": {}
+}

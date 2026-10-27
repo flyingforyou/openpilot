@@ -66,6 +66,7 @@ def test_parse_frame_spaced_and_unspaced():
   assert parse_frame('30282DF0D') == (0x302, bytes.fromhex('82DF0D'))
   assert parse_frame('302 82 DF 0D') == (0x302, bytes.fromhex('82DF0D'))
   assert parse_frame('BUFFER FULL') is None
+  assert parse_frame('F01743900000000') is None          # seen in a real capture: not an 11-bit id
   assert parse_frame('STOPPED') is None
 
 
@@ -104,3 +105,13 @@ def test_uds_discover_reports_who_answers():
   assert lines == ['6F2 01 02 03 04 05 06 07 08', '65C 02 7E 00']
   assert (0x65C, bytes.fromhex('027E00')) in frames
   assert 'ATSH64C' in d.sent and 'ATCRA6XX' in d.sent and 'ATH1' in d.sent
+
+
+def test_init_resets_a_dongle_left_monitoring():
+  # the 'A' of ATZ only stops a running ATMA; the reset has to be sent again
+  d = FakeDongle({})
+  d.monitoring = True
+  e = Elm327(d)
+  e.init()
+  assert e.version == 'ELM327 v1.5'
+  assert d.sent.count('ATZ') == 2

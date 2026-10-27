@@ -32,9 +32,11 @@ def parse_frame(line: str, id_chars: int = 3) -> tuple[int, bytes] | None:
   if len(s) < id_chars + 2 or not HEX_RE.match(s) or (len(s) - id_chars) % 2:
     return None
   data = bytes.fromhex(s[id_chars:])
-  if not 1 <= len(data) <= 8:
+  fid = int(s[:id_chars], 16)
+  # an 11-bit id tops out at 7FF; anything above is two lines the dongle ran together
+  if not 1 <= len(data) <= 8 or (id_chars == 3 and fid > 0x7FF):
     return None
-  return int(s[:id_chars], 16), data
+  return fid, data
 
 
 class Elm327:
@@ -63,9 +65,21 @@ class Elm327:
     self.t.send((c + '\r').encode())
     return self._read_until_prompt(timeout or self.cmd_timeout)
 
+  def _reset(self) -> str:
+    """ATZ, and the version line it answers with.
+
+    A dongle left monitoring (ATMA) by a dropped connection takes the 'A' of ATZ as the character
+    that stops it and answers STOPPED -- no reset happens. Seen on the car: the capture meta and
+    the page both showed the dongle's version as "STOPPED". Send it again when that happens."""
+    for _ in range(2):
+      lines = self.cmd('ATZ', 4.0)
+      version = next((ln for ln in lines if 'ELM' in ln.upper()), '')
+      if version:
+        return version
+    return lines[-1] if lines else ''
+
   def init(self) -> None:
-    lines = self.cmd('ATZ', 4.0)
-    self.version = next((ln for ln in lines if 'ELM' in ln.upper()), lines[-1] if lines else '')
+    self.version = self._reset()
     for c in INIT[1:]:
       self.cmd(c)
     for c in OPTIONAL:
@@ -194,8 +208,7 @@ class Elm327:
   # ---- Tesla diag page additions ---------------------------------------------------------------
   def probe(self) -> dict:
     """AT layer only: what this firmware accepts. Nothing is sent to the car."""
-    lines = self.cmd('ATZ', 4.0)
-    out = {'version': next((ln for ln in lines if 'ELM' in ln.upper()), lines[-1] if lines else ''), 'commands': {}}
+    out = {'version': self._reset(), 'commands': {}}
     for c in ('ATE0', 'ATL0', 'ATS0', 'ATH1'):
       self.cmd(c)
     for c, key in (('ATI', 'ati'), ('AT@1', 'description'), ('ATRV', 'voltage')):

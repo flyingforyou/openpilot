@@ -1,0 +1,17 @@
+{"t": 1793050398.412, "event": "refused", "request": "22F190", "why": "이 프로파일은 실차에 쓸 수 없습니다: verified_on_vehicle이 false, allow_live가 false, evidence_url 없음, hardware_or_firmware_evidence 없음, tx_id/rx_id 없음, id_format/bitrate가 6~9번 프로토콜 중 어느 것에도 해당하지 않음"}
+{"t": 1793052776.618, "event": "refused", "request": "22F190", "why": "이 프로파일은 실차에 쓸 수 없습니다: verified_on_vehicle이 false, allow_live가 false, evidence_url 없음, hardware_or_firmware_evidence 없음, tx_id/rx_id 없음, id_format/bitrate가 6~9번 프로토콜 중 어느 것에도 해당하지 않음", "verify": false}
+{"t": 1793052776.634, "event": "refused", "request": "22F190", "why": "검증하려면 먼저 tx_id/rx_id를 넣으세요", "verify": true}
+{"t": 1793115691.774, "event": "send", "request": "22F190", "tx": 1612, "rx": 1620, "protocol": 6, "profile": "ic_draft", "tier": "read", "verify": true}
+{"t": 1793115713.405, "event": "send", "request": "22F190", "tx": 1609, "rx": 1617, "protocol": 6, "profile": "das_draft", "tier": "read", "verify": true}
+{"t": 1793115880.902, "event": "send", "request": "3E00", "tx": 1612, "rx": "6XX", "protocol": 6, "profile": "ic_draft", "tier": "read", "discover": true}
+{"t": 1793115881.821, "event": "recv", "request": "3E00", "discover": "6XX", "answers": [], "heard": []}
+{"t": 1793115886.985, "event": "send", "request": "3E00", "tx": 1609, "rx": "6XX", "protocol": 6, "profile": "das_draft", "tier": "read", "discover": true}
+{"t": 1793115887.904, "event": "recv", "request": "3E00", "discover": "6XX", "answers": [], "heard": []}
+{"t": 1793115903.469, "event": "send", "request": "3E00", "tx": 1612, "rx": "XXX", "protocol": 6, "profile": "ic_draft", "tier": "read", "discover": true}
+{"t": 1793115904.384, "event": "recv", "request": "3E00", "discover": "XXX", "answers": [], "heard": []}
+{"t": 1793115907.663, "event": "send", "request": "3E00", "tx": 1609, "rx": "XXX", "protocol": 6, "profile": "das_draft", "tier": "read", "discover": true}
+{"t": 1793115908.579, "event": "recv", "request": "3E00", "discover": "XXX", "answers": [], "heard": []}
+{"t": 1793115995.07, "event": "send", "request": "3E00", "tx": 1612, "rx": "XXX", "protocol": 6, "profile": "ic_draft", "tier": "read", "discover": true}
+{"t": 1793115995.985, "event": "recv", "request": "3E00", "discover": "XXX", "answers": [], "heard": [], "lines": ["NO DATA"]}
+{"t": 1793116067.816, "event": "send", "request": "0900", "tx": 2015, "rx": "7XX", "protocol": 6, "profile": "obd_functional", "tier": "read", "discover": true}
+{"t": 1793116068.74, "event": "recv", "request": "0900", "discover": "7XX", "answers": [], "heard": [], "lines": ["NO DATA"]}
