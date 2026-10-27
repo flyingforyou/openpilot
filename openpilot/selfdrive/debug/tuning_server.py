@@ -2085,15 +2085,19 @@ border:1px solid var(--line);color:var(--mut)}
 <a class="card" href="/diag">
   <div class="t">진단 · 배터리 (블루투스 OBD)</div>
   <div class="d">진단 단자에 꽂은 블루투스 ELM327 동글로 배터리 전압·전류·SOC·에너지,
-    셀 전압 96개, 모터 출력과 온도를 Scan My Tesla처럼 실시간으로 봅니다.</div>
+    셀 전압 96개, 모터 출력과 온도를 Scan My Tesla처럼 실시간으로 봅니다.
+    저장된 캡처에서 충전 상태·배터리 열관리·차량 식별도 해독해 보여줍니다.</div>
 </a>
 
+<!-- /tdiag is left out of the menu: this port answers no UDS, so the diag tools have nothing to talk to.
+     The page still works by URL; its capture summary now lives on /diag.
 <a class="card" href="/tdiag">
   <div class="t">Tesla 진단 · 전체 (캡처·해독·UDS·로그)</div>
   <div class="d">동글 점검, 버스 캡처(프로토콜 6~9), 캡처 로그 분석·다운로드, 프로파일 기반 신호 해독,
     조건이 갖춰졌을 때만 열리는 읽기 전용 UDS(0x22/0x19), 전체 작업 로그와 zip 내려받기까지 한 곳에서 합니다.
     쓰기·삭제·보안접근 같은 서비스는 어떤 경우에도 보내지 않습니다.</div>
 </a>
+-->
 
 <a class="card" href="/videos">
   <div class="t">영상 · 녹화된 주행</div>
@@ -3350,6 +3354,12 @@ background:var(--bg);border:1px solid var(--line);font-variant-numeric:tabular-n
 table{width:100%;border-collapse:collapse;font-family:var(--m);font-size:11px}
 td,th{padding:5px 13px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
 th{color:var(--mut);font-weight:normal}
+.smh{font-size:12.5px;padding:9px 13px 4px;display:flex;justify-content:space-between;gap:8px;border-top:1px solid var(--line)}
+.smr{display:grid;grid-template-columns:minmax(120px,1fr) minmax(90px,auto) 40px;gap:2px 10px;padding:6px 13px;border-top:1px solid var(--line);align-items:baseline}
+.smr .v{font-family:var(--m);font-size:13px;text-align:right}.smr .v.bad{color:var(--bad)}.smr .v.warn{color:var(--hot)}.smr .v.na{color:var(--dim)}
+.smr .u,.smr .a{font-family:var(--m);font-size:10.5px;color:var(--dim)}
+.smr .d{grid-column:1/-1;font-family:var(--m);font-size:10.5px;color:var(--dim)}
+.smr .l{font-size:13px}.smr .l .a{margin-left:6px}
 @media(max-width:560px){.cells{grid-template-columns:repeat(8,1fr)}}
 </style></head><body>
 <a class="back" href="/">← 메뉴</a>
@@ -3402,6 +3412,11 @@ th{color:var(--mut);font-weight:normal}
 <div class="grp"><div class="gt"><span>모듈 온도 (32)</span></div><div class="cells" id="temps"></div></div>
 <div class="grp"><div class="gt"><span>구동</span></div><div id="drive"></div></div>
 <div class="grp"><div class="gt"><span>기타</span></div><div id="misc"></div></div>
+<div class="grp" id="sm">
+  <div class="gt"><span>충전 · 열관리 · 식별 (저장된 캡처)</span><span class="a" id="smsub">불러오는 중…</span></div>
+  <div id="smbody"></div>
+  <div class="hint" style="border-top:1px solid var(--line)">아래 "버스 확인 · 캡처"로 찍은 마지막 캡처를 해독합니다. 실시간 값이 아니라 캡처한 순간의 값입니다.</div>
+</div>
 <div class="grp"><div class="gt"><span>원본 프레임</span><span class="a">ID · 길이 · 데이터 · 수신 수</span></div>
   <table><tbody id="raw"></tbody></table></div>
 <div class="grp">
@@ -3516,6 +3531,7 @@ function renderSniff(s){
   if(!n){$('snst').textContent='';return;}
   if(n.status==='running'){$('snst').textContent=`캡처 중… ${n.seconds}초`;return;}
   if(n.status==='error'){$('snst').textContent='실패';$('snwarn').hidden=false;$('snwarn').textContent=n.error;return;}
+  if(n.file&&n.file!==smFile&&n.frames>=1000)summary(n.file);
   $('snst').innerHTML=`${n.frames}프레임 · ${n.unique}개 ID · 초당 ${n.fps} · <a href="/api/obd/capture/${n.file}" style="color:inherit">${n.file}</a>`;
   $('snsum').innerHTML=`<div class="row"><span class="lb">동글</span><span class="vl">${esc(el.version||'')} · ${esc(el.protocol||'')} · ${el.silent?'무음 감시':'무음 감시 미지원'}</span></div>`;
   $('snwarn').hidden=!n.warnings.length; $('snwarn').innerHTML=n.warnings.map(esc).join('<br>');
@@ -3523,6 +3539,21 @@ function renderSniff(s){
   $('snids').innerHTML=n.ids.map(i=>`<tr><td>0x${i.id}</td><td>${i.n}</td><td>${i.hz}</td><td>${esc(i.last)}</td><td>${i.known?esc(i.known):'–'}</td></tr>`).join('');
 }
 function esc(x){return String(x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+// Decoded rows of one saved capture; with no name the server picks the newest full one.
+let smFile=null;
+async function summary(name){
+  smFile=name;
+  let j;try{j=await (await fetch('/api/tdiag/summary/'+(name||''))).json();}catch(e){$('smsub').textContent='불러오지 못했습니다';return;}
+  if(j.error){$('smsub').textContent=j.error;$('smbody').innerHTML='';return;}
+  smFile=j.name;
+  const tm=t=>new Date(t*1000).toLocaleString('ko-KR');
+  $('smsub').textContent=`${j.saved?tm(j.saved):j.name} · ${j.frames}프레임`;
+  $('smbody').innerHTML=j.groups.map(g=>`<div class="smh"><b>${esc(g.title)}</b><span class="a">${g.heard}/${g.rows.length} 들림</span></div>`+
+    g.rows.map(r=>`<div class="smr"><span class="l">${esc(r.label)}${r.id?`<span class="a">0x${esc(r.id)}${r.n?' · '+r.n:''}</span>`:''}</span>
+      <span class="v ${r.status}">${esc(r.ts?tm(r.ts):r.value)}</span><span class="u">${esc(r.ts?'':r.unit)}</span>${r.detail?`<span class="d">${esc(r.detail)}</span>`:''}</div>`).join('')+
+    (g.note?`<div class="hint" style="border-top:1px solid var(--line)">${esc(g.note)}</div>`:'')).join('');
+}
+summary('');
 $('sniff').onclick=()=>post({cmd:'sniff',seconds:parseInt($('snsec').value,10),protocol:parseInt($('snproto').value,10)});
 // Reuses the grid's own divs across ticks instead of rebuilding all n of them via innerHTML every
 // second -- 96+32 fresh elements a second is the main thing making this page feel like it stutters.
