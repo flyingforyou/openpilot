@@ -234,11 +234,12 @@ class Elm327:
         pass
 
 
-  def uds_discover(self, payload: bytes, tx_id: int, protocol: int, rx_pattern: str) -> list[tuple[int, bytes]]:
+  def uds_discover(self, payload: bytes, tx_id: int, protocol: int, rx_pattern: str) -> tuple[list[tuple[int, bytes]], list[str]]:
     """One read-only request with a wildcard receive filter (ATCRA 6XX) and headers on, to learn
     which ID a module answers on when only its request ID is known. Returns every (id, frame) heard
     in the response window -- PCI byte included, broadcasts on matching IDs too; the caller picks
-    the answer out by content. 11-bit only. Keep the request single-frame-answered (3E00, short
+    the answer out by content -- plus the dongle's raw lines, so "nothing answered" can be told apart
+    from NO DATA vs CAN ERROR vs a line this failed to parse. 11-bit only. Keep the request single-frame-answered (3E00, short
     DIDs): with the filter open, the dongle cannot run flow control for a multi-frame reply."""
     from openpilot.system.btobd import tdiag
     tdiag.check_request_allowed(payload)
@@ -254,7 +255,7 @@ class Elm327:
         self.restore()
       except (TimeoutError, OSError):
         pass
-    return [f for f in (parse_frame(ln) for ln in lines) if f]
+    return [f for f in (parse_frame(ln) for ln in lines) if f], lines
 
 
 MULTI_HEAD = re.compile(r'^[0-9A-F]{3}$')

@@ -100,6 +100,7 @@ def test_uds_discover_reports_who_answers():
   d = FakeDongle({})
   d.uds_replies['3E00'] = ['6F2 01 02 03 04 05 06 07 08', '65C 02 7E 00']   # a broadcast and the answer
   e = Elm327(d)
-  frames = e.uds_discover(bytes.fromhex('3E00'), 0x64C, 6, '6XX')
+  frames, lines = e.uds_discover(bytes.fromhex('3E00'), 0x64C, 6, '6XX')
+  assert lines == ['6F2 01 02 03 04 05 06 07 08', '65C 02 7E 00']
   assert (0x65C, bytes.fromhex('027E00')) in frames
   assert 'ATSH64C' in d.sent and 'ATCRA6XX' in d.sent and 'ATH1' in d.sent

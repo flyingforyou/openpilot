@@ -307,7 +307,7 @@ class Daemon:
     tdiag.log_event('send', name=tdiag.UDS_AUDIT, request=req, tx=prof['tx_id'], rx=rx_pattern, protocol=proto,
                     profile=prof['name'], tier=tdiag.us.tier(payload[0]), discover=True)
     try:
-      frames = self.elm.uds_discover(payload, prof['tx_id'], proto, rx_pattern)
+      frames, lines = self.elm.uds_discover(payload, prof['tx_id'], proto, rx_pattern)
     except Exception as e:
       self.uds_result = {'status': 'error', 'request': req, 'discover': rx_pattern, 'error': f'{type(e).__name__}: {e}',
                          'time': time.time()}
@@ -319,8 +319,9 @@ class Daemon:
                       if len(data) >= 2 and (data[1] == sid + 0x40 or (data[1] == 0x7F and len(data) >= 3 and data[2] == sid))})
     heard = [{'id': f'{fid:03X}', 'data': data.hex(' ').upper()} for fid, data in frames]
     self.uds_result = {'status': 'done', 'request': req, 'discover': rx_pattern, 'answers': answers, 'heard': heard,
-                       'kind': 'discover', 'time': time.time()}
-    tdiag.log_event('recv', name=tdiag.UDS_AUDIT, request=req, discover=rx_pattern, answers=answers, heard=heard)
+                       'lines': lines[:60], 'kind': 'discover', 'time': time.time()}
+    tdiag.log_event('recv', name=tdiag.UDS_AUDIT, request=req, discover=rx_pattern, answers=answers, heard=heard,
+                    lines=lines[:60])
 
   def _publish(self) -> None:
     now = time.monotonic()
