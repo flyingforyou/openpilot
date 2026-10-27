@@ -3,6 +3,8 @@
 The expected values are what the car was doing then (J1772 state C, 206 V single phase, heater off),
 so a failure means a field moved. The VIN here is made up; the real capture is not in the repo.
 """
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from openpilot.system.btobd import tesla_pt as p
@@ -84,3 +86,4 @@ def test_car_clock_skew():
   frames = [(110.0, 0x528, (1793116253).to_bytes(4, 'big')), (112.0, 0x212, b(REAL[0x212]))]
   row = next(r for r in p.summarize(frames, {'saved': 1793116257.25})['groups'][2]['rows'] if r['key'] == 'clock')
   assert '-2 초' in row['detail'] and row['status'] == 'ok'
+  assert row['value'] == datetime.fromtimestamp(1793116253, timezone(timedelta(hours=9))).strftime('%m/%d %H:%M:%S')
