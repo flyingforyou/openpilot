@@ -264,18 +264,41 @@ class RfcommTransport:
 
   def __init__(self, addr: str, channels=(1, 2, 3), timeout: float = 15.0):
     err = None
+    libc = ctypes.CDLL(None, use_errno=True)
     for ch in channels:
       s = socket.socket(AF_BLUETOOTH, socket.SOCK_STREAM, BTPROTO_RFCOMM)
-      s.settimeout(timeout)
-      try:
-        s.connect((addr, ch))
-        self.sock, self.channel = s, ch
-        return
-      except OSError as e:
-        err = e
+      s.setblocking(False)
+      # s.connect((addr, ch)) goes through getsockaddrarg(), which only packs a sockaddr for
+      # families this Python build recognises -- not AF_BLUETOOTH here (see BTPROTO_RFCOMM
+      # above), so it raises "bad family" regardless of what's passed. Build struct sockaddr_rc
+      # by hand instead: family (u16) + bdaddr (6 bytes, reversed -- see addr_to_bytes) + channel
+      # (u8), padded to the struct's actual sizeof (10, from sa_family_t's 2-byte alignment), and
+      # connect() through libc directly on the fd.
+      sockaddr = struct.pack('<H6sB', AF_BLUETOOTH, addr_to_bytes(addr), ch) + b'\x00'
+      ret = libc.connect(s.fileno(), ctypes.c_char_p(sockaddr), len(sockaddr))
+      e = ctypes.get_errno()
+      if ret != 0 and e != errno.EINPROGRESS:
+        err = OSError(e, os.strerror(e))
         s.close()
-        if e.errno in (errno.EHOSTDOWN, errno.EHOSTUNREACH, errno.ETIMEDOUT):
+        if e in (errno.EHOSTDOWN, errno.EHOSTUNREACH, errno.ETIMEDOUT):
           break   # the device is not there at all; other channels will not help
+        continue
+      # Non-blocking connect: wait for the fd to go writable, then read the real result off
+      # SO_ERROR -- writable alone fires on failure too, not just success.
+      if not select.select([], [s], [], timeout)[1]:
+        err = OSError(errno.ETIMEDOUT, 'rfcomm connect timed out')
+        s.close()
+        continue
+      so_err = s.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR)
+      if so_err != 0:
+        err = OSError(so_err, os.strerror(so_err))
+        s.close()
+        if so_err in (errno.EHOSTDOWN, errno.EHOSTUNREACH, errno.ETIMEDOUT):
+          break
+        continue
+      s.setblocking(True)
+      self.sock, self.channel = s, ch
+      return
     raise err or OSError('rfcomm connect failed')
 
   def send(self, b: bytes) -> None:
