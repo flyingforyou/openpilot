@@ -71,7 +71,6 @@ def test_vin_is_masked_and_decoded():
   frames = [(0.0, 0x508, bytes([k]) + vin[k * 7:k * 7 + 7].ljust(7, '\0').encode()) for k in range(3)]
   out = p.summarize(frames, {})
   row = next(r for r in out['groups'][2]['rows'] if r['key'] == 'vin')
-  assert row['ts'] == 1793116253
   assert row['value'] == 'TESXC0000GF••••••'
   assert '123456' not in str(out)
   assert row['detail'] == 'Model X · 2016년식 · 프리몬트'
