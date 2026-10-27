@@ -34,6 +34,7 @@ HCI_UART_H4 = 0
 
 AF_BLUETOOTH = 31
 BTPROTO_HCI = 1
+BTPROTO_RFCOMM = 3
 HCI_DEV_NONE = 0xFFFF
 HCI_CHANNEL_CONTROL = 3
 
@@ -264,7 +265,7 @@ class RfcommTransport:
   def __init__(self, addr: str, channels=(1, 2, 3), timeout: float = 15.0):
     err = None
     for ch in channels:
-      s = socket.socket(AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
+      s = socket.socket(AF_BLUETOOTH, socket.SOCK_STREAM, BTPROTO_RFCOMM)
       s.settimeout(timeout)
       try:
         s.connect((addr, ch))
