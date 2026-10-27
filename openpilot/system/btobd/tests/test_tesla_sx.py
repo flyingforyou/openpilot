@@ -29,6 +29,8 @@ def test_0x102_this_model_x_has_no_offset():
   r = t.bms_hv(b('24 8F 9E 00 98 00 FC 1F'))
   assert r['packVoltage'] == pytest.approx(366.44)
   assert r['packCurrent'] == pytest.approx(15.8)
+  assert 'negTerminalTemp' not in r                        # FC 1F = 0x7FC, "no reading", not 204.4 degC
+  assert t.bms_hv(b('24 8F 9E 00 98 00 E1 00'))['negTerminalTemp'] == pytest.approx(22.5)
 
 
 def test_state_latches_current_offset():

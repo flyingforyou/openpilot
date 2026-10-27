@@ -46,6 +46,7 @@ class Elm327:
     self.version = ''
     self.protocol = ''
     self.silent = False
+    self.sniff_filter: str | None = None   # how the last sniff split the ID space: 'cra', 'mask' or None
     self._buf = b''
 
   def _read_until_prompt(self, timeout: float) -> list[str]:
@@ -127,39 +128,63 @@ class Elm327:
 
     Unfiltered ATMA on this car's bus overflowed a v1.5 clone in 0.16 s, and an ELM327 stops
     monitoring on BUFFER FULL -- a 30 s capture came back with 21 frames, all from the first 0.16 s.
-    So 11-bit captures rotate the receive filter through eight buckets of the ID space (ATCRA 0XX ..
-    7XX) to cut the rate the adapter has to keep up with, and an overflow restarts ATMA instead of
-    ending the capture. Each bucket hears 1/8 of the time, so a 0.1 Hz message needs ~80 s or more.
+    So 11-bit captures rotate the receive filter through eight buckets of the ID space (first hex
+    digit 0..7) to cut the rate the adapter has to keep up with, and an overflow restarts ATMA instead
+    of ending the capture. Each bucket hears 1/8 of the time, so a 0.1 Hz message needs ~80 s or more.
+    The bucket is set with ATCRA 0XX, else ATCF/ATCM, else not at all; `sniff_filter` says which held.
     """
     self.cmd(f'ATSP{protocol}')
     id_chars = 8 if protocol in (7, 9) else 3
-    buckets: list[str | None] = [None]
-    if id_chars == 3 and not any('?' in ln for ln in self.cmd('ATCRA0XX')):
-      buckets = [f'{h:X}XX' for h in range(8)]
-    elif any('?' in ln for ln in self.cmd('ATCRA')):      # no argument clears the receive filter
-      self.cmd('ATCM000')
-      self.cmd('ATCF000')
+    # How to split the ID space, best first. An 'OK' is not proof: the car's v1.5 clone answered OK
+    # to ATCRA0XX and then passed the whole bus in every bucket (2026-10-27 capture), so each bucket
+    # is checked against what it actually let through and a leaking method is dropped for the next.
+    methods: list[str | None] = ['cra', 'mask'] if id_chars == 3 else []
+    methods.append(None)
+    self.sniff_filter = None
     frames: list = []
-    buffer_full, unparsed = False, 0
+    buffer_full, unparsed, cleared = False, 0, False
     t0 = time.monotonic()
     end = t0 + seconds
-    dwell = min(SNIFF_DWELL, seconds / len(buckets))
     i = 0
     while time.monotonic() < end and len(frames) < max_frames:
-      bucket = buckets[i % len(buckets)]
+      method = methods[0]
+      h = i % 8
+      if method is not None and not self._set_bucket(method, h):
+        methods.pop(0)
+        continue
+      if method is None and not cleared:
+        self._clear_filter()
+        cleared = True
+      self.sniff_filter = method
       i += 1
-      if bucket is not None:
-        self.cmd(f'ATCRA{bucket}')
+      dwell = min(SNIFF_DWELL, seconds / (8 if method else 1))
       dwell_end = min(end, time.monotonic() + dwell)
+      start = len(frames)
       while len(frames) < max_frames:
         full, bad = self._listen_all(dwell_end, id_chars, t0, frames, max_frames)
         buffer_full |= full
         unparsed += bad
         if not full or time.monotonic() >= dwell_end:
           break
+      heard = frames[start:]
+      leaked = sum(1 for f in heard if f[1] >> 8 != h)
+      if method is not None and leaked > max(3, len(heard) // 5):
+        methods.pop(0)                     # the frames are real, just unfiltered; keep them
     self._buf = b''
+    if self.sniff_filter is not None:
+      self._clear_filter()
     self.cmd('ATSP6')
     return frames, buffer_full, unparsed
+
+  def _set_bucket(self, method: str, h: int) -> bool:
+    """Receive only 11-bit IDs whose first hex digit is h. False if the adapter refused it."""
+    cmds = [f'ATCRA{h:X}XX'] if method == 'cra' else [f'ATCF{h:X}00', 'ATCM700']
+    return not any('?' in ln for c in cmds for ln in self.cmd(c))
+
+  def _clear_filter(self) -> None:
+    if any('?' in ln for ln in self.cmd('ATCRA')):      # no argument clears the receive filter
+      self.cmd('ATCM000')
+      self.cmd('ATCF000')
 
   def _listen_all(self, until: float, id_chars: int, t0: float, frames: list, max_frames: int) -> tuple[bool, int]:
     """One ATMA run into `frames` until `until`, max_frames or an overflow. Returns (overflowed, unparsed)."""

@@ -212,12 +212,16 @@ class Daemon:
     try:
       frames, full, unparsed = self.elm.sniff(seconds, protocol, max_frames=60000)
       summary = capture.summarize(frames, seconds, full, unparsed)
+      filt = self.elm.sniff_filter
+      if filt is None and protocol in (6, 8):
+        summary['warnings'].append('이 동글은 ID 구간 필터가 먹지 않아 전체 버스를 한꺼번에 들었습니다. 버퍼가 자주 넘쳐 '
+                                   '프레임 대부분이 빠지므로 Hz는 실제보다 훨씬 낮게 나옵니다.')
       name = capture.save(frames, {'protocol': protocol, 'frames': len(frames), 'idFormat': '29' if protocol in (7, 9) else '11', 'seconds': seconds, 'dongle': self.elm.version,
                                    'adapterProtocol': self.elm.protocol, 'silent': self.elm.silent,
-                                   'saved': time.time()})
+                                   'filter': filt, 'saved': time.time()})
       self.sniff = {'status': 'done', 'protocol': protocol, 'file': name, 'finished': time.time(), **summary}
       from openpilot.system.btobd import tdiag
-      tdiag.log_event('sniff', protocol=protocol, seconds=seconds, file=name, frames=summary['frames'],
+      tdiag.log_event('sniff', protocol=protocol, seconds=seconds, file=name, frames=summary['frames'], filter=filt,
                       unique=summary['unique'], bufferFull=full, unparsed=unparsed, silent=self.elm.silent)
     except Exception as e:
       self.sniff = {'status': 'error', 'error': f'{type(e).__name__}: {e}'}

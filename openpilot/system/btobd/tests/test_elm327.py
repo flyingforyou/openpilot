@@ -5,14 +5,18 @@ from openpilot.system.btobd.elm327 import Elm327, parse_frame
 class FakeDongle:
   """Answers AT commands like an ELM327 v1.5 clone; ATMA streams the frames of the filtered ID."""
 
-  def __init__(self, frames: dict[int, list[str]], silent_ok=True, wildcard_ok=True):
+  def __init__(self, frames: dict[int, list[str]], silent_ok=True, wildcard_ok=True, wildcard_ignored=False,
+               mask_ok=True):
     self.frames = frames
     self.silent_ok = silent_ok
     self.wildcard_ok = wildcard_ok      # ATCRA with X digits (0XX); older clones answer '?'
+    self.wildcard_ignored = wildcard_ignored   # the car's clone: OK to ATCRA0XX, then passes everything
+    self.mask_ok = mask_ok              # ATCF/ATCM filter + mask
     self.uds_replies: dict[str, list[str]] = {}   # request hex -> lines the dongle prints
     self.sent = []
     self.out = b''
     self.filter = None
+    self.cf = self.cm = 0
     self.overflow = False
     self.monitoring = False
 
@@ -30,7 +34,15 @@ class FakeDongle:
       if 'X' in arg and not self.wildcard_ok:
         self.out += b'?\r\r>'
         return
-      self.filter = arg or None
+      self.filter = None if not arg or ('X' in arg and self.wildcard_ignored) else arg
+      self.cf = self.cm = 0
+      self.out += b'OK\r\r>'
+    elif cmd[:4] in ('ATCF', 'ATCM'):
+      if not self.mask_ok:
+        self.out += b'?\r\r>'
+        return
+      setattr(self, cmd[2:4].lower(), int(cmd[4:], 16))
+      self.filter = None
       self.out += b'OK\r\r>'
     elif cmd == 'ATDP':
       self.out += b'ISO 15765-4 (CAN 11/500)\r\r>'
@@ -52,7 +64,7 @@ class FakeDongle:
 
   def matches(self, fid: int) -> bool:
     if self.filter is None:
-      return True
+      return fid & self.cm == self.cf & self.cm
     return all(p == 'X' or p == c for p, c in zip(self.filter.upper(), f'{fid:03X}', strict=False))
 
   def recv(self, n, timeout):

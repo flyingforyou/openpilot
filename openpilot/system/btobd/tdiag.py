@@ -46,9 +46,32 @@ def log_event(event: str, directory: str | None = None, name: str = SESSION, max
     path = os.path.join(directory, name)
     if os.path.exists(path) and os.path.getsize(path) > max_size:
       os.replace(path, path + '.1')
+    _repair_tail(path)
     with open(path, 'a') as f:
       f.write(json.dumps({'t': round(time.time(), 3), 'event': event, **kw}, ensure_ascii=False) + '\n')
     os.chmod(path, 0o644)
+  except OSError:
+    pass
+
+
+def _repair_tail(path: str) -> None:
+  """Cut a torn last line so the next append starts on a line of its own. Pulling the device out of
+  the car mid-write left live.jsonl ending in 1,990 NUL bytes (2026-10-27); appending after that
+  would glue the next record onto them and lose it too."""
+  try:
+    with open(path, 'rb+') as f:
+      size = f.seek(0, os.SEEK_END)
+      if size == 0:
+        return
+      f.seek(max(0, size - 4096))
+      tail = f.read()
+      if tail.endswith(b'\n'):
+        return
+      cut = tail.rfind(b'\n')
+      if cut < 0 and size > len(tail):
+        f.write(b'\n')                   # a torn line longer than 4 KB: leave it, just start fresh
+        return
+      f.truncate(size - len(tail) + cut + 1)
   except OSError:
     pass
 

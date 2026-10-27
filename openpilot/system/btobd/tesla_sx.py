@@ -23,6 +23,8 @@ def _s(value: int, bits: int) -> int:
 # A current field above this (0.1 A units, after sign) can only be the +10000 offset form: +600 A
 # into the pack is beyond any charger or regen this pack sees.
 OFFSET_PROOF = 6000
+# negTerminalTemp raw values from here up are the sensor's "not available" codes, not temperatures.
+NEG_TERMINAL_INVALID = 0x7F0
 
 
 def bms_hv(d: bytes, offset: bool | None = None) -> dict:
@@ -43,7 +45,11 @@ def bms_hv(d: bytes, offset: bool | None = None) -> dict:
     out['packCurrent'] = (raw - (10000 if offset else 0)) * 0.1
     out['packPower'] = out['packVoltage'] * out['packCurrent'] / 1000.0
   if len(d) >= 8:
-    out['negTerminalTemp'] = (d[6] | (d[7] & 0x07) << 8) * 0.1
+    # The 11-bit field's top values mean "no reading": this Model X sends FC 1F (0x7FC, 204.4 degC)
+    # in every frame, which /diag showed as a terminal 180 degC hotter than the modules.
+    raw_t = d[6] | (d[7] & 0x07) << 8
+    if raw_t < NEG_TERMINAL_INVALID:
+      out['negTerminalTemp'] = raw_t * 0.1
   return out
 
 

@@ -155,6 +155,17 @@ def test_log_and_files(tmp_path):
   assert tdiag.delete_capture('capture-20260101-000000.jsonl', d) and not tdiag.delete_capture('secret.txt', d)
 
 
+def test_log_recovers_from_a_torn_last_line(tmp_path):
+  # the device lost power mid-write: live.jsonl ended in NULs with no newline
+  p = tmp_path / tdiag.SESSION
+  p.write_bytes(b'{"t": 1, "event": "a"}\n' + b'\0' * 1990)
+  tdiag.log_event('b', str(tmp_path))
+  assert [e['event'] for e in tdiag.tail_log(str(tmp_path))] == ['a', 'b']
+  p.write_bytes(b'{"t": 1, "event": "a"}\n{"t": 2, "ev')          # cut mid-record
+  tdiag.log_event('c', str(tmp_path))
+  assert [e['event'] for e in tdiag.tail_log(str(tmp_path))] == ['a', 'c']
+
+
 def test_analyze_decodes_and_flags_unknown():
   p = tdiag.load_profile('example_unverified')
   frames = [(i * 0.01, 0x102, bytes([0x70, 0x94, 0x10, 0x27])) for i in range(200)] + [(0.5, 0x3F1, bytes(8))]

@@ -84,9 +84,9 @@ def test_sniff_rotates_the_id_space_in_eight_buckets():
   e = Elm327(d)
   e.init()
   frames, _, _ = e.sniff(0.05)
-  assert [c for c in d.sent if c.startswith('ATCRA') and c.endswith('XX')][:9] == \
-    ['ATCRA0XX', 'ATCRA0XX', 'ATCRA1XX', 'ATCRA2XX', 'ATCRA3XX', 'ATCRA4XX', 'ATCRA5XX', 'ATCRA6XX', 'ATCRA7XX']
-  assert {f[1] for f in frames} == {0x302, 0x382, 0x102}
+  assert [c for c in d.sent if c.startswith('ATCRA') and c.endswith('XX')][:8] == \
+    ['ATCRA0XX', 'ATCRA1XX', 'ATCRA2XX', 'ATCRA3XX', 'ATCRA4XX', 'ATCRA5XX', 'ATCRA6XX', 'ATCRA7XX']
+  assert {f[1] for f in frames} == {0x302, 0x382, 0x102} and e.sniff_filter == 'cra'
 
 
 def test_overflow_restarts_monitoring_and_drops_the_cut_frame():
@@ -101,10 +101,30 @@ def test_overflow_restarts_monitoring_and_drops_the_cut_frame():
   assert all(len(f[2]) > 1 for f in frames)             # the "102 1" stub before BUFFER FULL is gone
 
 
-def test_sniff_without_wildcard_filters_listens_unfiltered():
+def test_sniff_without_wildcard_filters_uses_the_mask():
   d = dongle(wildcard_ok=False)
   e = Elm327(d)
   e.init()
   frames, _, _ = e.sniff(0.05)
-  assert 'ATCRA1XX' not in d.sent
+  assert 'ATCRA1XX' not in d.sent and 'ATCF100' in d.sent and e.sniff_filter == 'mask'
+  assert {f[1] for f in frames} == {0x302, 0x382, 0x102}
+
+
+def test_sniff_drops_a_wildcard_the_adapter_says_ok_to_but_ignores():
+  # the car's v1.5 clone, 2026-10-27: OK to ATCRA0XX, then every bucket heard the whole bus
+  d = dongle(wildcard_ignored=True)
+  e = Elm327(d)
+  e.init()
+  frames, _, _ = e.sniff(0.05)
+  assert e.sniff_filter == 'mask' and 'ATCM700' in d.sent
+  assert d.sent.count('ATCRA0XX') + d.sent.count('ATCRA1XX') <= 2      # dropped after the first leaky bucket
+  assert {f[1] for f in frames} == {0x302, 0x382, 0x102}
+
+
+def test_sniff_listens_unfiltered_when_nothing_filters():
+  d = dongle(wildcard_ignored=True, mask_ok=False)
+  e = Elm327(d)
+  e.init()
+  frames, _, _ = e.sniff(0.05)
+  assert e.sniff_filter is None and 'ATCF100' in d.sent
   assert {f[1] for f in frames} == {0x302, 0x382, 0x102}
