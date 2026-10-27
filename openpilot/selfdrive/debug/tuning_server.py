@@ -3388,7 +3388,7 @@ th{color:var(--mut);font-weight:normal}
       <select id="snsec" aria-label="캡처 시간"><option>10</option><option>30</option><option>60</option></select> 초 · 프로토콜
       <select id="snproto" aria-label="CAN 프로토콜"><option value="6">6 · CAN 11비트 500k</option><option value="8">8 · CAN 11비트 250k</option></select></span>
     <button id="sniff">캡처 시작</button></div>
-  <div class="hint" id="snnote">주차 중에만 됩니다. 동글이 무음 감시(ATCSM1)를 지원할 때만 시작하고, 차에는 아무것도 보내지 않습니다.
+  <div class="hint" id="snnote">주차 중에만 됩니다. 차에는 아무것도 요청하지 않습니다. 무음 감시(ATCSM1) 미지원 동글은 ACK만 보내며, 이는 배터리 화면 감시와 같습니다.
     프로토콜 6이 이 차의 버스에 맞다고 확인된 것은 아닙니다. 아무것도 안 들어오면 8을 시도하거나 연결 위치를 확인하세요.</div>
   <div id="snsum"></div>
   <div class="err" id="snwarn" hidden></div>
@@ -3622,7 +3622,7 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
     <select id="snproto" aria-label="프로토콜"><option value="6">6 · CAN 11비트 500k</option><option value="8">8 · CAN 11비트 250k</option>
     <option value="7">7 · CAN 29비트 500k</option><option value="9">9 · CAN 29비트 250k</option></select></span>
     <button class="pri" id="sniff">캡처 시작</button></div>
-  <div class="hint">주차(P)일 때만 됩니다. 동글이 무음 감시(ATCSM1)를 확인해 줄 때만 시작합니다. 이 차의 연결 위치가 어느 버스·속도인지는
+  <div class="hint">주차(P)일 때만 됩니다. 무음 감시(ATCSM1) 미지원 동글이면 프레임에 ACK를 보내지만, 버스의 다른 ECU도 매 프레임 ACK하고 배터리 화면 감시도 똑같이 하므로 막지 않습니다. 이 차의 연결 위치가 어느 버스·속도인지는
     확인된 바 없어서 기본값을 정하지 않습니다. 아무것도 안 들어오면 다른 프로토콜을 시도하세요. 끝나면 아래 로그 목록에 저장됩니다.</div>
   <div class="err" id="snwarn" hidden></div>
 </div>
@@ -3680,12 +3680,12 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
 </div>
 
 <div class="grp">
-  <div class="gt"><span>5 · 작업 로그</span><span><a class="dl" href="/api/tdiag/file/session.jsonl">session.jsonl</a> · <a class="dl" href="/api/tdiag/file/uds_audit.jsonl">uds_audit.jsonl</a></span></div>
+  <div class="gt"><span>5 · 작업 로그</span><span><a class="dl" href="/api/tdiag/file/session.jsonl">session.jsonl</a> · <a class="dl" href="/api/tdiag/file/uds_audit.jsonl">uds_audit.jsonl</a> · <a class="dl" href="/api/tdiag/file/live.jsonl">live.jsonl</a></span></div>
   <div class="log" id="log"></div>
 </div>
 
 <div class="grp"><div class="hint">
-  모든 점검·캡처·UDS 시도(거절 포함)는 /data/btobd_logs/session.jsonl에 시각과 함께 기록되고, 캡처 원본은 capture-*.jsonl로 남습니다.
+  모든 점검·캡처·UDS 시도(거절 포함)는 /data/btobd_logs/session.jsonl에 시각과 함께 기록되고, 캡처 원본은 capture-*.jsonl로 남습니다. 동글이 연결돼 있는 동안 해독된 값(배터리·셀·원본 프레임)은 약 1초마다 live.jsonl에 자동으로 쌓입니다.
   UDS는 서버와 동글 데몬이 같은 규칙을 두 번 확인하며, 0x22·0x19 외의 서비스(세션 전환, 리셋, DTC 삭제, 보안접근, 쓰기, 루틴 등)는 보낼 수 없습니다.
   검증된 프로파일이 없으면 실차 읽기는 열리지 않습니다. 이 도구는 아직 2016 Model X에서 검증되지 않았습니다.
 </div></div>
@@ -3724,7 +3724,7 @@ function render(s){
   $('prout').innerHTML=!p?'':p.status==='error'?`<div class="err">${esc(p.error)}</div>`:p.status!=='done'?'':
     `<div class="sc"><table><tr><td>버전</td><td>${esc(p.version)}</td></tr><tr><td>설명</td><td>${esc(p.description||p.ati||'')}</td></tr><tr><td>전압</td><td>${esc(p.voltage||'')}</td></tr>`+
     Object.entries(p.commands).map(([k,v])=>`<tr><td>${k}</td><td class="${v==='ok'?'ok':''}">${esc(v)}</td></tr>`).join('')+
-    `<tr><td>무음 감시</td><td class="${p.silent?'ok':''}">${p.silent?'확인됨 (클론은 거짓 OK 가능)':'미확인 → 캡처 거절'}</td></tr></table></div>`;
+    `<tr><td>무음 감시</td><td class="${p.silent?'ok':''}">${p.silent?'확인됨 (클론은 거짓 OK 가능)':'미지원 → 캡처는 되지만 동글이 ACK함 (배터리 화면 감시와 같음)'}</td></tr></table></div>`;
   const n=s.sniff;
   $('sniff').disabled=!conn||!s.parked||(n&&n.status==='running');
   if(n&&n.status==='running')$('snst').textContent=`캡처 중… ${n.seconds}초 (끝날 때까지 다른 명령은 대기)`;

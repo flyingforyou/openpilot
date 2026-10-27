@@ -20,7 +20,9 @@ PROFILE_DIR = '/data/btobd_profiles'
 SHIPPED_DIR = os.path.join(os.path.dirname(__file__), 'profiles')
 SESSION = 'session.jsonl'
 UDS_AUDIT = 'uds_audit.jsonl'
+LIVE_LOG = 'live.jsonl'       # btobdd's decoded values, one line per publish while connected
 SESSION_MAX = 2_000_000
+LIVE_MAX = 50_000_000         # ~3 KB/line at ~1 Hz: ~5 h per file, ~10 h with the .1 rotation
 PROFILE_RE = re.compile(r'[A-Za-z0-9_-]{1,40}')
 from openpilot.system.btobd import uds_services as us
 
@@ -35,14 +37,14 @@ NRC = us.NRC
 
 
 # ---- session log ---------------------------------------------------------------------------------
-def log_event(event: str, directory: str | None = None, name: str = SESSION, **kw) -> None:
+def log_event(event: str, directory: str | None = None, name: str = SESSION, max_size: int = SESSION_MAX, **kw) -> None:
   """One JSON line per thing the page did or the car answered. Never raises: a full disk must not
   take the dongle loop down."""
   directory = directory or LOG_DIR
   try:
     os.makedirs(directory, exist_ok=True)
     path = os.path.join(directory, name)
-    if os.path.exists(path) and os.path.getsize(path) > SESSION_MAX:
+    if os.path.exists(path) and os.path.getsize(path) > max_size:
       os.replace(path, path + '.1')
     with open(path, 'a') as f:
       f.write(json.dumps({'t': round(time.time(), 3), 'event': event, **kw}, ensure_ascii=False) + '\n')
@@ -69,7 +71,7 @@ def tail_log(directory: str | None = None, name: str = SESSION, n: int = 60) -> 
 
 # ---- files ---------------------------------------------------------------------------------------
 CAP_RE = re.compile(r'capture-\d{8}-\d{6}\.jsonl')
-DOWNLOADABLE = (SESSION, UDS_AUDIT)
+DOWNLOADABLE = (SESSION, UDS_AUDIT, LIVE_LOG, LIVE_LOG + '.1')
 
 
 def list_captures(directory: str | None = None) -> list[dict]:

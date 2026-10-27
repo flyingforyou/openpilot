@@ -294,6 +294,7 @@ class Daemon:
 
   def _publish(self) -> None:
     now = time.monotonic()
+    snap = self.car.snapshot(now)
     devices = []
     if self.mgmt:
       for a, d in sorted(self.mgmt.devices.items(), key=lambda kv: -kv[1].get('rssi', -127)):
@@ -307,9 +308,16 @@ class Daemon:
               'protocol': self.elm.protocol if self.elm else '', 'channel': getattr(self.link, 'channel', None)},
       'sniff': self.sniff, 'probe': self.probe_result, 'uds': self.uds_result,
       'raw': {f'{k:03X}': v for k, v in sorted(self.raw.items())},
-      **self.car.snapshot(now),
+      **snap,
     }
     _write_state(state)
+    # btobd.json above is tmpfs and overwritten every publish; this is the persistent copy for
+    # offline analysis. Only while a dongle is actually feeding values -- idle publishes would
+    # just fill the log with empties.
+    if self.elm is not None and snap.get('values'):
+      from openpilot.system.btobd import tdiag
+      tdiag.log_event('live', name=tdiag.LIVE_LOG, max_size=tdiag.LIVE_MAX, values=snap['values'], cellsV=snap.get('cellsV'),
+                      cellsT=snap.get('cellsT'), raw={f'{k:03X}': v['data'] for k, v in self.raw.items()})
 
   def run(self) -> None:
     last_pub = 0.0

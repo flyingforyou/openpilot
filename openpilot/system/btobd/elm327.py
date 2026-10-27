@@ -102,12 +102,14 @@ class Elm327:
   def sniff(self, seconds: float, protocol: int = 6, max_frames: int = 20000):
     """Hear every frame on the bus for `seconds`. Returns (frames, buffer_full, unparsed).
 
-    Refuses unless the adapter confirmed silent monitoring (ATCSM1): without it nothing here can
-    promise the dongle is not acknowledging frames on the car's bus. frames are (seconds since
-    start, 11-bit id, data). Only AT commands and a bare CR (to stop ATMA) are ever sent.
+    Runs whether or not the adapter confirmed silent monitoring (ATCSM1); the caller records which.
+    Without it the dongle ACKs frames it hears -- but a CAN controller ACKs at the bit level for
+    every valid frame regardless of the receive filter, so monitor() (the battery page's per-ID
+    ATCRA+ATMA, which never required CSM) already ACKs everything on the bus the whole time it is
+    connected. Refusing only this full capture added no protection. Every other node on the bus
+    ACKs each frame too, so one more dominant ACK bit is ordinary bus behaviour. frames are
+    (seconds since start, 11-bit id, data). Only AT commands and a bare CR (to stop ATMA) are sent.
     """
-    if not self.silent:
-      raise RuntimeError('이 동글은 무음 감시(ATCSM1)를 지원하지 않아 전체 감시를 시작하지 않습니다')
     self.cmd(f'ATSP{protocol}')
     id_chars = 8 if protocol in (7, 9) else 3
     if any('?' in ln for ln in self.cmd('ATCRA')):      # no argument clears the receive filter

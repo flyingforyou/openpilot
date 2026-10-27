@@ -28,13 +28,14 @@ def test_sniff_hears_every_id_and_summarises():
   assert '6F2' in ' '.join(s['warnings'])          # a core battery ID that was not heard
 
 
-def test_sniff_refuses_without_silent_monitoring():
+def test_sniff_runs_without_silent_monitoring():
+  # monitor() already ACKs every frame on a non-CSM dongle, so capture is not refused for it.
   d = dongle(silent_ok=False)
   e = Elm327(d)
   e.init()
-  with pytest.raises(RuntimeError):
-    e.sniff(0.05)
-  assert 'ATMA' not in d.sent
+  assert not e.silent
+  frames, _, _ = e.sniff(0.05)
+  assert {f[1] for f in frames} == {0x302, 0x382, 0x102}
 
 
 def test_buffer_full_is_reported_not_hidden():
