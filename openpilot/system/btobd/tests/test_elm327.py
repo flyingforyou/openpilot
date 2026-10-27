@@ -5,9 +5,10 @@ from openpilot.system.btobd.elm327 import Elm327, parse_frame
 class FakeDongle:
   """Answers AT commands like an ELM327 v1.5 clone; ATMA streams the frames of the filtered ID."""
 
-  def __init__(self, frames: dict[int, list[str]], silent_ok=True):
+  def __init__(self, frames: dict[int, list[str]], silent_ok=True, wildcard_ok=True):
     self.frames = frames
     self.silent_ok = silent_ok
+    self.wildcard_ok = wildcard_ok      # ATCRA with X digits (0XX); older clones answer '?'
     self.sent = []
     self.out = b''
     self.filter = None
@@ -24,22 +25,32 @@ class FakeDongle:
     if cmd == 'ATZ':
       self.out += b'\r\rELM327 v1.5\r\r>'
     elif cmd.startswith('ATCRA'):
-      self.filter = int(cmd[5:], 16) if cmd[5:] else None
+      arg = cmd[5:]
+      if 'X' in arg and not self.wildcard_ok:
+        self.out += b'?\r\r>'
+        return
+      self.filter = arg or None
       self.out += b'OK\r\r>'
     elif cmd == 'ATDP':
       self.out += b'ISO 15765-4 (CAN 11/500)\r\r>'
     elif cmd == 'ATMA':
       self.monitoring = True
       for fid, lines in self.frames.items():
-        if self.filter is None or fid == self.filter:
+        if self.matches(fid):
           for f in lines:
             self.out += f.encode() + b'\r'
-      if self.overflow:
-        self.out += b'BUFFER FULL\r'
+      if self.overflow:             # a real ELM327 stops monitoring and returns to its prompt
+        self.out += b'10217\rBUFFER FULL\r\r>'   # with the line before it cut short
+        self.monitoring = False
     elif cmd == 'ATCSM1':
       self.out += (b'OK' if self.silent_ok else b'?') + b'\r\r>'
     else:
       self.out += b'OK\r\r>'
+
+  def matches(self, fid: int) -> bool:
+    if self.filter is None:
+      return True
+    return all(p == 'X' or p == c for p, c in zip(self.filter.upper(), f'{fid:03X}', strict=False))
 
   def recv(self, n, timeout):
     chunk, self.out = self.out[:n], self.out[n:]

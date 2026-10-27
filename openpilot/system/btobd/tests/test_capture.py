@@ -77,3 +77,34 @@ def test_old_captures_are_pruned(tmp_path):
     (tmp_path / f'capture-20260101-0000{i:02d}.jsonl').write_text('{}')
   capture.save([], {}, str(tmp_path))
   assert len(list(tmp_path.iterdir())) == capture.KEEP
+
+
+def test_sniff_rotates_the_id_space_in_eight_buckets():
+  d = dongle()
+  e = Elm327(d)
+  e.init()
+  frames, _, _ = e.sniff(0.05)
+  assert [c for c in d.sent if c.startswith('ATCRA') and c.endswith('XX')][:9] == \
+    ['ATCRA0XX', 'ATCRA0XX', 'ATCRA1XX', 'ATCRA2XX', 'ATCRA3XX', 'ATCRA4XX', 'ATCRA5XX', 'ATCRA6XX', 'ATCRA7XX']
+  assert {f[1] for f in frames} == {0x302, 0x382, 0x102}
+
+
+def test_overflow_restarts_monitoring_and_drops_the_cut_frame():
+  # the real capture: 21 frames in 0.16 s, then BUFFER FULL and silence for the rest of the 30 s
+  d = dongle()
+  d.overflow = True
+  e = Elm327(d)
+  e.init()
+  frames, full, _ = e.sniff(0.05)
+  assert full
+  assert d.sent.count('ATMA') > 8                       # monitoring resumed after each overflow
+  assert all(len(f[2]) > 1 for f in frames)             # the "102 1" stub before BUFFER FULL is gone
+
+
+def test_sniff_without_wildcard_filters_listens_unfiltered():
+  d = dongle(wildcard_ok=False)
+  e = Elm327(d)
+  e.init()
+  frames, _, _ = e.sniff(0.05)
+  assert 'ATCRA1XX' not in d.sent
+  assert {f[1] for f in frames} == {0x302, 0x382, 0x102}

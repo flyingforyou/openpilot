@@ -20,18 +20,27 @@ def _s(value: int, bits: int) -> int:
   return value - (1 << bits) if value & (1 << (bits - 1)) else value
 
 
-def bms_hv(d: bytes) -> dict:
+# A current field above this (0.1 A units, after sign) can only be the +10000 offset form: +600 A
+# into the pack is beyond any charger or regen this pack sees.
+OFFSET_PROOF = 6000
+
+
+def bms_hv(d: bytes, offset: bool | None = None) -> dict:
   """0x102 BMS current and voltage, ~100 Hz.
 
   Current is 15-bit signed in bytes 3/2 (bit 6 of byte 3 the sign, bit 7 unknown), 0.1 A, positive
-  into the pack (regen/charging). wk057: 8-byte frames (dual motor) carry a +10000 offset, 6-byte
-  frames (single motor) none. Bytes 5/4 are the unfiltered current at double resolution.
+  into the pack (regen/charging). Some cars store it with a +10000 offset. wk057 tied that to
+  8-byte (dual motor) frames, but this car's Model X sends 8-byte frames *without* it: parked, the
+  field reads 153-159 (15.3-15.9 A), which the offset rule turned into -984 A. offset=None decides
+  per frame from the value alone -- only a field above OFFSET_PROOF proves the offset; TeslaSXState
+  latches that, since an offset car's hard discharge lands in the range a plain car also uses.
   """
   out = {'packVoltage': (d[0] | d[1] << 8) * 0.01}
   if len(d) >= 4:
-    raw = (d[2] | d[3] << 8) & 0x7FFF
-    current = _s(raw, 15) - (10000 if len(d) >= 8 else 0)
-    out['packCurrent'] = current * 0.1
+    raw = _s((d[2] | d[3] << 8) & 0x7FFF, 15)
+    if offset is None:
+      offset = raw > OFFSET_PROOF
+    out['packCurrent'] = (raw - (10000 if offset else 0)) * 0.1
     out['packPower'] = out['packVoltage'] * out['packCurrent'] / 1000.0
   if len(d) >= 8:
     out['negTerminalTemp'] = (d[6] | (d[7] & 0x07) << 8) * 0.1
@@ -44,16 +53,41 @@ def bms_soc(d: bytes) -> dict:
           'socUI': ((d[1] >> 2) | (d[2] & 0x0F) << 6) / 10.0}
 
 
+def _bits(d: bytes, start: int, n: int) -> int:
+  return (int.from_bytes(d[:8].ljust(8, b'\0'), 'little') >> start) & ((1 << n) - 1)
+
+
 def bms_energy(d: bytes) -> dict:
-  """0x382 energy status, ~1 Hz. kWh, 0.1 resolution. energyBuffer is the anti-brick reserve."""
-  return {
-    'nominalFullPackEnergy': (d[0] | (d[1] & 0x03) << 8) * 0.1,
-    'nominalEnergyRemaining': ((d[1] >> 2) | (d[2] & 0x0F) << 6) * 0.1,
-    'expectedEnergyRemaining': ((d[2] >> 4) | (d[3] & 0x3F) << 4) * 0.1,
-    'idealEnergyRemaining': ((d[3] >> 6) | d[4] << 2) * 0.1,
-    'energyToChargeComplete': (d[5] | (d[6] & 0x03) << 8) * 0.1,
-    'energyBuffer': ((d[6] >> 2) | (d[7] & 0x03) << 6) * 0.1,
-  }
+  """0x382 energy status, ~1 Hz. kWh, 0.1 resolution. energyBuffer is the anti-brick reserve.
+
+  Two layouts exist. wk057's (firmware v6-7) packs 10-bit fields; this car's firmware packs 11-bit
+  ones, which the 10-bit decode reads as nominal remaining 75.6 kWh of a 72.9 kWh pack. Each frame is
+  decoded both ways and the one that reads as a real pack wins (see score). Checked
+  on this car: 11-bit gives remaining 37.8 / full 72.9 = 51.9%, socUI on the same frame to the 0.1.
+
+  socDisplay removes the buffer from both sides -- what the instrument cluster shows. Against the
+  dash: socUI 49% read as 45% there; (0.49*72.9 - 6.0) / (72.9 - 6.0) = 44.4%.
+  """
+  full = _bits(d, 0, 10) * 0.1
+  wide = {'nominalEnergyRemaining': _bits(d, 11, 11), 'expectedEnergyRemaining': _bits(d, 22, 11),
+          'idealEnergyRemaining': _bits(d, 33, 11), 'energyToChargeComplete': _bits(d, 44, 11),
+          'energyBuffer': _bits(d, 55, 8)}
+  narrow = {'nominalEnergyRemaining': _bits(d, 10, 10), 'expectedEnergyRemaining': _bits(d, 20, 10),
+            'idealEnergyRemaining': _bits(d, 30, 10), 'energyToChargeComplete': _bits(d, 40, 10),
+            'energyBuffer': _bits(d, 50, 8)}
+
+  # The right layout gives three remaining figures within a kWh or so of each other (37.8/38.4/37.9,
+  # wk057's 67.8/67.0/67.7) inside the pack; the wrong one scatters them (75.6/51.2/98.5). Fit alone
+  # is not enough -- at low charge both layouts land inside the pack.
+  def score(f):
+    r = [f[k] * 0.1 for k in ('nominalEnergyRemaining', 'expectedEnergyRemaining', 'idealEnergyRemaining')]
+    return (max(r) > full * 1.02, max(r) - min(r))
+  fields = wide if score(wide) < score(narrow) else narrow
+  out = {'nominalFullPackEnergy': full, **{k: v * 0.1 for k, v in fields.items()}}
+  usable = full - out['energyBuffer']
+  if usable > 0:
+    out['socDisplay'] = max(0.0, (out['nominalEnergyRemaining'] - out['energyBuffer']) / usable * 100)
+  return out
 
 
 def bms_power_limits(d: bytes) -> dict:
@@ -179,6 +213,7 @@ class TeslaSXState:
     self.stamp: dict = {}          # signal -> monotonic time it was last set
     self.cells_v: list = [None] * 96
     self.cells_t: list = [None] * 32
+    self.current_offset = False    # latched once a 0x102 frame proves the +10000 form; see bms_hv
 
   def feed(self, msg_id: int, data: bytes, t: float) -> None:
     if msg_id == CELL_ID:
@@ -197,7 +232,13 @@ class TeslaSXState:
     dec = DECODERS.get(msg_id)
     if dec is None or len(data) < MIN_LEN.get(msg_id, 8):
       return
-    for k, v in dec(data).items():
+    if msg_id == 0x102:
+      raw = bms_hv(data, offset=False).get('packCurrent', 0.0) * 10
+      self.current_offset = self.current_offset or raw > OFFSET_PROOF
+      decoded = bms_hv(data, offset=self.current_offset)
+    else:
+      decoded = dec(data)
+    for k, v in decoded.items():
       self.values[k] = round(v, 3) if isinstance(v, float) else v
       self.stamp[k] = t
 

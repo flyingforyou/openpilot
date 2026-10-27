@@ -15,6 +15,7 @@ import time
 
 PROMPT = b'>'
 HEX_RE = re.compile(r'^[0-9A-F]+$')
+SNIFF_DWELL = 1.5      # seconds per ID bucket before sniff moves to the next one
 INIT = ['ATZ', 'ATE0', 'ATL0', 'ATS0', 'ATH1', 'ATAL', 'ATSP6', 'ATCAF0']
 OPTIONAL = ['ATCSM1']   # CAN silent monitoring; ELM327 v1.4+, '?' on older clones is fine
 NOISE = ('SEARCHING', 'STOPPED', 'OK', 'BUFFER FULL', 'CAN ERROR', 'NO DATA', '?', 'DATA ERROR',
@@ -109,19 +110,51 @@ class Elm327:
     connected. Refusing only this full capture added no protection. Every other node on the bus
     ACKs each frame too, so one more dominant ACK bit is ordinary bus behaviour. frames are
     (seconds since start, 11-bit id, data). Only AT commands and a bare CR (to stop ATMA) are sent.
+
+    Unfiltered ATMA on this car's bus overflowed a v1.5 clone in 0.16 s, and an ELM327 stops
+    monitoring on BUFFER FULL -- a 30 s capture came back with 21 frames, all from the first 0.16 s.
+    So 11-bit captures rotate the receive filter through eight buckets of the ID space (ATCRA 0XX ..
+    7XX) to cut the rate the adapter has to keep up with, and an overflow restarts ATMA instead of
+    ending the capture. Each bucket hears 1/8 of the time, so a 0.1 Hz message needs ~80 s or more.
     """
     self.cmd(f'ATSP{protocol}')
     id_chars = 8 if protocol in (7, 9) else 3
-    if any('?' in ln for ln in self.cmd('ATCRA')):      # no argument clears the receive filter
+    buckets: list[str | None] = [None]
+    if id_chars == 3 and not any('?' in ln for ln in self.cmd('ATCRA0XX')):
+      buckets = [f'{h:X}XX' for h in range(8)]
+    elif any('?' in ln for ln in self.cmd('ATCRA')):      # no argument clears the receive filter
       self.cmd('ATCM000')
       self.cmd('ATCF000')
-    self._buf = b''
-    self.t.send(b'ATMA\r')
-    frames, buffer_full, unparsed = [], False, 0
+    frames: list = []
+    buffer_full, unparsed = False, 0
     t0 = time.monotonic()
     end = t0 + seconds
+    dwell = min(SNIFF_DWELL, seconds / len(buckets))
+    i = 0
     while time.monotonic() < end and len(frames) < max_frames:
-      chunk = self.t.recv(512, max(0.01, end - time.monotonic()))
+      bucket = buckets[i % len(buckets)]
+      i += 1
+      if bucket is not None:
+        self.cmd(f'ATCRA{bucket}')
+      dwell_end = min(end, time.monotonic() + dwell)
+      while len(frames) < max_frames:
+        full, bad = self._listen_all(dwell_end, id_chars, t0, frames, max_frames)
+        buffer_full |= full
+        unparsed += bad
+        if not full or time.monotonic() >= dwell_end:
+          break
+    self._buf = b''
+    self.cmd('ATSP6')
+    return frames, buffer_full, unparsed
+
+  def _listen_all(self, until: float, id_chars: int, t0: float, frames: list, max_frames: int) -> tuple[bool, int]:
+    """One ATMA run into `frames` until `until`, max_frames or an overflow. Returns (overflowed, unparsed)."""
+    self._buf = b''
+    self.t.send(b'ATMA\r')
+    unparsed = 0
+    last_was_frame = False
+    while time.monotonic() < until and len(frames) < max_frames:
+      chunk = self.t.recv(512, max(0.01, until - time.monotonic()))
       if not chunk:
         continue
       self._buf += chunk
@@ -134,18 +167,29 @@ class Elm327:
         f = parse_frame(text, id_chars)
         if f:
           frames.append((time.monotonic() - t0, f[0], f[1]))
-        elif 'BUFFER FULL' in text.upper():
-          buffer_full = True
-        elif not any(n in text.upper() for n in NOISE):
+          last_was_frame = True
+          continue
+        if 'BUFFER FULL' in text.upper():
+          # the line just before the overflow is the one the adapter cut short ("102 17" in a real
+          # capture: one byte of an 8-byte frame)
+          if last_was_frame:
+            frames.pop()
+          # the adapter has already stopped and is back at its prompt; a bare CR there would re-run
+          # the last command rather than stop anything, so just collect the prompt
+          try:
+            self._read_until_prompt(1.0)
+          except TimeoutError:
+            pass
+          return True, unparsed
+        if not any(n in text.upper() for n in NOISE):
           unparsed += 1
+        last_was_frame = False
     self.t.send(b'\r')
     try:
       self._read_until_prompt(1.5)
     except TimeoutError:
       pass
-    self._buf = b''
-    self.cmd('ATSP6')
-    return frames, buffer_full, unparsed
+    return False, unparsed
 
   # ---- Tesla diag page additions ---------------------------------------------------------------
   def probe(self) -> dict:

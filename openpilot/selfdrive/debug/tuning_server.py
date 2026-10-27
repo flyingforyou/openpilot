@@ -3385,11 +3385,12 @@ th{color:var(--mut);font-weight:normal}
 <div class="grp">
   <div class="gt"><span>버스 확인 · 캡처 (듣기 전용)</span><span class="a" id="snst"></span></div>
   <div class="row"><span class="lb">시간
-      <select id="snsec" aria-label="캡처 시간"><option>10</option><option>30</option><option>60</option></select> 초 · 프로토콜
+      <select id="snsec" aria-label="캡처 시간"><option>30</option><option>60</option><option selected>120</option><option>300</option></select> 초 · 프로토콜
       <select id="snproto" aria-label="CAN 프로토콜"><option value="6">6 · CAN 11비트 500k</option><option value="8">8 · CAN 11비트 250k</option></select></span>
     <button id="sniff">캡처 시작</button></div>
   <div class="hint" id="snnote">주차 중에만 됩니다. 차에는 아무것도 요청하지 않습니다. 무음 감시(ATCSM1) 미지원 동글은 ACK만 보내며, 이는 배터리 화면 감시와 같습니다.
-    프로토콜 6이 이 차의 버스에 맞다고 확인된 것은 아닙니다. 아무것도 안 들어오면 8을 시도하거나 연결 위치를 확인하세요.</div>
+    ID 공간을 8구간으로 나눠 돌아가며 듣기 때문에(동글 버퍼가 넘치지 않도록) 각 ID는 전체 시간의 1/8만 들립니다. 10초에 한 번 오는 메시지까지 잡으려면 120초 이상으로 하세요.
+    프로토콜 6(CAN 11비트 500k)에서 이 차의 0x102·0x302·0x382·0x6F2가 들어오는 것을 확인했습니다.</div>
   <div id="snsum"></div>
   <div class="err" id="snwarn" hidden></div>
   <table><thead id="snhead" hidden><tr><th>ID</th><th>수신</th><th>Hz</th><th>마지막 데이터</th><th>해독</th></tr></thead><tbody id="snids"></tbody></table>
@@ -3413,7 +3414,7 @@ function row(label,v,unit,age){
   return `<div class="row"><span class="lb">${label}</span><span class="vl${na?' na':old?' old':''}">${na?'–':v+(unit?' '+unit:'')}</span></div>`;
 }
 function rows(spec,V,A){return spec.map(([k,l,u,d])=>row(l,f(V[k],d??1),u,A[k])).join('');}
-const BAT=[['packCurrent','전류','A',1],['socMin','SOC (최소)','%',1],['nominalFullPackEnergy','완충 용량 (공칭)','kWh',1],
+const BAT=[['packCurrent','전류','A',1],['socUI','SOC (BMS, 버퍼 포함)','%',1],['socMin','SOC (최소)','%',1],['nominalFullPackEnergy','완충 용량 (공칭)','kWh',1],
  ['expectedEnergyRemaining','남은 에너지 (예상)','kWh',1],['idealEnergyRemaining','남은 에너지 (이상)','kWh',1],
  ['energyBuffer','보호 버퍼','kWh',1],['energyToChargeComplete','충전 완료까지','kWh',1],
  ['maxDischargePower','최대 방전 출력','kW',1],['maxRegenPower','최대 회생 출력','kW',1],['negTerminalTemp','음극 단자 온도','°C',1]];
@@ -3462,7 +3463,7 @@ function renderHealth(s){
   $('hbig').innerHTML=tile('열화',degr==null?null:degr.toFixed(1),'%',degr==null?null:gDeg)
     +tile('공칭 완충 용량',nfp==null?null:nfp.toFixed(1),`kWh / ${ref>0?ref.toFixed(1):'–'}${est?' (추정)':''}`)
     +tile('셀 편차',delta==null?null:delta.toFixed(0),'mV',delta==null?null:gBal)
-    +tile('SOC',V.socUI==null?null:V.socUI.toFixed(1),'%');
+    +tile('SOC (계기판)',V.socDisplay==null?null:V.socDisplay.toFixed(1),'%');
   const r=(l,v,extra)=>`<div class="row"><span class="lb">${l}</span><span class="vl${v==null?' na':''}">${v==null?'–':v}${extra||''}</span></div>`;
   $('hrows').innerHTML=
     r('셀 밸런스 판정 조건', cur==null?null:`전류 ${cur.toFixed(1)} A`, cur==null?'':(rest?tag(gBal):'<span class="tag hv na">부하 중 · 보류</span>'))
@@ -3533,7 +3534,7 @@ function render(s){
   document.querySelectorAll('#devs button').forEach(x=>x.onclick=()=>connect(x.dataset.a));
   $('err').hidden=!s.error; $('err').textContent=s.error||'';
   const V=s.values||{},A=s.age||{};
-  const big=[['packVoltage','팩 전압','V',1],['packPower','출력','kW',1],['socUI','SOC','%',1],['nominalEnergyRemaining','남은 에너지','kWh',1]];
+  const big=[['packVoltage','팩 전압','V',1],['packPower','출력','kW',1],['socDisplay','SOC (계기판)','%',1],['nominalEnergyRemaining','남은 에너지','kWh',1]];
   $('bigbat').innerHTML=big.map(([k,l,u,d])=>`<div><div class="k">${l}</div><div class="v">${V[k]==null?'–':f(V[k],d)}<small>${u}</small></div></div>`).join('');
   $('bat').innerHTML=rows(BAT,V,A); $('drive').innerHTML=rows(DRIVE,V,A); $('misc').innerHTML=rows(MISC,V,A);
   $('bage').textContent=A.packVoltage!=null?`${A.packVoltage}s 전`:'';
@@ -3618,12 +3619,12 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
 
 <div class="grp">
   <div class="gt"><span>2 · 버스 캡처 (듣기 전용)</span><span class="a" id="snst"></span></div>
-  <div class="row"><span class="lb">시간 <input id="snsec" value="30" aria-label="초"> 초 (3~300) · 프로토콜
+  <div class="row"><span class="lb">시간 <input id="snsec" value="120" aria-label="초"> 초 (3~300) · 프로토콜
     <select id="snproto" aria-label="프로토콜"><option value="6">6 · CAN 11비트 500k</option><option value="8">8 · CAN 11비트 250k</option>
     <option value="7">7 · CAN 29비트 500k</option><option value="9">9 · CAN 29비트 250k</option></select></span>
     <button class="pri" id="sniff">캡처 시작</button></div>
-  <div class="hint">주차(P)일 때만 됩니다. 무음 감시(ATCSM1) 미지원 동글이면 프레임에 ACK를 보내지만, 버스의 다른 ECU도 매 프레임 ACK하고 배터리 화면 감시도 똑같이 하므로 막지 않습니다. 이 차의 연결 위치가 어느 버스·속도인지는
-    확인된 바 없어서 기본값을 정하지 않습니다. 아무것도 안 들어오면 다른 프로토콜을 시도하세요. 끝나면 아래 로그 목록에 저장됩니다.</div>
+  <div class="hint">주차(P)일 때만 됩니다. 무음 감시(ATCSM1) 미지원 동글이면 프레임에 ACK를 보내지만, 버스의 다른 ECU도 매 프레임 ACK하고 배터리 화면 감시도 똑같이 하므로 막지 않습니다. ID 공간을 8구간으로 나눠
+    돌아가며 들으므로 각 ID는 전체 시간의 1/8만 들립니다. 드문 메시지까지 잡으려면 120초 이상으로 하세요. 이 차의 진단 포트는 프로토콜 6에서 배터리 메시지가 들어오는 것을 확인했습니다. 끝나면 아래 로그 목록에 저장됩니다.</div>
   <div class="err" id="snwarn" hidden></div>
 </div>
 

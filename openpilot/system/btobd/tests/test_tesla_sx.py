@@ -19,9 +19,25 @@ def test_0x102_voltage_and_current_single_motor():
 
 
 def test_0x102_dual_motor_offset():
-  # 8-byte frames carry +10000: "0x85 0xA8 = 37.3 A (regen)", "0x27 0xF4 = -1,303.3 A"
-  assert t.bms_hv(b('66 97 85 A8 00 00 00 00'))['packCurrent'] == pytest.approx(37.3)
-  assert t.bms_hv(b('66 97 27 F4 00 00 00 00'))['packCurrent'] == pytest.approx(-1303.3)
+  # wk057's offset cars carry +10000: "0x85 0xA8 = 37.3 A (regen)", "0x27 0xF4 = -1,303.3 A"
+  assert t.bms_hv(b('66 97 85 A8 00 00 00 00'))['packCurrent'] == pytest.approx(37.3)   # proves itself
+  assert t.bms_hv(b('66 97 27 F4 00 00 00 00'), offset=True)['packCurrent'] == pytest.approx(-1303.3)
+
+
+def test_0x102_this_model_x_has_no_offset():
+  # parked HW1 Model X, 8-byte frame: field 158 -> 15.8 A, not the -984.2 A the length rule gave
+  r = t.bms_hv(b('24 8F 9E 00 98 00 FC 1F'))
+  assert r['packVoltage'] == pytest.approx(366.44)
+  assert r['packCurrent'] == pytest.approx(15.8)
+
+
+def test_state_latches_current_offset():
+  s = t.TeslaSXState()
+  s.feed(0x102, b('66 97 27 F4 00 00 00 00'), 0.0)        # ambiguous on its own: read without offset
+  assert s.values['packCurrent'] == pytest.approx(-303.3)
+  s.feed(0x102, b('66 97 85 A8 00 00 00 00'), 0.1)        # 10373 > 6000: offset car
+  s.feed(0x102, b('66 97 27 F4 00 00 00 00'), 0.2)
+  assert s.values['packCurrent'] == pytest.approx(-1303.3)
 
 
 def test_0x302_soc():
@@ -38,6 +54,27 @@ def test_0x382_energy():
   assert r['idealEnergyRemaining'] == pytest.approx(67.7)
   assert r['energyBuffer'] == pytest.approx(4.0)
   assert r['energyToChargeComplete'] == pytest.approx(0.0)
+  assert r['socDisplay'] == pytest.approx((67.8 - 4.0) / (76.4 - 4.0) * 100)
+
+
+def test_0x382_eleven_bit_layout_on_this_model_x():
+  # 10-bit decode reads remaining 75.6 of a 72.9 pack; 11-bit gives 37.8 = socUI 51.9% on the same drive
+  r = t.bms_energy(b('D9 D2 0B 60 F6 02 00 1E'))
+  assert r['nominalFullPackEnergy'] == pytest.approx(72.9)
+  assert r['nominalEnergyRemaining'] == pytest.approx(37.8)
+  assert r['expectedEnergyRemaining'] == pytest.approx(38.4)
+  assert r['idealEnergyRemaining'] == pytest.approx(37.9)
+  assert r['energyBuffer'] == pytest.approx(6.0)
+  assert r['socDisplay'] == pytest.approx((37.8 - 6.0) / (72.9 - 6.0) * 100)
+
+
+@pytest.mark.parametrize('soc', [0.05, 0.1, 0.3, 0.9, 1.0])
+def test_0x382_layout_choice_holds_at_any_charge(soc):
+  # build an 11-bit frame at this pack's size; low charge is where both layouts fit inside the pack
+  full, rem = 729, round(729 * soc)
+  v = full | rem << 11 | (rem + 6) << 22 | rem << 33 | 60 << 55
+  r = t.bms_energy(v.to_bytes(8, 'little'))
+  assert r['nominalEnergyRemaining'] == pytest.approx(rem / 10)
 
 
 def test_0x232_power_limits():
