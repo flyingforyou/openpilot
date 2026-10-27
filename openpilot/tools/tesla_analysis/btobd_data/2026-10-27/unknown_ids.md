@@ -1,6 +1,7 @@
 # 미해독 ID 조사 — 2026-10-27 캡처 (주차·충전 중)
 
 `capture-20261027-155057.jsonl`(120초, ID 216개, 디코더가 아는 것 9개)의 나머지를 조사한 결과.
+이 캡처는 VIN 원문을 담고 있어 저장소에서 삭제했다(원본은 기기에만 있음).
 재현: `python tools/tesla_analysis/btobd_id_survey.py <캡처> <talas9 ModelS 폴더>`
 (talas9 폴더는 github.com/talas9/tesla_can_signals 의 `ModelS/*.compact.json.json`).
 
