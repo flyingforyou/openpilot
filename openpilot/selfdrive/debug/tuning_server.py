@@ -1150,6 +1150,21 @@ class Handler(BaseHTTPRequestHandler):
       out = tdiag.analyze(frames, prof, NAMES)
       out.update(name=name, meta=meta, profile=prof_name if prof else '')
       return self._send(200, json.dumps(out, ensure_ascii=False))
+    if kind == 'summary':
+      # no name: the newest capture that holds more than a probe's worth of frames
+      if not name:
+        name = next((c['name'] for c in tdiag.list_captures() if (c['meta'] or {}).get('frames', 0) >= 1000), '')
+      p = tdiag.downloadable_path(name) if name else None
+      if not p or not tdiag.CAP_RE.fullmatch(name):
+        return self._send(404, json.dumps({'error': '요약할 캡처가 없습니다'}, ensure_ascii=False))
+      try:
+        meta, frames = tdiag.read_capture(p)
+      except (OSError, ValueError) as e:
+        return self._send(500, json.dumps({'error': f'캡처를 읽을 수 없습니다: {e}'}, ensure_ascii=False))
+      from openpilot.system.btobd import tesla_pt
+      out = tesla_pt.summarize(frames, meta)
+      out['name'] = name
+      return self._send(200, json.dumps(out, ensure_ascii=False))
     return self._send(404, '{}')
 
   def _tdiag_cmd(self, req: dict) -> tuple[int, dict]:
@@ -3603,6 +3618,13 @@ th{color:var(--mut);font-weight:normal}
 a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px}
 .log{font-family:var(--m);font-size:10.5px;padding:8px 13px;max-height:260px;overflow:auto;line-height:1.55}
 .log div{border-bottom:1px solid var(--line);padding:2px 0;word-break:break-all}
+.smg{border-top:1px solid var(--line)}.smg:first-child{border-top:none}
+.smh{font-size:12.5px;padding:9px 13px 4px;display:flex;justify-content:space-between;gap:8px}
+.smr{display:grid;grid-template-columns:minmax(120px,1fr) minmax(90px,auto) 40px;gap:2px 10px;padding:6px 13px;border-top:1px solid var(--line);align-items:baseline}
+.smr .v{font-family:var(--m);font-size:13px;text-align:right}.smr .v.ok{color:var(--tx)}.smr .v.bad{color:var(--bad)}.smr .v.warn{color:var(--hot)}.smr .v.na{color:var(--dim)}
+.smr .u{font-family:var(--m);font-size:10.5px;color:var(--dim)}
+.smr .d{grid-column:1/-1;font-family:var(--m);font-size:10.5px;color:var(--dim)}
+.smr .l{font-size:13px}.smr .l .a{margin-left:6px}
 </style></head><body>
 <a class="back" href="/">← 메뉴</a> &nbsp; <a class="back" href="/diag">배터리 화면 →</a>
 <h1>Tesla 진단 · 전체</h1>
@@ -3610,6 +3632,11 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
 
 <div class="grp"><div class="gt"><span>상태</span><span id="pills"></span></div>
   <div class="hint" id="st"></div><div class="err" id="err" hidden></div></div>
+
+<div class="grp" id="sm">
+  <div class="gt"><span>저장된 캡처 요약 · 충전 · 열관리 · 식별</span><span class="a" id="smsub">불러오는 중…</span></div>
+  <div id="smbody"></div>
+</div>
 
 <div class="grp">
   <div class="gt"><span>0 · 블루투스 동글 연결</span><span class="a" id="scanst"></span></div>
@@ -3743,8 +3770,9 @@ function render(s){
   if(document.activeElement!==$('anprof'))$('anprof').innerHTML='<option value="">(프로파일 없이)</option>'+profOpts('a',selProf.a);
   if(document.activeElement!==$('uprof')){const c=selProf.u||(s.profiles[0]||{}).name;$('uprof').innerHTML=profOpts('u',c);}
   $('caps').innerHTML=s.captures.map(c=>`<tr><td>${esc(c.name)}</td><td>${(c.size/1024).toFixed(0)} KB</td><td>${esc((c.meta||{}).protocol||'')}</td><td>${esc((c.meta||{}).frames||'')}</td>
-    <td><button data-an="${c.name}">분석</button> <a class="dl" href="/api/tdiag/file/${c.name}">받기</a> <button data-del="${c.name}">삭제</button></td></tr>`).join('')||'<tr><td colspan=5>저장된 캡처가 없습니다</td></tr>';
+    <td><button data-sm="${c.name}">요약</button> <button data-an="${c.name}">분석</button> <a class="dl" href="/api/tdiag/file/${c.name}">받기</a> <button data-del="${c.name}">삭제</button></td></tr>`).join('')||'<tr><td colspan=5>저장된 캡처가 없습니다</td></tr>';
   document.querySelectorAll('[data-an]').forEach(b=>b.onclick=()=>analyze(b.dataset.an));
+  document.querySelectorAll('[data-sm]').forEach(b=>b.onclick=()=>{summary(b.dataset.sm);$('sm').scrollIntoView({behavior:'smooth'});});
   document.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{if(confirm('삭제할까요? '+b.dataset.del))act({cmd:'delete',name:b.dataset.del});});
   if(s.dids&&!$('dids').children.length)$('dids').innerHTML=s.dids.map(d=>`<option value="${d.id}">${esc(d.id)} ${esc(d.name)}</option>`).join('');
   const u=s.uds;const pr=s.profiles.find(x=>x.name===$('uprof').value);
@@ -3773,6 +3801,18 @@ async function analyze(name){
   $('ansig').innerHTML=Object.entries(j.decoded).map(([k,e])=>`<tr><td>${esc(k)}</td><td>${e.last} ${esc(e.unit)}</td><td>${e.min}</td><td>${e.max}</td><td>${e.n}</td><td>${esc(e.status)}</td></tr>`).join('')||'<tr><td colspan=6>해독된 신호가 없습니다 (프로파일을 고르세요)</td></tr>';
   $('anids').innerHTML=j.ids.map(i=>`<tr><td>0x${i.id}</td><td>${i.n}</td><td>${i.hz==null?'–':i.hz}</td><td>${i.dlc.join(',')}</td><td>${esc(i.last)}</td><td>${i.builtin?esc(i.builtin):i.known?'프로파일':'–'}</td></tr>`).join('');
 }
+// The summary reads one saved capture; with no name the server picks the newest full one.
+async function summary(name){
+  $('smsub').textContent='불러오는 중…';
+  let j;try{j=await (await fetch('/api/tdiag/summary/'+(name||''))).json();}catch(e){$('smsub').textContent='불러오지 못했습니다';return;}
+  if(j.error){$('smsub').textContent=j.error;$('smbody').innerHTML='';return;}
+  $('smsub').textContent=`${j.name} · ${tm(j.saved)} · ${j.frames}프레임${j.filter?'':' · 필터 없이 찍힌 표본'}`;
+  $('smbody').innerHTML=j.groups.map(g=>`<div class="smg"><div class="smh"><b>${esc(g.title)}</b><span class="a">${g.heard}/${g.rows.length} 들림</span></div>`+
+    g.rows.map(r=>`<div class="smr"><span class="l">${esc(r.label)}${r.id?`<span class="a">0x${esc(r.id)}${r.n?' · '+r.n:''}</span>`:''}</span>
+      <span class="v ${r.status}">${esc(r.value)}</span><span class="u">${esc(r.unit)}</span>${r.detail?`<span class="d">${esc(r.detail)}</span>`:''}</div>`).join('')+
+    (g.note?`<div class="hint" style="border-top:1px solid var(--line)">${esc(g.note)}</div>`:'')+'</div>').join('');
+}
+summary('');
 $('anprof').onchange=()=>{selProf.a=$('anprof').value;if(openCap)analyze(openCap);};
 $('uprof').onchange=()=>{selProf.u=$('uprof').value;render(S);};
 $('probe').onclick=()=>act({cmd:'probe'});
