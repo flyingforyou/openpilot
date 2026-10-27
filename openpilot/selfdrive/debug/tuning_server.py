@@ -1173,7 +1173,7 @@ class Handler(BaseHTTPRequestHandler):
         return 400, {'error': '캡처는 3~300초, 프로토콜은 6·7·8·9만 됩니다'}
       self._queue_obd_cmd({'cmd': 'sniff', 'seconds': seconds, 'protocol': protocol})
       return 200, {'ok': True}
-    if cmd in ('uds', 'uds_dry', 'uds_verify'):
+    if cmd in ('uds', 'uds_dry', 'uds_verify', 'uds_discover'):
       prof = tdiag.load_profile(str(req.get('profile', '')))
       if prof is None:
         return 400, {'error': '프로파일을 찾을 수 없습니다'}
@@ -1195,7 +1195,14 @@ class Handler(BaseHTTPRequestHandler):
                      'tx': prof['tx_id'], 'rx': prof['rx_id']}
       if not parked:
         return 409, {'error': '주차(P)에서만 전송할 수 있습니다 — ' + why}
-      verify = cmd == 'uds_verify'
+      # discover is verify with the receive filter opened (rx_pattern, e.g. 6XX) to find which ID the
+      # module answers on -- same read-only preflight, nothing promoted.
+      verify = cmd in ('uds_verify', 'uds_discover')
+      discover = ''
+      if cmd == 'uds_discover':
+        discover = str(req.get('rx_pattern', '6XX')).upper()
+        if prof['id_format'] != '11' or not re.fullmatch(r'[0-7X][0-9A-FX]{2}', discover):
+          return 400, {'error': '응답 ID 찾기는 11비트, 3자리 패턴(예: 6XX)만 됩니다'}
       # The page only ever enables read buttons; control requests arriving here are gated the same
       # way, but a control request can never ride the verify path (preflight enforces read-only there).
       try:
@@ -1204,8 +1211,8 @@ class Handler(BaseHTTPRequestHandler):
         tdiag.log_event('refused', name=tdiag.UDS_AUDIT, request=payload.hex().upper(), why=str(e), verify=verify)
         return 403, {'error': str(e)}
       self._queue_obd_cmd({'cmd': 'uds', 'profile': prof['name'], 'request': payload.hex().upper(),
-                           'allow': True, 'confirm': True, 'verify': verify})
-      return 200, {'ok': True, 'tier': tdiag.us.tier(sid), 'verify': verify}
+                           'allow': True, 'confirm': True, 'verify': verify, 'discover': discover})
+      return 200, {'ok': True, 'tier': tdiag.us.tier(sid), 'verify': verify, 'discover': discover}
     if cmd == 'delete':
       return (200, {'ok': True}) if tdiag.delete_capture(str(req.get('name', ''))) else (404, {'error': '없는 파일'})
     if cmd == 'profile_save':

@@ -271,6 +271,10 @@ class Daemon:
       tdiag.log_event('uds-refused', request=str(cmd.get('request', '')), why=str(e), verify=verify)
       return
     proto = tdiag.protocol_for(prof)
+    discover = str(cmd.get('discover') or '')
+    if discover:
+      self.run_uds_discover(prof, payload, proto, discover)
+      return
     self.uds_result = {'status': 'running', 'request': payload.hex().upper(), 'verify': verify, 'time': time.time()}
     self._publish()
     tdiag.log_event('send', name=tdiag.UDS_AUDIT, request=payload.hex().upper(), tx=prof['tx_id'], rx=prof['rx_id'],
@@ -291,6 +295,32 @@ class Daemon:
       self.uds_result = {'status': 'error', 'request': payload.hex().upper(), 'error': f'{type(e).__name__}: {e}', 'time': time.time()}
       tdiag.log_event('uds-error', request=payload.hex().upper(), error=str(e))
       self._link_lost(e)
+
+  def run_uds_discover(self, prof: dict, payload: bytes, proto: int, rx_pattern: str) -> None:
+    """Which ID answers prof's request ID: a read sent with the receive filter opened to rx_pattern.
+    An answer is a frame whose payload is this service's positive (SID+0x40) or negative (7F SID)
+    response; anything else heard on a matching ID in the window is broadcast traffic."""
+    from openpilot.system.btobd import tdiag
+    req = payload.hex().upper()
+    self.uds_result = {'status': 'running', 'request': req, 'discover': rx_pattern, 'time': time.time()}
+    self._publish()
+    tdiag.log_event('send', name=tdiag.UDS_AUDIT, request=req, tx=prof['tx_id'], rx=rx_pattern, protocol=proto,
+                    profile=prof['name'], tier=tdiag.us.tier(payload[0]), discover=True)
+    try:
+      frames = self.elm.uds_discover(payload, prof['tx_id'], proto, rx_pattern)
+    except Exception as e:
+      self.uds_result = {'status': 'error', 'request': req, 'discover': rx_pattern, 'error': f'{type(e).__name__}: {e}',
+                         'time': time.time()}
+      tdiag.log_event('uds-error', request=req, error=str(e), discover=rx_pattern)
+      self._link_lost(e)
+      return
+    sid = payload[0]
+    answers = sorted({f'{fid:03X}' for fid, data in frames
+                      if len(data) >= 2 and (data[1] == sid + 0x40 or (data[1] == 0x7F and len(data) >= 3 and data[2] == sid))})
+    heard = [{'id': f'{fid:03X}', 'data': data.hex(' ').upper()} for fid, data in frames]
+    self.uds_result = {'status': 'done', 'request': req, 'discover': rx_pattern, 'answers': answers, 'heard': heard,
+                       'kind': 'discover', 'time': time.time()}
+    tdiag.log_event('recv', name=tdiag.UDS_AUDIT, request=req, discover=rx_pattern, answers=answers, heard=heard)
 
   def _publish(self) -> None:
     now = time.monotonic()

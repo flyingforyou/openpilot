@@ -234,6 +234,29 @@ class Elm327:
         pass
 
 
+  def uds_discover(self, payload: bytes, tx_id: int, protocol: int, rx_pattern: str) -> list[tuple[int, bytes]]:
+    """One read-only request with a wildcard receive filter (ATCRA 6XX) and headers on, to learn
+    which ID a module answers on when only its request ID is known. Returns every (id, frame) heard
+    in the response window -- PCI byte included, broadcasts on matching IDs too; the caller picks
+    the answer out by content. 11-bit only. Keep the request single-frame-answered (3E00, short
+    DIDs): with the filter open, the dongle cannot run flow control for a multi-frame reply."""
+    from openpilot.system.btobd import tdiag
+    tdiag.check_request_allowed(payload)
+    self.cmd(f'ATSP{protocol}')
+    for c in ('ATCAF1', 'ATCFC1', 'ATH1', 'ATS1'):
+      self.cmd(c)
+    self.cmd(f'ATSH{tx_id:03X}')
+    self.cmd(f'ATCRA{rx_pattern}')
+    try:
+      lines = self.cmd(payload.hex().upper(), 4.0)
+    finally:
+      try:
+        self.restore()
+      except (TimeoutError, OSError):
+        pass
+    return [f for f in (parse_frame(ln) for ln in lines) if f]
+
+
 MULTI_HEAD = re.compile(r'^[0-9A-F]{3}$')
 MULTI_LINE = re.compile(r'^[0-9A-F]:\s*(.*)$')
 BAD_REPLIES = ('NO DATA', 'UNABLE TO CONNECT', 'BUS BUSY', 'CAN ERROR', 'BUFFER FULL', 'BUS ERROR', 'FB ERROR', 'DATA ERROR', 'STOPPED')

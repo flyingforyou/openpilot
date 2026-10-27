@@ -9,6 +9,7 @@ class FakeDongle:
     self.frames = frames
     self.silent_ok = silent_ok
     self.wildcard_ok = wildcard_ok      # ATCRA with X digits (0XX); older clones answer '?'
+    self.uds_replies: dict[str, list[str]] = {}   # request hex -> lines the dongle prints
     self.sent = []
     self.out = b''
     self.filter = None
@@ -42,6 +43,8 @@ class FakeDongle:
       if self.overflow:             # a real ELM327 stops monitoring and returns to its prompt
         self.out += b'10217\rBUFFER FULL\r\r>'   # with the line before it cut short
         self.monitoring = False
+    elif cmd in self.uds_replies:
+      self.out += ''.join(ln + '\r' for ln in self.uds_replies[cmd]).encode() + b'\r>'
     elif cmd == 'ATCSM1':
       self.out += (b'OK' if self.silent_ok else b'?') + b'\r\r>'
     else:
@@ -91,3 +94,12 @@ def test_monitor_filters_one_id():
   assert 'ATCRA382' in d.sent
   # the adapter was stopped and the next command still gets a clean prompt
   assert e.monitor(0x102, dwell=0.05) == [(0x102, bytes.fromhex('6697'))]
+
+
+def test_uds_discover_reports_who_answers():
+  d = FakeDongle({})
+  d.uds_replies['3E00'] = ['6F2 01 02 03 04 05 06 07 08', '65C 02 7E 00']   # a broadcast and the answer
+  e = Elm327(d)
+  frames = e.uds_discover(bytes.fromhex('3E00'), 0x64C, 6, '6XX')
+  assert (0x65C, bytes.fromhex('027E00')) in frames
+  assert 'ATSH64C' in d.sent and 'ATCRA6XX' in d.sent and 'ATH1' in d.sent
