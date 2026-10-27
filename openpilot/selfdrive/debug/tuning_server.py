@@ -3501,6 +3501,20 @@ function renderSniff(s){
 }
 function esc(x){return String(x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 $('sniff').onclick=()=>post({cmd:'sniff',seconds:parseInt($('snsec').value,10),protocol:parseInt($('snproto').value,10)});
+// Reuses the grid's own divs across ticks instead of rebuilding all n of them via innerHTML every
+// second -- 96+32 fresh elements a second is the main thing making this page feel like it stutters.
+function renderGrid(id,n,get){
+  const el=$(id),kids=el.children;
+  if(kids.length!==n){
+    el.innerHTML='';
+    for(let i=0;i<n;i++){const d=document.createElement('div');d.title='#'+(i+1);el.appendChild(d);}
+  }
+  for(let i=0;i<n;i++){
+    const {text,cls}=get(i),d=kids[i],cn='cell'+(cls?' '+cls:'');
+    if(d.className!==cn)d.className=cn;
+    if(d.textContent!==text)d.textContent=text;
+  }
+}
 function render(s){
   renderHealth(s);
   renderSniff(s);
@@ -3525,15 +3539,18 @@ function render(s){
   $('bage').textContent=A.packVoltage!=null?`${A.packVoltage}s 전`:'';
   const cv=s.cellsV||[],avg=V.cellAvg;
   $('cellsum').textContent=V.cellMin!=null?`최저 ${V.cellMin.toFixed(3)} · 최고 ${V.cellMax.toFixed(3)} · 편차 ${(V.cellDelta*1000).toFixed(0)} mV (${V.cellCount}/96)`:'';
-  $('cells').innerHTML=Array.from({length:96},(_,i)=>{const v=cv[i];const c=v==null?'':(avg&&v<=V.cellMin+1e-4?' lo':avg&&v>=V.cellMax-1e-4?' hi':'');
-    return `<div class="cell${c}" title="#${i+1}">${v==null?'·':v.toFixed(3)}</div>`;}).join('');
+  renderGrid('cells',96,i=>{const v=cv[i];
+    return {text:v==null?'·':v.toFixed(3),cls:v==null?'':(avg&&v<=V.cellMin+1e-4?'lo':avg&&v>=V.cellMax-1e-4?'hi':'')};});
   const ct=s.cellsT||[];
-  $('temps').innerHTML=Array.from({length:32},(_,i)=>`<div class="cell">${ct[i]==null?'·':ct[i].toFixed(1)}</div>`).join('');
+  renderGrid('temps',32,i=>({text:ct[i]==null?'·':ct[i].toFixed(1),cls:''}));
   const now=Date.now()/1000;
   $('raw').innerHTML=Object.entries(s.raw||{}).map(([id,r])=>`<tr><td>0x${id}</td><td>${r.len}</td><td>${r.data}</td><td>${r.n}</td><td>${(now-r.t).toFixed(0)}s</td></tr>`).join('')
     ||'<tr><td>아직 받은 프레임이 없습니다</td></tr>';
 }
-async function tick(){try{render(await(await fetch('/api/obd')).json());}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}}
+// Fetch and render are two different jobs: the fetch can land at any arbitrary moment setInterval
+// picks, but handing the DOM work to requestAnimationFrame instead of running it straight off the
+// fetch lines rendering up with the browser's own paint cycle instead of competing with it.
+async function tick(){try{const s=await(await fetch('/api/obd')).json();requestAnimationFrame(()=>render(s));}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}}
 tick(); setInterval(()=>{if(!busy) tick();},1000);
 </script></body></html>
 """
