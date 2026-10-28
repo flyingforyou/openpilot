@@ -93,6 +93,16 @@ CANDIDATES = [
   Sig('temp46B', '온도? (0x46B)', 0x46B, 0, 16, 0.01, unit='°C', min_len=2),
 ]
 
+# 0x246 UI_solarData, same layout as opendbc tesla_can.dbc (the gateway forwards it to this port too).
+# On 2026-10-27 15:50 UTC it read azimuth 119 / elevation 14, the sun's position over the Bay Area at
+# that moment; on a chassis-bus drive log azimuth - carRef matched the GPS bearing within 2 degrees.
+SOLAR = [
+  Sig('sunElevation', '태양 고도', 0x246, 32, 8, unit='°', signed=True, min_len=5),
+  Sig('sunAzimuth', '태양 방위각', 0x246, 0, 16, unit='°', signed=True, min_len=2),
+  Sig('sunCarRef', '태양 방향 (차 기준)', 0x246, 16, 9, unit='°', signed=True, min_len=3),
+]
+COMPASS = ['북', '북북동', '북동', '동북동', '동', '동남동', '남동', '남남동', '남', '남남서', '남서', '서남서', '서', '서북서', '북서', '북북서']
+
 VIN_IDS = (0x508, 0x538)
 CLOCK_ID = 0x528
 FW_STRING_IDS = (0x542, 0x552, 0x558)
@@ -226,12 +236,22 @@ def summarize(frames: list[tuple[float, int, bytes]], meta: dict | None = None) 
     ident.append({'key': 'bmsHw', 'label': 'BMS 하드웨어 ID', 'id': f'{BMS_VERSION_ID:03X}', 'n': len(ver),
                   'value': str(ver[-1]), 'unit': '', 'status': 'ok', 'detail': ''})
 
+  where = rows(SOLAR)
+  sun = [(az, ref) for _, d in by_id.get(0x246, ())
+         if (az := decode(SOLAR[1], d)) is not None and (ref := decode(SOLAR[2], d)) is not None]
+  if sun:
+    heading = (sun[-1][0] - sun[-1][1]) % 360
+    where.insert(0, {'key': 'heading', 'label': '차 방향', 'id': '246', 'n': len(sun), 'unit': '°', 'status': 'ok',
+                     'value': f'{heading:.0f}', 'detail': f'{COMPASS[round(heading / 22.5) % 16]} · 태양 방위각 − 차 기준 각도 (GPS 방향과 ±2° 확인)'})
+
   groups = [
     {'key': 'charge', 'title': '충전', 'rows': charge,
      'note': 'BMS 상태·파일럿·근접·HVIL이 충전이 안 되거나 멈출 때 원인을 가리킵니다. J1772 파일럿은 +9 V 꽂힘, +6 V 충전 중, +3 V 환기 필요입니다.'},
     {'key': 'thermal', 'title': '배터리 열관리', 'rows': rows(THERMAL),
      'note': '급속충전·고속주행 때 펌프·칠러·컴프레서가 도는지 봅니다. 주차 중엔 대부분 쉬는 값입니다.'},
     {'key': 'ident', 'title': '차량 식별 · 시각', 'rows': ident, 'note': ''},
+    {'key': 'where', 'title': '방향 · 태양', 'rows': where,
+     'note': '차 화면이 위치로 계산해 내보내는 값입니다. 차 방향은 주차 중에도 나옵니다. 태양 고도가 음수면 해가 진 뒤입니다.'},
     {'key': 'candidate', 'title': '후보 (확인 필요)', 'rows': rows(CANDIDATES),
      'note': '0x3F8은 계기판 타이어 공기압 화면과, 0x467~0x46B는 실내/외기 온도와 한 번 대조하면 확정됩니다.'},
   ]

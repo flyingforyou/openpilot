@@ -88,3 +88,15 @@ def test_car_clock_skew():
   assert '-2 초' in row['detail'] and row['status'] == 'ok'
   assert row['ts'] == 1793116253
   assert row['value'] == datetime.fromtimestamp(1793116253, timezone.utc).strftime('%m/%d %H:%M:%S')
+
+
+def test_solar_and_heading():
+  # 2026-10-27 15:50 UTC: azimuth 119, car-relative -38, sun up, elevation 14 -> heading 157 (SSE)
+  out = p.summarize([(0.0, 0x246, b('77 00 DA 03 0E'))], {})
+  rows = {r['key']: r for r in next(g for g in out['groups'] if g['key'] == 'where')['rows']}
+  assert (rows['sunAzimuth']['value'], rows['sunCarRef']['value'], rows['sunElevation']['value']) == ('119', '-38', '14')
+  assert rows['heading']['value'] == '157' and rows['heading']['detail'].startswith('남남동')
+  # a chassis-bus drive frame: azimuth 104, car-relative 61, GPS bearing 43
+  out = p.summarize([(0.0, 0x246, b('68 00 3D 00 FE'))], {})
+  rows = {r['key']: r for r in next(g for g in out['groups'] if g['key'] == 'where')['rows']}
+  assert rows['heading']['value'] == '43' and rows['sunElevation']['value'] == '-2'
