@@ -4,8 +4,13 @@
 Started by the manager whenever the BT-enabled kernel is present. Re-execs itself under sudo,
 because the HCI line discipline, rfkill and the mgmt channel all need root.
 
-It only holds a link while the car is on or the /diag page is open: a live Bluetooth session keeps
-the dongle awake on the 12 V battery, and a parked car is better left alone.
+It holds a link while the car is awake -- driving, charging, or just woken (DC-DC up: the car's 12 V
+reads >= AWAKE_V on the panda) -- for LINGER_S after that, and whenever the /diag page is open. A
+car asleep has a silent bus, so there is nothing to hear then, and a live Bluetooth session would
+only keep the dongle drawing from the 12 V battery. The harness stays powered while parked on this
+car (panda STATUS_PACKETs read 12.4-12.9 V overnight), so the device is up through every charge.
+
+Everything heard goes to vlog (sessions, events, resting cell snapshots, series, raw frames).
 
 IPC with the tuning page, both in /dev/shm:
   btobd.json      state, rewritten about once a second
@@ -25,6 +30,14 @@ VIEWER_PATH = '/dev/shm/btobd_viewer'
 KEYS_PATH = '/data/bt/linkkeys.json'
 PARAMS_DIR = '/data/params/d'
 VIEWER_TIMEOUT = 60.0
+AWAKE_V = 13.4        # car 12 V at or above this = DC-DC running = car awake (charging, driving, HVAC)
+LINGER_S = 20 * 60    # keep listening this long after the car stops looking awake
+POWER_LOG_S = 60.0
+CELL_DWELL_REST = 3.5  # parked/charging: long enough for all 24 brick frames in one sweep
+# Extra IDs per mode on top of the battery set; DISCOVERY is listened to one per cycle, raw only, so
+# the candidates (0x202 limits?, 0x332 min/max?, 0x3F8 TPMS?) build up a record without a decoder.
+MODE_IDS = {'DRIVE': [], 'PARKED': [0x212], None: [0x212]}
+DISCOVERY = [0x202, 0x332, 0x3F8, 0x388, 0x246, 0x528, 0x467, 0x252, 0x3F2, 0x51F, 0x21C, 0x37A, 0x33A, 0x39A]
 RETRY_S = 15.0
 DWELL = 0.15
 CELL_DWELL = 1.2
@@ -62,24 +75,76 @@ def _take_cmd() -> dict | None:
   return cmd
 
 
-def _wanted() -> bool:
-  if _param('BtObdEnabled', '1') != '1':
-    return False
-  if os.path.exists(os.path.join(PARAMS_DIR, 'IsOnroad')) and _param('IsOnroad') == '1':
-    return True
+def _onroad() -> bool:
+  return _param('IsOnroad') == '1'
+
+
+def _viewer() -> bool:
   try:
     return time.time() - os.path.getmtime(VIEWER_PATH) < VIEWER_TIMEOUT
   except OSError:
     return False
 
 
+class CarPower:
+  """The car's 12 V and ignition as the panda sees them. Missing messaging (tests, a bench without
+  the stack) just reads as unknown."""
+
+  def __init__(self):
+    self.sm = None
+    self.awake_until = 0.0
+    try:
+      import cereal.messaging as messaging
+      self.sm = messaging.SubMaster(['pandaStates', 'deviceState'])
+    except Exception:
+      pass
+
+  def read(self) -> dict:
+    if self.sm is None:
+      return {}
+    try:
+      self.sm.update(0)
+      ps = self.sm['pandaStates']
+      p = ps[0] if len(ps) else None
+      ds = self.sm['deviceState']
+      out = {'v': round(p.voltage / 1000, 2) if p is not None else None,
+             'ign': bool(p.ignitionLine or p.ignitionCan) if p is not None else None,
+             'harness': str(p.harnessStatus) if p is not None else None,
+             'started': bool(ds.started), 'devBatt': getattr(ds, 'batteryPercent', None)}
+    except Exception:
+      return {}
+    awake = bool(out['ign']) or out['started'] or (out['v'] is not None and out['v'] >= AWAKE_V)
+    if awake:
+      self.awake_until = time.monotonic() + LINGER_S
+    out['awake'] = awake
+    out['linger'] = time.monotonic() < self.awake_until
+    return out
+
+
+def _wanted(power: dict | None = None) -> bool:
+  if _param('BtObdEnabled', '1') != '1':
+    return False
+  if _onroad() or _viewer():
+    return True
+  return _param('BtObdAlwaysLog', '1') == '1' and bool((power or {}).get('linger'))
+
+
 class Daemon:
   def __init__(self):
     from openpilot.system.btobd import hci
     from openpilot.system.btobd.tesla_sx import TeslaSXState, WATCH_IDS
+    from openpilot.system.btobd import tdiag, vlog
     self.hci = hci
     self.watch = WATCH_IDS
     self.car = TeslaSXState()
+    self.vlog = vlog.VehicleLog(os.path.join(tdiag.LOG_DIR, 'vlog'))
+    self.power = CarPower()
+    self.power_state: dict = {}
+    self.last_power_log = 0.0
+    self.discovery_i = 0
+    self.cycle_t = 0.0
+    self.cycle_frames = 0
+    self.cycle_ids = 0
     self.tty = None
     self.mgmt = None
     self.elm = None
@@ -160,22 +225,46 @@ class Daemon:
       self.link_state = 'idle'
 
   def poll_once(self) -> None:
+    from openpilot.system.btobd import tesla_pt
+    mode = self.vlog.modes.mode
+    charging = mode in ('AC_CHARGE', 'DC_CHARGE', 'CHARGE_UNKNOWN')
     ids = [i for i in self.watch if i != 0x6F2]
-    if self.cycle % CELL_EVERY == 0:
+    ids += [i for i in (tesla_pt.LIVE_IDS if charging else MODE_IDS.get(mode, [])) if i not in ids]
+    disc = DISCOVERY[self.discovery_i % len(DISCOVERY)]
+    self.discovery_i += 1
+    if disc not in ids:
+      ids.append(disc)
+    if self.cycle % CELL_EVERY == 0 or (mode != 'DRIVE' and self.cycle % 2 == 0):
       ids.append(0x6F2)
     self.cycle += 1
+    start, nframes, heard = time.monotonic(), 0, set()
     for msg_id in ids:
-      frames = self.elm.monitor(msg_id, CELL_DWELL if msg_id == 0x6F2 else DWELL,
-                                max_frames=64 if msg_id == 0x6F2 else 4)
-      now = time.monotonic()
+      cell = msg_id == 0x6F2
+      frames = self.elm.monitor(msg_id, (CELL_DWELL if mode == 'DRIVE' else CELL_DWELL_REST) if cell else DWELL,
+                                max_frames=96 if cell else 4)
+      now, wall = time.monotonic(), time.time()
+      window = f'{self.cycle}:{msg_id:03X}'
       for fid, data in frames:
         self.car.feed(fid, data, now)
+        if fid in tesla_pt.LIVE_IDS:
+          tesla_pt.feed_live(self.car, fid, data, now)
+        self.vlog.frame(wall, now, fid, data, window)
         r = self.raw.setdefault(fid, {'n': 0})
-        r.update(data=data.hex(' ').upper(), len=len(data), t=time.time())
+        r.update(data=data.hex(' ').upper(), len=len(data), t=wall)
         r['n'] += 1
+        heard.add(fid)
+      nframes += len(frames)
       self._handle_cmd()
       if self.elm is None:
         return
+    dur = time.monotonic() - start
+    self.cycle_t, self.cycle_frames, self.cycle_ids = dur, nframes, len(heard)
+    now = time.monotonic()
+    snap = self.car.snapshot(now)
+    q = {'fps': round(nframes / dur, 1) if dur > 0 else None, 'ids': len(heard), 'cycleS': round(dur, 2),
+         **self.elm.stats}
+    self.vlog.update(time.time(), snap['values'], snap['age'], onroad=_onroad(), cells=self.car.cell_set(now),
+                     temps=snap.get('cellsT'), quality=q)
 
   # --- page ------------------------------------------------------------------------------------
   def _handle_cmd(self) -> None:
@@ -337,12 +426,15 @@ class Daemon:
                         'paired': self.mgmt.known(a)})
     state = {
       'updated': time.time(), 'bt': self.bt, 'link': self.link_state, 'error': self.error,
-      'target': self.target, 'wanted': _wanted(),
+      'target': self.target, 'wanted': _wanted(self.power_state),
       'discovering': bool(self.mgmt and self.mgmt.discovering), 'devices': devices,
       'elm': {'version': self.elm.version if self.elm else '', 'silent': bool(self.elm and self.elm.silent),
               'protocol': self.elm.protocol if self.elm else '', 'channel': getattr(self.link, 'channel', None)},
       'sniff': self.sniff, 'probe': self.probe_result, 'uds': self.uds_result,
       'raw': {f'{k:03X}': v for k, v in sorted(self.raw.items())},
+      'power': self.power_state, 'mode': self.vlog.modes.mode, 'modeSince': self.vlog.modes.since,
+      'quality': {'fps': round(self.cycle_frames / self.cycle_t, 1) if self.cycle_t else None, 'ids': self.cycle_ids,
+                  'cycleS': round(self.cycle_t, 2), **(self.elm.stats if self.elm else {})},
       **snap,
     }
     _write_state(state)
@@ -354,11 +446,24 @@ class Daemon:
       tdiag.log_event('live', name=tdiag.LIVE_LOG, max_size=tdiag.LIVE_MAX, values=snap['values'], cellsV=snap.get('cellsV'),
                       cellsT=snap.get('cellsT'), raw={f'{k:03X}': v['data'] for k, v in self.raw.items()})
 
+  def _log_power(self, wanted: bool) -> None:
+    """The car's 12 V and the device's view of it every minute, whether or not a dongle is linked:
+    the record that says when the car slept, woke, charged, and whether the device was up."""
+    self.power_state = self.power.read()
+    if time.monotonic() - self.last_power_log < POWER_LOG_S:
+      return
+    self.last_power_log = time.monotonic()
+    from openpilot.system.btobd import tdiag
+    tdiag.log_event('power', directory=os.path.join(tdiag.LOG_DIR, 'vlog'), name='power.jsonl', max_size=20_000_000,
+                    wanted=wanted, link=self.link_state, mode=self.vlog.modes.mode, onroad=_onroad(), **self.power_state)
+    self.vlog.prune()
+
   def run(self) -> None:
     last_pub = 0.0
     while True:
       self.target = _param('BtObdAddress')
-      wanted = _wanted()
+      wanted = _wanted(self.power_state)
+      self._log_power(wanted)
       bt_ok = self.ensure_bt()   # the adapter itself comes up at boot; only the dongle link is gated
       if bt_ok:
         self._handle_cmd()
@@ -378,6 +483,7 @@ class Daemon:
           _take_cmd()   # a command for a dead adapter would only fire long after it was meant
         if self.elm is not None:
           self.disconnect()
+          self.vlog.close(time.time(), 'car-asleep')
         time.sleep(0.5)
       if time.monotonic() - last_pub > 0.8 or self.elm is None:
         self._publish()

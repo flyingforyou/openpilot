@@ -47,6 +47,8 @@ class Elm327:
     self.protocol = ''
     self.silent = False
     self.sniff_filter: str | None = None   # how the last sniff split the ID space: 'cra', 'mask' or None
+    # monitor() data-quality counters since connect; the logger turns them into per-session rates
+    self.stats = {'windows': 0, 'frames': 0, 'bufferFull': 0, 'errors': 0, 'unparsed': 0}
     self._buf = b''
 
   def _read_until_prompt(self, timeout: float) -> list[str]:
@@ -103,9 +105,20 @@ class Elm327:
       *lines, rest = self._buf.replace(b'\r', b'\n').split(b'\n')
       self._buf = rest
       for ln in lines:
-        f = parse_frame(ln.decode(errors='replace'))
+        text = ln.decode(errors='replace').strip()
+        f = parse_frame(text)
         if f and f[0] == msg_id:
           frames.append(f)
+        elif not f and text:
+          up = text.upper()
+          if 'BUFFER FULL' in up:
+            self.stats['bufferFull'] += 1
+          elif any(e in up for e in ('ERROR', '?', 'BUS BUSY')):
+            self.stats['errors'] += 1
+          elif not any(n in up for n in NOISE):
+            self.stats['unparsed'] += 1
+    self.stats['windows'] += 1
+    self.stats['frames'] += len(frames)
     # Any character stops ATMA; the adapter answers with STOPPED and a prompt.
     self.t.send(b'\r')
     try:

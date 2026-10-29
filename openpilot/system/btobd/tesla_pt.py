@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 from openpilot.system.btobd.tesla_sx import TeslaSXState
 
@@ -219,7 +219,7 @@ def summarize(frames: list[tuple[float, int, bytes]], meta: dict | None = None) 
     t, car = clock[-1]
     # the page re-renders `ts` in the viewer's local time
     row = {'key': 'clock', 'label': '차량 시계', 'id': f'{CLOCK_ID:03X}', 'n': len(clock), 'ts': car,
-           'value': datetime.fromtimestamp(car, timezone.utc).strftime('%m/%d %H:%M:%S'), 'unit': 'UTC', 'status': 'ok', 'detail': ''}
+           'value': datetime.fromtimestamp(car, UTC).strftime('%m/%d %H:%M:%S'), 'unit': 'UTC', 'status': 'ok', 'detail': ''}
     end_t = max(f[0] for f in frames)
     if meta.get('saved'):
       skew = car - (meta['saved'] - end_t + t)
@@ -259,3 +259,20 @@ def summarize(frames: list[tuple[float, int, bytes]], meta: dict | None = None) 
     g['heard'] = sum(r['status'] != 'na' for r in g['rows'])
   return {'groups': groups, 'frames': len(frames), 'protocol': meta.get('protocol'), 'filter': meta.get('filter'),
           'saved': meta.get('saved'), 'seconds': meta.get('seconds')}
+
+
+# Live use: the logger polls these alongside the battery set while the car charges or idles. Enum
+# signals are kept as their raw numbers (the page and the mode logic map them), numbers scaled.
+LIVE_SIGS = [s for s in CHARGE + THERMAL if s.key != 'pump1Req']
+LIVE_IDS = sorted({s.msg for s in LIVE_SIGS})
+
+
+def feed_live(state, msg_id: int, data: bytes, t: float) -> None:
+  """Decode one frame of LIVE_IDS into a TeslaSXState's values/stamps, like its own feed()."""
+  for s in LIVE_SIGS:
+    if s.msg != msg_id:
+      continue
+    v = decode(s, data)
+    if v is not None:
+      state.values[s.key] = round(v, 3) if isinstance(v, float) else v
+      state.stamp[s.key] = t

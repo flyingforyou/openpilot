@@ -209,6 +209,11 @@ MIN_LEN = {0x102: 2, 0x302: 3, 0x382: 8, 0x232: 4, 0x266: 8, 0x2E5: 7, 0x116: 4,
            0x1D4: 7, 0x210: 6, 0x3D2: 8, 0x562: 4, 0x306: 3, 0x338: 6}
 CELL_ID = 0x6F2
 WATCH_IDS = sorted(DECODERS) + [CELL_ID]
+# All 96 brick voltages count as one measurement only when every slot arrived within this many
+# seconds of the others. Driving, a sweep catches ~11 of the 24 frames, so the grid mixes frames read
+# at different pack currents: on 2026-10-29 that showed a 95-150 mV "spread" at -21..-128 A that was
+# brick IR drop between sweeps, not imbalance (the same pack read 5-8 mV charging at 15 A).
+CELL_SYNC_S = 4.0
 
 
 class TeslaSXState:
@@ -219,6 +224,7 @@ class TeslaSXState:
     self.stamp: dict = {}          # signal -> monotonic time it was last set
     self.cells_v: list = [None] * 96
     self.cells_t: list = [None] * 32
+    self.cells_v_at: list = [None] * 96   # monotonic time each brick voltage slot was last set
     self.current_offset = False    # latched once a 0x102 frame proves the +10000 form; see bms_hv
 
   def feed(self, msg_id: int, data: bytes, t: float) -> None:
@@ -230,6 +236,7 @@ class TeslaSXState:
       if idx < 24:
         for k, v in enumerate(vals):
           self.cells_v[idx * 4 + k] = round(v * 0.000305, 4)
+          self.cells_v_at[idx * 4 + k] = t
       elif idx < 32:
         for k, v in enumerate(vals):
           self.cells_t[(idx - 24) * 4 + k] = round(_s(v, 14) * 0.0122, 1)
@@ -253,12 +260,24 @@ class TeslaSXState:
     if v:
       self.values.update({'cellMin': min(v), 'cellMax': max(v), 'cellAvg': round(sum(v) / len(v), 4),
                           'cellDelta': round(max(v) - min(v), 4), 'cellCount': len(v)})
-      for k in ('cellMin', 'cellMax', 'cellAvg', 'cellDelta', 'cellCount'):
+      at = [a for a in self.cells_v_at if a is not None]
+      span = max(at) - min(at)
+      self.values['cellSpanS'] = round(span, 1)
+      self.values['cellSync'] = len(v) == 96 and span <= CELL_SYNC_S
+      for k in ('cellMin', 'cellMax', 'cellAvg', 'cellDelta', 'cellCount', 'cellSpanS', 'cellSync'):
         self.stamp[k] = t
     tt = [x for x in self.cells_t if x is not None]
     if tt:
       self.values.update({'moduleTempMin': min(tt), 'moduleTempMax': max(tt)})
       self.stamp['moduleTempMin'] = self.stamp['moduleTempMax'] = t
+
+  def cell_set(self, now: float, max_span: float = CELL_SYNC_S) -> list | None:
+    """The 96 brick voltages as one measurement, or None when they were not read close enough
+    together (or not all read) to compare with each other."""
+    at = self.cells_v_at
+    if any(a is None for a in at) or max(at) - min(at) > max_span:
+      return None
+    return list(self.cells_v)
 
   def snapshot(self, now: float) -> dict:
     return {'values': self.values, 'age': {k: round(now - t, 1) for k, t in self.stamp.items()},
