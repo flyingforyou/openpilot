@@ -3977,7 +3977,9 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
 <div class="grp">
   <div class="gt"><span>세션</span><span><a class="dl" href="/api/vlog/csv/sessions">CSV</a></span></div>
   <div class="sc"><table><thead><tr><th>시작</th><th>종류</th><th class="r">시간</th><th class="r">SOC</th><th class="r">팩 유입</th><th class="r">팩 유출</th>
-    <th class="r">평균 kW</th><th class="r">최대 kW</th><th class="r">거리</th><th class="r">Wh/mi</th><th class="r">누락</th><th>출처</th></tr></thead><tbody id="sess"></tbody></table></div>
+    <th class="r">평균 kW</th><th class="r">최대 kW</th><th class="r">거리</th><th class="r">Wh/mi</th><th class="r">동글 기록</th><th>출처</th></tr></thead><tbody id="sess"></tbody></table></div>
+  <div class="hint" style="border-top:1px solid var(--line)">주행의 시간·거리는 openpilot 주행 로그(속도 적분)에서 가져온 전체 값이고, 에너지·SOC·kW는 그중 동글이 연결돼 있던 구간("동글 기록" %)만의 값입니다.
+    기록 비율이 80% 미만이면 Wh/mi는 기록된 구간만으로 계산한 참고값(회색)입니다.</div>
   <div id="detail" hidden></div>
 </div>
 
@@ -4060,12 +4062,14 @@ function renderPower(d){
       return `<i style="left:${(a-d0)/864}%;width:${Math.max(.3,(b-a)/864)}%;top:11px;background:var(--ok)" title="충전 기록 ${dt(s.start)}~${dt(s.end)}"></i>`;}).join('');
     const dd=new Date(d0*1000);return `<div class="lane"><span class="d">${dd.getMonth()+1}/${dd.getDate()} ${'일월화수목금토'[dd.getDay()]}</span><div class="bar">${bars}</div></div>`;}).join('');
 }
+const cov=s=>s.coverage!=null?s.coverage:s.missingRate==null?1:1-s.missingRate;
 function renderSessions(d){
   $('sess').innerHTML=d.sessions.map((s,i)=>`<tr data-i="${i}"${selS===s.start?' class="sel"':''}><td>${dt(s.start)}</td><td><span class="tag ${s.type}">${MODE[s.type]||s.type}</span></td>
     <td class="r">${dur(s.durationS)}</td><td class="r">${s.socStart==null?'–':f(s.socStart)+'→'+f(s.socEnd)}%</td>
     <td class="r">${f(s.kwhIn,2)}</td><td class="r">${f(s.kwhOut,2)}</td><td class="r">${f(s.avgKw)}</td>
     <td class="r">${s.type==='DRIVE'?f(s.kwMin):f(s.kwMax)}</td><td class="r">${s.miles==null?'–':f(s.miles)+' mi'}</td>
-    <td class="r">${f(s.whPerMi,0)}</td><td class="r ${s.missingRate>0.2?'warn':''}">${s.missingRate==null?'–':Math.round(s.missingRate*100)+'%'}</td><td class="na">${esc(s.source||'')}</td></tr>`).join('')
+    <td class="r">${s.whPerMi!=null?f(s.whPerMi,0):s.whPerMiPart!=null?`<span class="na">${f(s.whPerMiPart,0)}</span>`:'–'}</td>
+    <td class="r ${cov(s)<0.8?'warn':''}">${s.coverage!=null?Math.round(s.coverage*100)+'%'+(s.parts>1?` (${s.parts}구간)`:''):s.missingRate==null?'–':Math.round((1-s.missingRate)*100)+'%'}</td><td class="na">${esc(s.source||'')}</td></tr>`).join('')
     ||'<tr><td colspan="12" class="na">아직 세션이 없습니다</td></tr>';
   document.querySelectorAll('#sess tr[data-i]').forEach(r=>r.onclick=()=>openSession(d.sessions[+r.dataset.i]));
 }
@@ -4096,7 +4100,10 @@ async function openSession(s){
   if(s.type==='DRIVE')html+=chart(rows,[{k:'vehicleSpeedMph',n:'속도 mph',c:'var(--hot)',side:'L'},{k:'maxDischargePower',n:'BMS 방전 한계 kW',c:'var(--mut)',side:'R'}],130);
   else html+=chart(rows,[{k:'moduleTempMax',n:'모듈 최고 °C',c:'var(--hot)',side:'L',d:1},{k:'packVoltage',n:'팩 전압 V',c:'var(--mut)',side:'R',d:0}],130);
   html+='<div class="kv">'+kv('팩 유입 / 유출',`${f(s.kwhIn,2)} / ${f(s.kwhOut,2)} kWh`)+kv('평균 / 범위',`${f(s.avgKw)} kW (${f(s.kwMin)} ~ ${f(s.kwMax)})`)
-    +(s.type==='DRIVE'?kv('거리 · 효율',`${s.miles==null?'–':f(s.miles,2)+' mi ('+(s.milesSource==='odometer'?'배터리 주행거리':'속도 적분')+')'} · ${f(s.whPerMi,0)} Wh/mi`)+kv('회생',`${f(s.regenKwh,2)} kWh`):'')
+    +(s.type==='DRIVE'?kv('거리',`${s.miles==null?'–':f(s.miles,2)+' mi'} (${{openpilot:'openpilot 주행 로그',odometer:'배터리 주행거리',speed:'속도 적분'}[s.milesSource]||'–'})`)
+      +kv('효율',s.whPerMi!=null?f(s.whPerMi,0)+' Wh/mi':s.whPerMiPart!=null?`${f(s.whPerMiPart,0)} Wh/mi (기록된 ${f(s.partMiles,2)} mi만)`:'–')
+      +kv('동글 기록',s.coverage!=null?`${Math.round(s.coverage*100)}% · ${s.parts||0}구간`+(s.partList?' ('+s.partList.map(p=>dt(p.start).slice(-5)+'~'+dt(p.end).slice(-5)).join(', ')+')':''):'–')
+      +(s.movingS!=null?kv('움직인 시간',dur(s.movingS)):'')+kv('회생 (기록 구간)',`${f(s.regenKwh,2)} kWh`):'')
     +(s.min10to80!=null?kv('10→80%',s.min10to80+'분'):'')+(s.min20to80!=null?kv('20→80%',s.min20to80+'분'):'')
     +kv('모듈 온도',`${f(s.tempMin)} ~ ${f(s.tempMax)} °C`)+kv('셀 편차 (동시 측정만)',s.cellDeltaSyncMax==null?'동시 측정 없음':f(s.cellDeltaSyncMax,0)+' mV')
     +kv('BMS 한계 최저',`방전 ${f(s.limitMinDischarge,0)} · 회생 ${f(s.limitMinRegen,0)} kW`)

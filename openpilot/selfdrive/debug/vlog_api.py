@@ -10,6 +10,7 @@ import gzip
 import io
 import json
 import os
+import threading
 import time
 
 from openpilot.system.btobd import tdiag, vlog
@@ -18,7 +19,10 @@ VLOG_DIR = os.path.join(tdiag.LOG_DIR, 'vlog')
 SWAGLOG_DIR = '/data/log'
 OBD_STATE_PATH = '/dev/shm/btobd.json'
 POWER_DAYS = 14
+REALDATA = '/data/media/0/realdata'
 _cache: dict = {}
+_routes_lock = threading.Lock()
+_routes_busy = False
 
 
 def _cached(key: str, stamp, fn):
@@ -72,6 +76,155 @@ def power_rows() -> list:
   return [r for r in swag if since <= r['t'] < first_own] + own
 
 
+# ---- drives from openpilot's own route logs ---------------------------------------------------------
+# A dongle session covers only the minutes the dongle was linked (before the always-on logger: only
+# while a page was open), so its duration and distance are a slice of the drive. openpilot records
+# every drive whole; its qlogs give the real start, end and distance (carState.vEgo integrated).
+def _route_summary(paths: list) -> dict | None:
+  """Start, end and distance of one route. Times come from one wall-minus-monotonic offset for the
+  whole route, taken from the LAST segment's clocks (or GPS) message: the device boots with a stale
+  clock (2026-07-28) and loggerd's initData keeps it for the whole route, so 0000021a, a 10/28
+  drive, read as July. monotonic time runs straight through a route, so one late offset fits all."""
+  import zstandard
+  from openpilot.cereal import log as capnp_log
+  cs: list = []
+  off = gps_off = init_off = None
+  for p in paths:
+    try:
+      with open(p, 'rb') as f:
+        data = zstandard.ZstdDecompressor().stream_reader(f).read()
+      events = capnp_log.Event.read_multiple_bytes(data)
+      for m in events:
+        w = m.which()
+        if w == 'carState':
+          cs.append((m.logMonoTime / 1e9, m.carState.vEgo))
+        elif w == 'clocks' and m.clocks.wallTimeNanos > 0:
+          off = m.clocks.wallTimeNanos / 1e9 - m.logMonoTime / 1e9
+        elif w == 'gpsLocationExternal' and m.gpsLocationExternal.hasFix and m.gpsLocationExternal.unixTimestampMillis > 0:
+          gps_off = m.gpsLocationExternal.unixTimestampMillis / 1000 - m.logMonoTime / 1e9
+        elif w == 'initData' and init_off is None:
+          init_off = m.initData.wallTimeNanos / 1e9 - m.logMonoTime / 1e9
+    except Exception:
+      continue   # a segment cut by power loss ends mid-message
+  # clocks is system time; before NTP/GPS it is the stale boot time, so prefer GPS when they disagree
+  if off is None or (gps_off is not None and abs(off - gps_off) > 120):
+    off = gps_off if gps_off is not None else (off if off is not None else init_off)
+  if not cs or off is None:
+    return None
+  dist = moving = 0.0
+  for (t0, v0), (t1, _) in zip(cs, cs[1:], strict=False):
+    dt = t1 - t0
+    if 0 < dt < 5:
+      dist += v0 * dt
+      if v0 > 0.5:
+        moving += dt
+  return {'start': round(cs[0][0] + off, 1), 'end': round(cs[-1][0] + off, 1), 'miles': round(dist / 1609.344, 2),
+          'movingS': round(moving), 'clock': 'gps' if off == gps_off else 'system'}
+
+
+def _route_dirs(days: float) -> dict:
+  since = time.time() - days * 86400
+  routes: dict = {}
+  try:
+    entries = os.listdir(REALDATA)
+  except OSError:
+    return routes
+  for e in entries:
+    q = os.path.join(REALDATA, e, 'qlog.zst')
+    if '--' not in e or not os.path.isfile(q):
+      continue
+    mt = os.path.getmtime(q)
+    if mt < since:
+      continue
+    name, seg = e.rsplit('--', 1)
+    if seg.isdigit():
+      routes.setdefault(name, []).append((int(seg), q, mt))
+  return routes
+
+
+def _refresh_routes(days: float) -> None:
+  global _routes_busy
+  path = os.path.join(VLOG_DIR, 'routes.json')
+  try:
+    cache = json.load(open(path))
+  except (OSError, ValueError):
+    cache = {}
+  try:
+    for name, segs in _route_dirs(days).items():
+      segs.sort()
+      key = f'{len(segs)}:{int(max(s[2] for s in segs))}'
+      if cache.get(name, {}).get('key') == key:
+        continue
+      # a route still being written is summarised again once it stops growing
+      summ = _route_summary([s[1] for s in segs])
+      cache[name] = {'key': key, 'segments': len(segs), **(summ or {'start': None})}
+      os.makedirs(VLOG_DIR, exist_ok=True)
+      with open(path + '.tmp', 'w') as f:
+        json.dump(cache, f)
+      os.replace(path + '.tmp', path)
+  finally:
+    with _routes_lock:
+      _routes_busy = False
+
+
+def drives(days: float = POWER_DAYS) -> list:
+  """openpilot drives on this device, from a cache filled in the background."""
+  global _routes_busy
+  with _routes_lock:
+    if not _routes_busy:
+      _routes_busy = True
+      threading.Thread(target=_refresh_routes, args=(days,), daemon=True).start()
+  try:
+    cache = json.load(open(os.path.join(VLOG_DIR, 'routes.json')))
+  except (OSError, ValueError):
+    return []
+  out = [{'route': n, **{k: v for k, v in r.items() if k != 'key'}} for n, r in cache.items() if r.get('start')]
+  return sorted(out, key=lambda r: r['start'])
+
+
+def merge_drives(sessions: list, routes: list) -> list:
+  """One row per drive: the route's real start/end/distance, with the dongle sessions that fall in
+  it as parts. Energy is summed over the parts and labelled as covering only that share of the
+  drive; Wh/mi is only given when the parts cover most of it. Drives no dongle heard still get a row."""
+  rows, used = [], set()
+  for r in routes:
+    span = max(1.0, r['end'] - r['start'])
+    parts = [s for s in sessions if s['type'] == 'DRIVE' and s['start'] < r['end'] + 60 and s['end'] > r['start'] - 60]
+    used.update(id(s) for s in parts)
+    covered = sum(min(s['end'], r['end']) - max(s['start'], r['start']) for s in parts)
+    row = {'type': 'DRIVE', 'start': r['start'], 'end': r['end'], 'durationS': round(span, 1), 'miles': r['miles'],
+           'milesSource': 'openpilot', 'movingS': r['movingS'], 'route': r['route'], 'coverage': round(max(0.0, covered) / span, 3),
+           'source': 'openpilot + 동글' if parts else 'openpilot (동글 기록 없음)', 'parts': len(parts), 'flags': []}
+    if parts:
+      for k in ('kwhIn', 'kwhOut', 'gapS', 'samples'):
+        row[k] = round(sum(s.get(k) or 0 for s in parts), 3)
+      kws = [s for s in parts if s.get('kwMin') is not None]
+      row['kwMin'] = min((s['kwMin'] for s in kws), default=None)
+      row['kwMax'] = max((s['kwMax'] for s in kws), default=None)
+      row['avgKw'] = round(sum((s.get('avgKw') or 0) * s['durationS'] for s in parts) / max(1, sum(s['durationS'] for s in parts)), 2)
+      row['socStart'], row['socEnd'] = parts[0].get('socStart'), parts[-1].get('socEnd')
+      row['missingRate'] = None
+      part_mi = sum(s.get('miSpeed') or 0 for s in parts)
+      row['partMiles'] = round(part_mi, 2)
+      net = row['kwhOut'] - row['kwhIn']
+      if part_mi > 0.3:
+        wh = round(net * 1000 / part_mi, 1)
+        row['whPerMi' if row['coverage'] >= 0.8 else 'whPerMiPart'] = wh
+      row['regenKwh'] = row['kwhIn']
+      for k in ('tempMin', 'limitMinDischarge', 'limitMinRegen'):
+        vals = [s[k] for s in parts if s.get(k) is not None]
+        row[k] = min(vals) if vals else None
+      vals = [s['tempMax'] for s in parts if s.get('tempMax') is not None]
+      row['tempMax'] = max(vals) if vals else None
+      row['events'] = [e for s in parts for e in s.get('events') or []]
+      row['partList'] = [{'start': s['start'], 'end': s['end'], 'source': s.get('source')} for s in parts]
+      if row['coverage'] < 0.8:
+        row['flags'].append('partial')
+    rows.append(row)
+  rest = [s for s in sessions if id(s) not in used]
+  return rows + rest
+
+
 def charge_check(segs: list, sessions: list) -> dict:
   """Was the device up while the car charged? Charging is taken from logged charge sessions, and
   from AWAKE stretches (DC-DC up, not driving) of 30 min or more, which is what a charge looks like
@@ -112,6 +265,9 @@ def overview() -> dict:
   rep = replayed()
   first_own = min((s['start'] for s in own), default=float('inf'))
   sessions = [s for s in rep['sessions'] if s['end'] < first_own] + own
+  sessions.sort(key=lambda s: s['start'])
+  routes = drives()
+  sessions = merge_drives(sessions, routes)
   sessions.sort(key=lambda s: s['start'], reverse=True)
   events = vlog.read_jsonl(os.path.join(VLOG_DIR, 'events.jsonl'), 300)
   events = [{k: e.get(k) for k in ('t', 'type', 'mode', 'value', 'threshold')} for e in events][::-1]
@@ -166,8 +322,8 @@ def _csv(rows: list, cols: list) -> bytes:
   return buf.getvalue().encode()
 
 
-SESSION_COLS = ['source', 'type', 'start', 'end', 'durationS', 'socStart', 'socEnd', 'kwhIn', 'kwhOut', 'avgKw', 'kwMax',
-                'kwMin', 'miles', 'milesSource', 'whPerMi', 'regenKwh', 'min10to80', 'min20to80', 'tempMin', 'tempMax',
+SESSION_COLS = ['source', 'type', 'route', 'start', 'end', 'durationS', 'movingS', 'coverage', 'parts', 'socStart', 'socEnd',
+                'kwhIn', 'kwhOut', 'avgKw', 'kwMax', 'kwMin', 'miles', 'milesSource', 'partMiles', 'whPerMi', 'whPerMiPart', 'regenKwh', 'min10to80', 'min20to80', 'tempMin', 'tempMax',
                 'cellDeltaSyncMax', 'limitMinDischarge', 'limitMinRegen', 'samples', 'gapS', 'missingRate', 'staleRate', 'flags']
 
 
