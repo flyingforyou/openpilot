@@ -94,7 +94,7 @@ class CarPower:
     self.sm = None
     self.awake_until = 0.0
     try:
-      import cereal.messaging as messaging
+      import openpilot.cereal.messaging as messaging
       self.sm = messaging.SubMaster(['pandaStates', 'deviceState'])
     except Exception:
       pass
