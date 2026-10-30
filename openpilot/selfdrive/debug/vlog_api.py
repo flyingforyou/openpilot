@@ -488,7 +488,7 @@ def recent_summary(hours: float = SUMMARY_HOURS) -> dict | None:
   frames.sort(key=lambda f: f[0])
   end = frames[-1][0]
   frames = [f for f in frames if f[0] >= end - hours * 3600]
-  out = tesla_pt.summarize(frames, {'saved': end, 'seconds': round(end - frames[0][0])})
+  out = tesla_pt.summarize(frames, {'saved': end, 'seconds': round(end - frames[0][0]), 'clockRef': '수신 시각 기준'})
   out.update(name='vlog', source='vlog', start=frames[0][0], end=end)
   _cache['summary'] = (key, out)
   return out

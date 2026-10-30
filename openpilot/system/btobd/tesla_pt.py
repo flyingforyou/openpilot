@@ -223,7 +223,7 @@ def summarize(frames: list[tuple[float, int, bytes]], meta: dict | None = None) 
     end_t = max(f[0] for f in frames)
     if meta.get('saved'):
       skew = car - (meta['saved'] - end_t + t)
-      row['detail'] = f'기기 시계와 {skew:+.0f} 초 차이 (캡처 저장 시각 기준, ±2초는 정상)'
+      row['detail'] = f"기기 시계와 {skew:+.0f} 초 차이 ({meta.get('clockRef', '캡처 저장 시각 기준')}, ±2초는 정상)"
       row['status'] = 'ok' if abs(skew) < 30 else 'warn'
     ident.append(row)
   for i in FW_STRING_IDS:
