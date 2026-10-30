@@ -176,3 +176,9 @@ def test_days_before_raw_come_from_live_jsonl_marked_as_such(tmp_path):
   snap = daily.build_day(d, [s], tz, ctx)
   assert snap['status'] == 'PARTIAL' and any('live.jsonl' in w for w in snap['statusWhy'])
   assert snap['day']['cellBalance']['n'] == 0 and snap['day']['resistance']['pairs'] == 0 and snap['day']['decodes'] == []
+
+
+def test_partial_days_do_not_feed_the_distance_trend():
+  rows = [{'date': '2026-11-01', 'status': 'OK', 'miles': 30.0}, {'date': '2026-11-02', 'status': 'PARTIAL', 'miles': 2.0}]
+  t = daily.trend(rows)
+  assert t['miles']['last'] == 30.0 and t['miles']['n'] == 1 and t['miles']['note']

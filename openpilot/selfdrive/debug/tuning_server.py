@@ -4343,7 +4343,7 @@ function render(){
     const ch=m.dayChange==null?'전날 값 없음':'전날 대비 '+sgn(m.dayChange,d);
     const sl=m.slope30==null?(m.slopeWhy||'경향 계산 불가'):'경향 '+sgn(m.slope30,d)+' '+u+'/30일';
     return `<div class="tile"><div class="k">${l}</div><div class="v">${m.last==null?'–':f(m.last,d)}<small>${u}</small></div>
-      <div class="n">${m.lastDate?m.lastDate.slice(5)+' 기준':'측정 없음'} · ${ch}<br>7일 중앙 ${f(m.median7,d)} · 30일 중앙 ${f(m.median30,d)}<br>${sl}</div></div>`;}).join('');
+      <div class="n">${m.lastDate?m.lastDate.slice(5)+' 기준':'측정 없음'}${m.note?' ('+m.note+')':''} · ${ch}<br>7일 중앙 ${f(m.median7,d)} · 30일 중앙 ${f(m.median30,d)}<br>${sl}</div></div>`;}).join('');
   const D=inRange();
   $('charts').innerHTML=METRICS.map(([k,l,u,d,kind])=>`<div class="h3">${l} <span class="na">${u}</span></div>`+chart(D,k,kind,d)).join('');
   $('days').innerHTML=D.slice().reverse().map(x=>{const w=(x.warnings||[]).length;
@@ -4370,7 +4370,7 @@ function chart(D,k,kind,dg){
   let out='',path='',pen=false;
   pts.forEach(({i,x,p})=>{if(!p){pen=false;if(x.status==='NO_DATA')out+=`<line x1="${X(i)}" x2="${X(i)}" y1="${P[2]}" y2="${h-P[3]}" stroke="var(--line)" stroke-dasharray="2 3"/>`;return;}
     path+=(pen?'L':'M')+X(i).toFixed(1)+' '+Y(p.v).toFixed(1);pen=true;
-    out+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="3" fill="${p.low?'var(--card)':'var(--radar)'}" stroke="${p.low?'var(--dim)':'var(--radar)'}"><title>${x.date} · ${f(p.v,dg)}${p.low?' (신뢰도 낮음)':''}</title></circle>`;});
+    out+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="7" stroke-width="3" fill="${p.low?'var(--card)':'var(--radar)'}" stroke="${p.low?'var(--dim)':'var(--radar)'}"><title>${x.date} · ${f(p.v,dg)}${p.low?' (신뢰도 낮음)':''}</title></circle>`;});
   out=`<path d="${path}" fill="none" stroke="var(--radar)" stroke-width="1.4" opacity=".7"/>`+out;
   out+=`<text x="${P[0]-6}" y="${P[2]+8}" text-anchor="end" font-size="10" fill="var(--dim)">${f(hi,dg)}</text><text x="${P[0]-6}" y="${h-P[3]}" text-anchor="end" font-size="10" fill="var(--dim)">${f(lo,dg)}</text>`;
   out+=`<text x="${P[0]}" y="${h-5}" font-size="10" fill="var(--dim)">${D[0].date.slice(5)}</text><text x="${W-P[1]}" y="${h-5}" font-size="10" fill="var(--dim)" text-anchor="end">${D[n-1].date.slice(5)}</text>`;

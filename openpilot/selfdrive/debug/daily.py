@@ -727,6 +727,7 @@ def index_row(s: dict) -> dict:
 
 # ---- trend ---------------------------------------------------------------------------------------------
 TREND_METRICS = ('nominalFullPack', 'soh', 'cellDeltaMv', 'rMohm', 'tempMax', 'miles', 'chargedKwh')
+WHOLE_DAY_METRICS = ('miles', 'chargedKwh')   # a partial day's figure covers only what was recorded
 
 
 def trend(rows: list, pack: str | None = None) -> dict:
@@ -751,11 +752,15 @@ def trend(rows: list, pack: str | None = None) -> dict:
       if k == 'rMohm':
         v = (r.get('rBins') or {}).get(ref_bin)
         v = v[0] if v and v[1] in ('high', 'medium') else None
+      elif k in WHOLE_DAY_METRICS and r.get('status') != 'OK':
+        v = None
       else:
         v = r.get(k)
       if v is not None:
         pts.append((date.fromisoformat(r['date']), v))
     m = {'n': len(pts), 'last': pts[-1][1] if pts else None, 'lastDate': pts[-1][0].isoformat() if pts else None}
+    if k in WHOLE_DAY_METRICS:
+      m['note'] = '완전히 기록된 날만'
     if len(pts) >= 2 and (pts[-1][0] - pts[-2][0]).days == 1:
       m['dayChange'] = round(pts[-1][1] - pts[-2][1], 3)
     else:
