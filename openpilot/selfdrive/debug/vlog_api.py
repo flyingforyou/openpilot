@@ -495,7 +495,7 @@ def recent_summary(hours: float = SUMMARY_HOURS) -> dict | None:
 
 
 # ---- /diag without a live link ---------------------------------------------------------------------
-STATE_WINDOW_S = 600.0
+STATE_WINDOW_S = 1800.0   # 0x562 (odometer) comes every ~10 s and is read in rotation
 PARAMS_DIR = '/data/params/d'
 
 

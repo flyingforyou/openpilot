@@ -3474,7 +3474,8 @@ function row(label,v,unit,age){
   const na=v==null; const old=!na&&age!=null&&age>10;
   return `<div class="row"><span class="lb">${label}</span><span class="vl${na?' na':old?' old':''}">${na?'–':v+(unit?' '+unit:'')}</span></div>`;
 }
-function rows(spec,V,A){return spec.map(([k,l,u,d])=>row(l,f(V[k],d??1),u,A[k])).join('');}
+// a value this car has not given is left out rather than shown as –
+function rows(spec,V,A){return spec.filter(([k])=>V[k]!=null).map(([k,l,u,d])=>row(l,f(V[k],d??1),u,A[k])).join('');}
 const BAT=[['packCurrent','전류','A',1],['socUI','SOC (BMS, 버퍼 포함)','%',1],['socMin','SOC (최소)','%',1],['nominalFullPackEnergy','완충 용량 (공칭)','kWh',1],
  ['expectedEnergyRemaining','남은 에너지 (예상)','kWh',1],['idealEnergyRemaining','남은 에너지 (이상)','kWh',1],
  ['energyBuffer','보호 버퍼','kWh',1],
@@ -3523,7 +3524,7 @@ function renderHealth(s){
     +tile('공칭 완충 용량',nfp==null?null:nfp.toFixed(1),`kWh / ${ref>0?ref.toFixed(1):'–'}${est?' (추정)':''}`)
     +tile('셀 편차',delta==null?null:delta.toFixed(0),'mV',delta==null?null:gBal)
     +tile('SOC (계기판)',V.socDisplay==null?null:V.socDisplay.toFixed(1),'%');
-  const r=(l,v,extra)=>`<div class="row"><span class="lb">${l}</span><span class="vl${v==null?' na':''}">${v==null?'–':v}${extra||''}</span></div>`;
+  const r=(l,v,extra)=>v==null?'':`<div class="row"><span class="lb">${l}</span><span class="vl">${v}${extra||''}</span></div>`;
   $('hrows').innerHTML=
     r('셀 밸런스 판정 조건', cur==null?null:`전류 ${cur.toFixed(1)} A`, cur==null?'':(rest?tag(gBal):'<span class="tag hv na">부하 중 · 보류</span>'))
    +r('최저 셀', lo<0?null:`#${lo+1} · ${cv[lo].toFixed(3)} V`)
