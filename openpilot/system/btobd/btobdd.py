@@ -34,9 +34,21 @@ AWAKE_V = 13.4        # car 12 V at or above this = DC-DC running = car awake (c
 LINGER_S = 20 * 60    # keep listening this long after the car stops looking awake
 POWER_LOG_S = 60.0
 CELL_DWELL_REST = 3.5  # parked/charging: long enough for all 24 brick frames in one sweep
-# Extra IDs per mode on top of the battery set; DISCOVERY is listened to one per cycle, raw only, so
-# the candidates (0x202 limits?, 0x332 min/max?, 0x3F8 TPMS?) build up a record without a decoder.
-MODE_IDS = {'DRIVE': [], 'PARKED': [0x212], None: [0x212]}
+# Every cycle reads a few rotating IDs first and the mode's CORE IDs last, right before the logger
+# takes its sample, so pack power (0x102) is a fraction of a second old rather than a whole cycle.
+# Until 2026-10-30 a cycle read everything (8-12 s while charging) with 0x102 first, and the 5 s
+# freshness rule then dropped pack power and SOC for an entire 3 h charge. 0x116 = gear and speed,
+# 0x212 = BMS state, 0x77D = charge pilot; the rest of the battery set and the charge/thermal
+# signals (tesla_pt.LIVE_IDS) rotate, ROTATE_N per cycle, and count as slow state in vlog.
+CORE_IDS = {
+  'DRIVE': [0x116, 0x106, 0x154, 0x1D4, 0x266, 0x2E5, 0x232, 0x302, 0x102],
+  'CHARGE': [0x212, 0x77D, 0x302, 0x102],
+  'PARKED': [0x212, 0x116, 0x302, 0x102],
+  None: [0x212, 0x77D, 0x116, 0x302, 0x102],
+}
+ROTATE_N = 4
+# DISCOVERY is listened to one per cycle, raw only, so the candidates (0x202 limits?, 0x332
+# min/max?, 0x3F8 TPMS?) build up a record without a decoder.
 DISCOVERY = [0x202, 0x332, 0x3F8, 0x388, 0x246, 0x528, 0x467, 0x252, 0x3F2, 0x51F, 0x21C, 0x37A, 0x33A, 0x39A]
 RETRY_S = 15.0
 DWELL = 0.15
@@ -121,6 +133,23 @@ class CarPower:
     return out
 
 
+def cycle_ids(mode: str | None, cycle: int, watch: list, live: list) -> list:
+  """The IDs one poll cycle listens to, in order: cell sweep, discovery, rotation, then CORE."""
+  from openpilot.system.btobd.vlog import CHARGE_MODES
+  core = CORE_IDS['CHARGE' if mode in CHARGE_MODES else mode if mode in CORE_IDS else None]
+  pool = [i for i in watch if i != 0x6F2] + ([] if mode == 'DRIVE' else list(live))
+  pool = [i for i in dict.fromkeys(pool) if i not in core]
+  ids = []
+  if cycle % CELL_EVERY == 0 or (mode != 'DRIVE' and cycle % 2 == 0):
+    ids.append(0x6F2)
+  disc = DISCOVERY[cycle % len(DISCOVERY)]
+  if disc not in core and disc not in pool:
+    ids.append(disc)
+  if pool:
+    ids += [pool[(cycle * ROTATE_N + k) % len(pool)] for k in range(min(ROTATE_N, len(pool)))]
+  return ids + core
+
+
 def _wanted(power: dict | None = None) -> bool:
   if _param('BtObdEnabled', '1') != '1':
     return False
@@ -141,7 +170,6 @@ class Daemon:
     self.power = CarPower()
     self.power_state: dict = {}
     self.last_power_log = 0.0
-    self.discovery_i = 0
     self.cycle_t = 0.0
     self.cycle_frames = 0
     self.cycle_ids = 0
@@ -227,15 +255,7 @@ class Daemon:
   def poll_once(self) -> None:
     from openpilot.system.btobd import tesla_pt
     mode = self.vlog.modes.mode
-    charging = mode in ('AC_CHARGE', 'DC_CHARGE', 'CHARGE_UNKNOWN')
-    ids = [i for i in self.watch if i != 0x6F2]
-    ids += [i for i in (tesla_pt.LIVE_IDS if charging else MODE_IDS.get(mode, [])) if i not in ids]
-    disc = DISCOVERY[self.discovery_i % len(DISCOVERY)]
-    self.discovery_i += 1
-    if disc not in ids:
-      ids.append(disc)
-    if self.cycle % CELL_EVERY == 0 or (mode != 'DRIVE' and self.cycle % 2 == 0):
-      ids.append(0x6F2)
+    ids = cycle_ids(mode, self.cycle, self.watch, tesla_pt.LIVE_IDS)
     self.cycle += 1
     start, nframes, heard = time.monotonic(), 0, set()
     for msg_id in ids:
@@ -264,7 +284,7 @@ class Daemon:
     q = {'fps': round(nframes / dur, 1) if dur > 0 else None, 'ids': len(heard), 'cycleS': round(dur, 2),
          **self.elm.stats}
     self.vlog.update(time.time(), snap['values'], snap['age'], onroad=_onroad(), cells=self.car.cell_set(now),
-                     temps=snap.get('cellsT'), quality=q)
+                     temps=snap.get('cellsT'), quality=q, mono=now)
 
   # --- page ------------------------------------------------------------------------------------
   def _handle_cmd(self) -> None:

@@ -20,9 +20,15 @@ SWAGLOG_DIR = '/data/log'
 OBD_STATE_PATH = '/dev/shm/btobd.json'
 POWER_DAYS = 14
 REALDATA = '/data/media/0/realdata'
+# Not under VLOG_DIR: btobdd runs as root and owns that directory, this server runs as comma. With the
+# cache there (6c4adb819) every write failed, so every page poll re-read 14 days of qlogs (~6 s of CPU
+# per route) and drives were never merged.
+ROUTES_CACHE = os.path.join(tdiag.LOG_DIR, 'routes-cache.json')
+ROUTES_EVERY_S = 120.0
 _cache: dict = {}
 _routes_lock = threading.Lock()
 _routes_busy = False
+_routes_next = 0.0
 
 
 def _cached(key: str, stamp, fn):
@@ -142,13 +148,18 @@ def _route_dirs(days: float) -> dict:
   return routes
 
 
+def _load_routes() -> dict:
+  try:
+    with open(ROUTES_CACHE) as f:
+      return json.load(f)
+  except (OSError, ValueError):
+    return {}
+
+
 def _refresh_routes(days: float) -> None:
   global _routes_busy
-  path = os.path.join(VLOG_DIR, 'routes.json')
-  try:
-    cache = json.load(open(path))
-  except (OSError, ValueError):
-    cache = {}
+  path = ROUTES_CACHE
+  cache = _load_routes()
   try:
     for name, segs in _route_dirs(days).items():
       segs.sort()
@@ -158,10 +169,11 @@ def _refresh_routes(days: float) -> None:
       # a route still being written is summarised again once it stops growing
       summ = _route_summary([s[1] for s in segs])
       cache[name] = {'key': key, 'segments': len(segs), **(summ or {'start': None})}
-      os.makedirs(VLOG_DIR, exist_ok=True)
       with open(path + '.tmp', 'w') as f:
         json.dump(cache, f)
       os.replace(path + '.tmp', path)
+  except Exception as e:
+    print(f'vlog_api: route summaries failed: {type(e).__name__}: {e}', flush=True)
   finally:
     with _routes_lock:
       _routes_busy = False
@@ -169,15 +181,12 @@ def _refresh_routes(days: float) -> None:
 
 def drives(days: float = POWER_DAYS) -> list:
   """openpilot drives on this device, from a cache filled in the background."""
-  global _routes_busy
+  global _routes_busy, _routes_next
   with _routes_lock:
-    if not _routes_busy:
-      _routes_busy = True
+    if not _routes_busy and time.monotonic() >= _routes_next:
+      _routes_busy, _routes_next = True, time.monotonic() + ROUTES_EVERY_S
       threading.Thread(target=_refresh_routes, args=(days,), daemon=True).start()
-  try:
-    cache = json.load(open(os.path.join(VLOG_DIR, 'routes.json')))
-  except (OSError, ValueError):
-    return []
+  cache = _load_routes()
   out = [{'route': n, **{k: v for k, v in r.items() if k != 'key'}} for n, r in cache.items() if r.get('start')]
   return sorted(out, key=lambda r: r['start'])
 
@@ -225,6 +234,44 @@ def merge_drives(sessions: list, routes: list) -> list:
   return rows + rest
 
 
+def merge_charges(sessions: list, join_s: float = vlog.CHARGE_JOIN_S) -> list:
+  """Charge sessions less than join_s apart are one plug-in split by a link drop or a restart (and,
+  before 2026-10-30, by the AC/unknown flip-flop): sum them into one row. Input sorted by start."""
+  out: list = []
+  for s in sessions:
+    p = out[-1] if out else None
+    if not (p and s['type'] in vlog.CHARGE_MODES and p['type'] in vlog.CHARGE_MODES and 0 <= s['start'] - p['end'] <= join_s):
+      out.append(s)
+      continue
+    m = dict(p)
+    m['parts'] = (p.get('parts') or 1) + 1
+    if m['type'] == 'CHARGE_UNKNOWN':
+      m['type'] = s['type']
+    m['end'] = s['end']
+    span = m['end'] - m['start']
+    m['durationS'] = round(span, 1)
+    for k in ('kwhIn', 'kwhOut', 'samples', 'coveredS'):
+      m[k] = round((p.get(k) or 0) + (s.get(k) or 0), 3)
+    m['gapS'] = round(max(0.0, span - m['coveredS']), 1)
+    m['missingRate'] = round(m['gapS'] / span, 3) if span > 0 else None
+    for k, fn in (('kwMax', max), ('kwMin', min), ('tempMax', max), ('tempMin', min), ('cellDeltaSyncMax', max)):
+      vals = [x[k] for x in (p, s) if x.get(k) is not None]
+      m[k] = fn(vals) if vals else None
+    n = (p.get('kwN') or 0) + (s.get('kwN') or 0)
+    if n:
+      m['avgKw'] = round(((p.get('avgKw') or 0) * (p.get('kwN') or 0) + (s.get('avgKw') or 0) * (s.get('kwN') or 0)) / n, 2)
+    m['kwN'] = n
+    if m.get('socStart') is None:
+      m['socStart'] = s.get('socStart')
+    if s.get('socEnd') is not None:
+      m['socEnd'] = s['socEnd']
+    m['curve'] = {**(p.get('curve') or {}), **(s.get('curve') or {})}
+    m['events'] = (p.get('events') or []) + (s.get('events') or [])
+    m['flags'] = sorted(set((p.get('flags') or []) + (s.get('flags') or [])) - {'interrupted'}) + ['merged']
+    out[-1] = m
+  return out
+
+
 def charge_check(segs: list, sessions: list) -> dict:
   """Was the device up while the car charged? Charging is taken from logged charge sessions, and
   from AWAKE stretches (DC-DC up, not driving) of 30 min or more, which is what a charge looks like
@@ -258,14 +305,21 @@ def _status() -> dict:
           'age': {k: (st.get('age') or {}).get(k) for k in ('packVoltage', 'socUI', 'cellDelta', 'bmsState')}}
 
 
+def now() -> dict:
+  return {'now': time.time(), 'status': _status()}
+
+
 def overview() -> dict:
   own = vlog.read_jsonl(os.path.join(VLOG_DIR, 'sessions.jsonl'))
+  # a session that straddled the boot-time clock being set runs backwards; it has no usable times
+  own = [s for s in own if s.get('end', 0) >= s.get('start', 0)]
   for s in own:
-    s['source'] = '상시 로거'
+    s['source'] = '상시 로거' + (' (raw 재구성)' if s.get('rebuilt') else '')
   rep = replayed()
   first_own = min((s['start'] for s in own), default=float('inf'))
   sessions = [s for s in rep['sessions'] if s['end'] < first_own] + own
   sessions.sort(key=lambda s: s['start'])
+  sessions = merge_charges(sessions)
   routes = drives()
   sessions = merge_drives(sessions, routes)
   sessions.sort(key=lambda s: s['start'], reverse=True)

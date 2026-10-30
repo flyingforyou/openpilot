@@ -13,7 +13,7 @@ Files, all under LOG_DIR/vlog:
   raw-YYYYMMDD-HH.jsonl.gz  every frame heard, with monotonic and wall time and the poll window
   open.json          the session in progress, so a restart closes it instead of losing it
 
-Rules the spec asked for and this keeps: a value older than FRESH_S is not a sample (never copied
+Rules the spec asked for and this keeps: a value older than its MAX_AGE is not a sample (never copied
 forward as new); energy is integrated only between fresh samples less than MAX_GAP_S apart and the
 rest is counted as a gap; the 96 bricks are compared with each other only when they were read
 within CELL_SYNC_S of each other; anything not verified stays out of the derived numbers.
@@ -26,9 +26,19 @@ import json
 import os
 import time
 from collections import deque
-from datetime import datetime, timezone, UTC
+from datetime import datetime, UTC
 
-FRESH_S = 5.0          # a decoded value older than this is not a current sample
+FRESH_S = 5.0          # power, current, speed: a decoded value older than this is not a current sample
+SLOW_FRESH_S = 90.0    # slow state (SOC, temps, BMS/charger state, AC volts): btobdd reads these in rotation
+CELL_FRESH_S = 15.0    # brick sweeps come every other cycle
+# Everything not listed here is slow. On 2026-10-30 one 5 s limit for all of them, against an 8-12 s
+# poll cycle, left a 3 h AC charge with no pack power or SOC at all and flipped AC/unknown every cycle.
+FAST_KEYS = frozenset(('packVoltage', 'packCurrent', 'packPower', 'vehicleSpeedMph', 'gear', 'rearMechPower',
+                       'frontMechPower', 'rearTorqueMeasured', 'frontTorqueMeasured', 'rearMotorRpm',
+                       'maxDischargePower', 'maxRegenPower'))
+CELL_KEYS = frozenset(('cellMin', 'cellMax', 'cellAvg', 'cellDelta', 'cellCount', 'cellSpanS', 'cellSync'))
+CHARGE_JOIN_S = 600.0  # charge sessions this close together are one plug-in (link drops, restarts)
+CLOCK_JUMP_S = 60.0    # wall time moving this much more or less than monotonic = the clock was set
 MAX_GAP_S = 15.0       # energy is not integrated across a gap longer than this
 LINK_GAP_S = 600.0     # a session with no sample for this long is closed where it stopped
 REST_A = 5.0           # |packCurrent| at or under this counts as rest
@@ -64,9 +74,13 @@ def _day(t: float) -> str:
   return datetime.fromtimestamp(t, UTC).strftime('%Y%m%d')
 
 
-def fresh(values: dict, age: dict, max_age: float = FRESH_S) -> dict:
-  """Only values that were set within max_age seconds. A value with no age is not trusted."""
-  return {k: v for k, v in values.items() if age.get(k) is not None and age[k] <= max_age}
+def max_age(key: str, fast_s: float = FRESH_S) -> float:
+  return fast_s if key in FAST_KEYS else CELL_FRESH_S if key in CELL_KEYS else SLOW_FRESH_S
+
+
+def fresh(values: dict, age: dict, fast_s: float = FRESH_S) -> dict:
+  """Only values set within their key's max age. A value with no age is not trusted."""
+  return {k: v for k, v in values.items() if age.get(k) is not None and age[k] <= max_age(k, fast_s)}
 
 
 class ModeMachine:
@@ -105,13 +119,18 @@ class ModeMachine:
   def update(self, t: float, v: dict, onroad: bool = False) -> bool:
     """Returns True when the mode changed."""
     c = self.candidate(v, onroad)
+    if self.mode in CHARGE_MODES and c in CHARGE_MODES:
+      # one plug-in is one charge: a cycle that could not tell the kind never downgrades it, and a
+      # kind learnt later refines CHARGE_UNKNOWN in place (VehicleLog renames the open session)
+      if self.mode == 'CHARGE_UNKNOWN' and c != 'CHARGE_UNKNOWN':
+        self.mode = c
+      c = self.mode
     if c is None or c == self.mode:
       self._cand = None
       return False
     if c != self._cand:
       self._cand, self._cand_since = c, t
-    # between charge kinds (AC->DC once the contactor reports) switch without waiting
-    hold = 0.0 if self.mode in CHARGE_MODES and c in CHARGE_MODES else HOLD_S['CHARGE' if c in CHARGE_MODES else c]
+    hold = HOLD_S['CHARGE' if c in CHARGE_MODES else c]
     if t - self._cand_since < hold:
       return False
     self.mode, self.since, self._cand = c, self._cand_since, None
@@ -126,13 +145,15 @@ class Session:
               'samples': 0, 'staleSamples': 0, 'gapS': 0.0, 'coveredS': 0.0, 'miSpeed': 0.0,
               'tempMin': None, 'tempMax': None, 'cellDeltaSyncMax': None, 'events': [], 'flags': [],
               'socFirstAt': {}, 'socBinS': {}, 'curve': {}, 'limitMinDischarge': None, 'limitMinRegen': None}
-    self._last_t: float | None = None
+    self._last_kw_t: float | None = None
     self._last_kw: float | None = None
+    self._last_spd_t: float | None = None
     self._last_soc: float | None = None
 
   def add(self, t: float, v: dict, stale: int) -> None:
     d = self.d
     d['end'] = t
+    d.setdefault('firstT', t)
     d['samples'] += 1
     d['staleSamples'] += stale
     if v.get('socUI') is not None:
@@ -150,9 +171,10 @@ class Session:
       d['kwMin'] = kw if d['kwMin'] is None else min(d['kwMin'], kw)
       d['kwSum'] += kw
       d['kwN'] += 1
-    if self._last_t is not None:
-      dt = t - self._last_t
-      if kw is not None and self._last_kw is not None and 0 < dt <= MAX_GAP_S:
+    # energy between consecutive power samples; whatever is not covered that way is the gap (finish)
+    if kw is not None:
+      dt = t - self._last_kw_t if self._last_kw_t is not None else 0.0
+      if 0 < dt <= MAX_GAP_S:
         e = (kw + self._last_kw) / 2 * dt / 3600.0          # trapezoid, kWh
         if e >= 0:
           d['kwhIn'] += e
@@ -162,15 +184,13 @@ class Session:
         if self._last_soc is not None:
           b = str(int(self._last_soc // 10 * 10))
           d['socBinS'][b] = d['socBinS'].get(b, 0.0) + dt
-      elif dt > 0:
-        d['gapS'] += dt
-      spd = v.get('vehicleSpeedMph')
-      if spd is not None and 0 < dt <= MAX_GAP_S:
+      self._last_kw_t, self._last_kw = t, kw
+    spd = v.get('vehicleSpeedMph')
+    if spd is not None:
+      dt = t - self._last_spd_t if self._last_spd_t is not None else 0.0
+      if 0 < dt <= MAX_GAP_S:
         d['miSpeed'] += spd * dt / 3600.0
-    if kw is not None:
-      self._last_t, self._last_kw = t, kw
-    elif self._last_t is None:
-      self._last_t = t
+      self._last_spd_t = t
     if v.get('socUI') is not None:
       self._last_soc = v['socUI']
       if kw is not None and d['type'] in CHARGE_MODES:
@@ -191,6 +211,10 @@ class Session:
     d = dict(self.d)
     span = d['end'] - d['start']
     d['durationS'] = round(span, 1)
+    # (sessions written before 2026-10-30 summed every sample's distance back to the last power
+    # sample here, which grew without bound when power went stale: 40780 s of "gap" in 886 s)
+    # (the mode hold before the first sample is not a gap: the session is dated from when the mode began)
+    d['gapS'] = max(0.0, d['end'] - d.pop('firstT', d['start']) - d['coveredS'])
     d['avgKw'] = round(d['kwSum'] / d['kwN'], 2) if d['kwN'] else None
     for k in ('kwhIn', 'kwhOut', 'miSpeed', 'gapS', 'coveredS'):
       d[k] = round(d[k], 3)
@@ -303,9 +327,13 @@ class Events:
 class VehicleLog:
   """The whole logger: mode, session, events, health snapshots, series and raw frames on disk."""
 
-  def __init__(self, directory: str, thresholds: dict | None = None, write: bool = True):
+  def __init__(self, directory: str, thresholds: dict | None = None, write: bool = True, keep_series: bool = False,
+               fast_s: float = FRESH_S):
     self.dir = directory
     self.write = write
+    self.keep_series = keep_series
+    self.fast_s = fast_s
+    self._clock: tuple | None = None    # (wall, mono) of the last update
     self.modes = ModeMachine()
     self.events = Events(thresholds)
     self.session: Session | None = None
@@ -315,7 +343,7 @@ class VehicleLog:
     self.last_health_soc: float | None = None
     self.raw_buf: list = []
     self.raw_flush = 0.0
-    self.out: dict = {'sessions': [], 'events': [], 'health': []}   # what was written, for tests/replay
+    self.out: dict = {'sessions': [], 'events': [], 'health': [], 'series': []}   # what was written, for tests/replay
     if write:
       os.makedirs(directory, exist_ok=True)
       self._recover()
@@ -401,11 +429,18 @@ class VehicleLog:
 
   # ---- per poll cycle ---------------------------------------------------------------------------
   def update(self, t: float, values: dict, age: dict, onroad: bool = False, cells: list | None = None,
-             temps: list | None = None, quality: dict | None = None) -> None:
-    """t is wall time. values/age come from TeslaSXState.snapshot(); cells is TeslaSXState.cell_set()
-    (None unless the 96 bricks were read together)."""
-    v = fresh(values, age)
+             temps: list | None = None, quality: dict | None = None, mono: float | None = None) -> None:
+    """t is wall time, mono the monotonic time it was taken at (when known). values/age come from
+    TeslaSXState.snapshot(); cells is TeslaSXState.cell_set() (None unless the 96 bricks were read
+    together)."""
+    v = fresh(values, age, self.fast_s)
     stale = sum(1 for k in SERIES_KEYS if k in values and k not in v)
+    if mono is not None:
+      # the device boots on a stale clock (2026-07-28) and NTP/GPS sets it mid-session; a session
+      # spanning that jump came out 93 days long, backwards
+      if self._clock and abs((t - self._clock[0]) - (mono - self._clock[1])) > CLOCK_JUMP_S and self.session:
+        self.close(self.session.d['end'], 'clock-jump')
+      self._clock = (t, mono)
     if self.session and t - self.session.d['end'] > LINK_GAP_S:
       # the link was down long enough that the car may have done anything meanwhile
       self.close(self.session.d['end'], 'link-gap')
@@ -414,6 +449,8 @@ class VehicleLog:
         self._append('sessions.jsonl', self.session.finish())
       self.session = Session(self.modes.mode, self.modes.since, v)
       self._save_open()
+    elif self.session and self.modes.mode in CHARGE_MODES and self.session.d['type'] != self.modes.mode:
+      self.session.d['type'] = self.modes.mode      # CHARGE_UNKNOWN refined to AC/DC
     if self.session:
       self.session.add(t, v, stale)
     for e in self.events.update(t, self.modes.mode, v):
@@ -427,6 +464,8 @@ class VehicleLog:
       row = {'t': round(t, 2), 'mode': self.modes.mode, **{k: v[k] for k in SERIES_KEYS if k in v}}
       if quality:
         row['q'] = quality
+      if self.keep_series:
+        self.out['series'].append(row)
       if self.write:
         try:
           with open(os.path.join(self.dir, f'series-{_day(t)}.jsonl'), 'a') as f:
@@ -519,6 +558,92 @@ def replay_live(path: str) -> dict:
   return {**vl.out, 'rows': rows}
 
 
+REPLAY_FAST_S = 15.0   # raw logged before 2026-10-30 read power once per 8-12 s cycle
+
+
+def replay_raw(paths: list, t0: float = 0.0, t1: float = float('inf'), fast_s: float = REPLAY_FAST_S) -> dict:
+  """Rebuild sessions, series, events and health from raw-*.jsonl.gz, decoding every frame again.
+
+  One logger update per 0x102 window, at that window's time, with each value's age measured from
+  the monotonic time its frame was heard -- the same thing btobdd does live, minus the onroad flag
+  (DRIVE is then told by gear and speed). Raw from before the poll-order fix had power read once
+  per 8-12 s cycle, so it replays with fast_s=15 s rather than 5 s."""
+  from openpilot.system.btobd import tesla_pt
+  from openpilot.system.btobd.tesla_sx import TeslaSXState
+  vl = VehicleLog('', write=False, keep_series=True, fast_s=fast_s)
+  car = TeslaSXState()
+  prev = None          # (wall, mono, window) of the previous frame
+  last_wall = None
+  for p in sorted(paths):
+    try:
+      f = gzip.open(p, 'rt')
+      lines = f.readlines()
+      f.close()
+    except (OSError, EOFError):
+      continue           # a file cut by power loss keeps what decoded before the cut
+    for ln in lines:
+      try:
+        wall, mono, fid, data, window = json.loads(ln)
+        msg_id, payload = int(fid, 16), bytes.fromhex(data)
+      except (ValueError, TypeError):
+        continue
+      if not t0 <= wall <= t1:
+        continue
+      if prev and window != prev[2] and prev[2].endswith(':102'):
+        snap = car.snapshot(prev[1])
+        vl.update(prev[0], snap['values'], snap['age'], cells=car.cell_set(prev[1]), temps=snap.get('cellsT'), mono=prev[1])
+      if prev and mono < prev[1] - 1:
+        car = TeslaSXState()   # monotonic went backwards: the device rebooted
+      car.feed(msg_id, payload, mono)
+      if msg_id in tesla_pt.LIVE_IDS:
+        tesla_pt.feed_live(car, msg_id, payload, mono)
+      prev, last_wall = (wall, mono, window), wall
+  if last_wall is not None:
+    vl.close(last_wall, 'end-of-raw')
+  return vl.out
+
+
+def rebuild(directory: str, t0: float, t1: float) -> dict:
+  """Replace what the logger wrote between t0 and t1 (sessions starting there, and series, events,
+  health rows timed there) with a replay of the raw frames. The old files are kept as *.bak."""
+  hours = []
+  for n in sorted(os.listdir(directory)):
+    if n.startswith('raw-') and n.endswith('.jsonl.gz'):
+      try:
+        h = datetime.strptime(n[4:15], '%Y%m%d-%H').replace(tzinfo=UTC).timestamp()
+      except ValueError:
+        continue
+      if t0 - 3600 < h <= t1:
+        hours.append(os.path.join(directory, n))
+  out = replay_raw(hours, t0, t1)
+  for s in out['sessions']:
+    s['rebuilt'] = 'raw'
+  stamp = time.strftime('%Y%m%d%H%M%S')
+
+  def splice(name: str, new: list, key: str) -> None:
+    p = os.path.join(directory, name)
+    old = read_jsonl(p)
+    if os.path.exists(p):
+      os.replace(p, f'{p}.bak-{stamp}')
+    rows = sorted([r for r in old if not t0 <= r.get(key, 0) <= t1] + new, key=lambda r: r.get(key, 0))
+    with open(p, 'w') as f:
+      f.writelines(json.dumps(r, ensure_ascii=False, separators=(',', ':')) + '\n' for r in rows)
+
+  splice('sessions.jsonl', out['sessions'], 'start')
+  splice('events.jsonl', out['events'], 't')
+  splice('health.jsonl', out['health'], 't')
+  by_day: dict = {}
+  for r in out['series']:
+    by_day.setdefault(_day(r['t']), []).append(r)
+  day = t0 - t0 % 86400
+  while day <= t1:
+    d = _day(day)
+    if os.path.exists(os.path.join(directory, f'series-{d}.jsonl')) or d in by_day:
+      splice(f'series-{d}.jsonl', by_day.get(d, []), 't')
+    day += 86400
+  return {k: len(v) for k, v in out.items()}
+
+
 def read_jsonl(path: str, n: int | None = None) -> list:
   out = []
   try:
@@ -608,3 +733,12 @@ def power_segments(rows: list) -> list:
       segs.append({'state': st, 'start': r['t'], 'end': r['t'], 'n': 1, 'vMin': r.get('v'), 'vMax': r.get('v')})
     prev_t = r['t']
   return segs
+
+
+if __name__ == '__main__':
+  import sys
+  # python -m openpilot.system.btobd.vlog rebuild <vlog dir> <unix t0> <unix t1>
+  if len(sys.argv) == 5 and sys.argv[1] == 'rebuild':
+    print(rebuild(sys.argv[2], float(sys.argv[3]), float(sys.argv[4])))
+  else:
+    print(__doc__)

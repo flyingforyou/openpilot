@@ -1112,6 +1112,9 @@ class Handler(BaseHTTPRequestHandler):
     try:
       if rest == '':
         return self._send(200, json.dumps({**vlog_api.overview(), 'rawFiles': vlog_api.raw_files()[:48]}, ensure_ascii=False))
+      if rest == 'now':
+        # the page's 5 s refresh: only the daemon's tmpfs state, none of the history
+        return self._send(200, json.dumps(vlog_api.now(), ensure_ascii=False))
       if rest == 'series':
         return self._send(200, json.dumps(vlog_api.series(float(q.get('start', 0)), float(q.get('end', 0)))))
       if rest == 'event':
@@ -4096,7 +4099,10 @@ async function openSession(s){
   const kv=(k,v)=>`<div><div class="k">${k}</div><div class="v">${v}</div></div>`;
   let html=`<div class="gt" style="border-top:1px solid var(--line)"><span>${MODE[s.type]||s.type} · ${dt(s.start)} ~ ${dt(s.end)}</span>
     <span><a class="dl" href="/api/vlog/csv/series/${Math.floor(s.start)}-${Math.ceil(s.end)}">이 구간 CSV</a></span></div>`;
-  html+=chart(rows,[{k:'kw',n:'팩 전력 kW (+ 팩으로)',c:'var(--radar)',side:'L',zero:true,d:0},{k:'socUI',n:'SOC %',c:'var(--ok)',side:'R',d:1}]);
+  html+=chart(rows,[{k:'kw',n:'팩 전력 kW (+ 팩으로)',c:'var(--radar)',side:'L',zero:true,d:s.type==='DRIVE'?0:1},
+    {k:'socUI',n:'SOC %',c:'var(--ok)',side:'R',d:1}]);
+  if(s.type.includes('CHARGE'))html+=chart(rows,[{k:'packCurrent',n:'팩 전류 A',c:'var(--radar)',side:'L',d:1},
+    {k:'acVolts1',n:'AC 입력 V',c:'var(--hot)',side:'R',d:0}],130);
   if(s.type==='DRIVE')html+=chart(rows,[{k:'vehicleSpeedMph',n:'속도 mph',c:'var(--hot)',side:'L'},{k:'maxDischargePower',n:'BMS 방전 한계 kW',c:'var(--mut)',side:'R'}],130);
   else html+=chart(rows,[{k:'moduleTempMax',n:'모듈 최고 °C',c:'var(--hot)',side:'L',d:1},{k:'packVoltage',n:'팩 전압 V',c:'var(--mut)',side:'R',d:0}],130);
   html+='<div class="kv">'+kv('팩 유입 / 유출',`${f(s.kwhIn,2)} / ${f(s.kwhOut,2)} kWh`)+kv('평균 / 범위',`${f(s.avgKw)} kW (${f(s.kwMin)} ~ ${f(s.kwMax)})`)
@@ -4142,7 +4148,7 @@ async function load(){
   renderNow(D);renderPower(D);renderSessions(D);renderHealth(D);renderEvents(D);
   $('raws').innerHTML=(D.rawFiles||[]).map(n=>`<a class="dl" href="/api/vlog/csv/raw/${n}">${n.slice(4,6)}/${n.slice(6,8)} ${n.slice(9)}시</a>`).join('')||'<span class="na" style="font-size:12px">아직 없음</span>';
 }
-async function tickNow(){try{const d=await (await fetch('/api/vlog')).json();D=d;renderNow(d);}catch(e){}}
+async function tickNow(){try{const d=await (await fetch('/api/vlog/now')).json();D.now=d.now;D.status=d.status;renderNow(D);}catch(e){}}
 load();setInterval(tickNow,5000);
 </script></body></html>
 """

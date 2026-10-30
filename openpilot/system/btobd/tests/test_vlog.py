@@ -223,3 +223,81 @@ def test_real_charging_capture_end_to_end():
   s = vl.out['sessions'][-1]
   assert s['type'] == 'AC_CHARGE' and s['kwhOut'] == 0
   assert s['avgKw'] == pytest.approx(5.7, abs=0.3)
+
+
+def test_slow_state_counts_for_a_cycle_fast_values_do_not():
+  # 2026-10-30: an 8-12 s poll cycle left SOC/BMS state ~10 s old at every sample; they are slow state
+  ages = {'gear': 0.5, 'packVoltage': 0.4, 'packCurrent': 0.4, 'socUI': 40.0, 'bmsState': 30.0, 'pilot': 30.0}
+  v = vlog.fresh(dict.fromkeys(ages, 1), ages)
+  assert set(v) == set(ages)
+  assert 'packVoltage' not in vlog.fresh({'packVoltage': 400.0}, {'packVoltage': 6.0})
+  assert 'socUI' not in vlog.fresh({'socUI': 50.0}, {'socUI': 91.0})
+  assert 'cellDelta' not in vlog.fresh({'cellDelta': 0.005}, {'cellDelta': 16.0})
+
+
+def test_one_plug_in_is_one_charge_session():
+  vl = vlog.VehicleLog('', write=False)
+  t = 1_800_000_000.0
+  for i in range(600):
+    v = {'gear': 'P', 'bmsState': 3, 'packVoltage': 370.0, 'packCurrent': 15.0}
+    if i >= 60 and i % 2:            # the pilot is heard only every other cycle, and not at first
+      v['pilot'] = 2
+    vl.update(t + i, v, dict.fromkeys(v, 0.0))
+  vl.close(t + 600)
+  s = vl.out['sessions']
+  assert [x['type'] for x in s] == ['AC_CHARGE']     # opened as unknown, renamed, never split
+  assert s[0]['kwhIn'] == pytest.approx(5.55 * 580 / 3600, rel=1e-2)
+
+
+def test_gap_does_not_grow_with_stale_power():
+  vl = vlog.VehicleLog('', write=False)
+  t = 1_800_000_000.0
+  for i in range(200):
+    v = {'gear': 'P', 'socUI': 60.0}
+    if i < 100:
+      v.update(packVoltage=370.0, packCurrent=-1.0)
+    vl.update(t + i, v, dict.fromkeys(v, 0.0))
+  vl.close(t + 199)
+  s = vl.out['sessions'][-1]
+  # used to add the whole distance back to the last power sample on every update: 40780 s in 886 s
+  assert s['gapS'] == pytest.approx(100, abs=2)
+  assert s['gapS'] <= s['durationS']
+
+
+def test_clock_jump_closes_the_session():
+  vl = vlog.VehicleLog('', write=False)
+  t, mono = 1_785_000_000.0, 100.0          # stale boot clock
+  v = {'gear': 'D', 'vehicleSpeedMph': 30.0, 'packVoltage': 360.0, 'packCurrent': -40.0}
+  for i in range(30):
+    vl.update(t + i, v, dict.fromkeys(v, 0.0), mono=mono + i)
+  t2 = 1_793_000_000.0                      # NTP set the clock
+  for i in range(30, 60):
+    vl.update(t2 + i, v, dict.fromkeys(v, 0.0), mono=mono + i)
+  vl.close(t2 + 60)
+  s = vl.out['sessions']
+  assert 'clock-jump' in s[0]['flags'] and all(x['end'] >= x['start'] for x in s)
+  assert s[-1]['start'] >= t2
+
+
+RAW = os.path.join(os.path.dirname(__file__), 'data', 'raw_charge_20261030.jsonl.gz')
+
+
+def test_rebuild_from_raw_recovers_a_real_charge(tmp_path):
+  # 12 min of the 2026-10-30 raw around plugging in (no VIN frames). Live, this came out as 2-sample
+  # AC/unknown fragments with no power or SOC; replayed, it is one AC charge at ~5.9 kW.
+  d = tmp_path / 'vlog'
+  d.mkdir()
+  (d / 'raw-20261030-14.jsonl.gz').write_bytes(open(RAW, 'rb').read())
+  (d / 'sessions.jsonl').write_text(json.dumps({'type': 'CHARGE_UNKNOWN', 'start': 1793371600.0, 'end': 1793371611.0}) + '\n'
+                                   + json.dumps({'type': 'DRIVE', 'start': 1793300000.0, 'end': 1793300100.0}) + '\n')
+  n = vlog.rebuild(str(d), 1793371400.0, 1793372200.0)
+  assert n['sessions'] >= 2 and n['series'] > 30
+  rows = vlog.read_jsonl(str(d / 'sessions.jsonl'))
+  assert rows[0]['type'] == 'DRIVE' and 'rebuilt' not in rows[0]          # outside the window: kept
+  ch = [s for s in rows if s['type'] == 'AC_CHARGE']
+  assert len(ch) == 1 and ch[0]['rebuilt'] == 'raw'
+  assert ch[0]['socStart'] == pytest.approx(54.1, abs=0.2) and 5.0 < ch[0]['avgKw'] < 6.5
+  assert ch[0]['kwhIn'] > 0.5 and ch[0]['gapS'] < 60
+  series = vlog.read_jsonl(str(d / 'series-20261030.jsonl'))
+  assert sum('packVoltage' in r for r in series) > 30
+  assert any(n.startswith('sessions.jsonl.bak-') for n in os.listdir(d))

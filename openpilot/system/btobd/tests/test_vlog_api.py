@@ -34,3 +34,23 @@ def test_fully_covered_drive_gets_wh_per_mile():
   route = {'route': 'r3', 'start': 0.0, 'end': 600.0, 'miles': 5.0, 'movingS': 500}
   d = vlog_api.merge_drives([frag(0, 600, 5.0, 1.6, 0.1)], [route])[0]
   assert d['coverage'] == 1.0 and d['whPerMi'] == pytest.approx(300.0)
+
+
+def chg(start, end, kind='AC_CHARGE', kwh=1.0):
+  return {'type': kind, 'start': start, 'end': end, 'durationS': end - start, 'kwhIn': kwh, 'kwhOut': 0.0,
+          'coveredS': end - start, 'samples': 10, 'kwN': 10, 'avgKw': 6.0, 'kwMax': 6.2, 'kwMin': 5.8,
+          'socStart': 50.0, 'socEnd': 51.0, 'flags': ['gappy']}
+
+
+def test_charge_fragments_are_one_plug_in():
+  rows = vlog_api.merge_charges([chg(0, 100, 'CHARGE_UNKNOWN'), chg(110, 500), chg(520, 900, 'CHARGE_UNKNOWN'),
+                                 chg(5000, 5100)])
+  assert len(rows) == 2
+  m = rows[0]
+  assert m['type'] == 'AC_CHARGE' and m['start'] == 0 and m['end'] == 900 and m['parts'] == 3
+  assert m['kwhIn'] == 3.0 and m['gapS'] == pytest.approx(30) and 'merged' in m['flags']
+
+
+def test_charge_is_not_merged_across_a_drive():
+  drive = {'type': 'DRIVE', 'start': 110, 'end': 200}
+  assert len(vlog_api.merge_charges([chg(0, 100), drive, chg(210, 300)])) == 3
