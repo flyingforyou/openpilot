@@ -105,7 +105,7 @@ def test_every_check_has_min_max_and_a_verdict(tmp_path, monkeypatch):
   import time
   now = time.time()
   _dir_with(tmp_path, monkeypatch, pack='85.8',
-            health=[{'t': now - 3600, 'deltaMv': 3.0}, {'t': now - 1800, 'deltaMv': 4.2}],
+            health=[{'t': now - 5400, 'deltaMv': 3.5}, {'t': now - 3600, 'deltaMv': 3.0}, {'t': now - 1800, 'deltaMv': 4.2}],
             events=[{'t': now - 100, 'type': 'CHARGE_STOPPED', 'context': {'acVolts1': 1.0, 'pilot': 0}, 'value': -5.2, 'threshold': 0.3},
                     {'t': now - 50, 'type': 'CHARGE_STOPPED', 'context': {'acVolts1': 230.0, 'pilot': 2}, 'value': 0.1, 'threshold': 0.3}])
   # the fixture's hour, renamed into the window
@@ -122,7 +122,8 @@ def test_every_check_has_min_max_and_a_verdict(tmp_path, monkeypatch):
   assert rows['motorTemp']['level'] == 'na'                       # parked and charging: no drive frames
   assert -12.2 < rows['pilotLowCharge']['min'] <= rows['pilotLowCharge']['max'] < -11.0 and rows['pilotLowCharge']['level'] == 'ok'
   assert 200 < rows['rangeIdealFull']['min'] < 230 and rows['cycles']['max'] == pytest.approx(rows['kwhDischargeTotal']['max'] / 85.8, abs=1)
-  assert [e['level'] for e in c['events']] == ['info', 'warn'] and c['faults'] == []
+  # no charge session recorded a cause for these stops: neither is called normal
+  assert [e['level'] for e in c['events']] == ['warn', 'warn'] and c['faults'] == []
   assert vlog_api.checks()['rows'] == c['rows']                   # second call from the stats cache
 
 
@@ -149,8 +150,52 @@ def test_pack_resistance_is_dv_over_di(tmp_path, monkeypatch):
     a = -200.0 if k % 4 < 2 else 0.0
     frames.append((1000.0 + k, 1000.0 + k, 0x102, frame(380.0 + a * 0.075, a)))
   monkeypatch.setattr(vlog_api, '_raw_frames', lambda paths: iter(frames))
-  r = vlog_api.file_stats('x')['packResistance']
-  assert r[0] == pytest.approx(75, abs=1)
+  st = vlog_api.file_stats('x')
+  rec = st['_r']
+  assert rec['mOhm'] == pytest.approx(75, abs=1) and rec['dI'] == pytest.approx(200) and rec['dV'] == pytest.approx(15, abs=0.1)
+  assert rec['n'] >= vlog_api.R_MIN_PAIRS and 0 < rec['dt'] <= vlog_api.R_WINDOW_S
+  # no module temperature was heard: recorded, but not trusted for the check row
+  assert rec['conf'] == 'low' and '온도 모름' in rec['why'] and 'packResistance' not in st
+
+
+def test_resistance_confidence():
+  pairs = [(75 + (k % 5) - 2, 1000.0 + k, 15.0, 200.0, 2.0, 60.0, 22.0) for k in range(50)]
+  assert vlog_api._r_record(pairs)['conf'] == 'high'
+  assert vlog_api._r_record(pairs[:20])['conf'] == 'medium'
+  noisy = [(r * (1 + (k % 2)), *rest) for k, (r, *rest) in enumerate(pairs)]
+  assert vlog_api._r_record(noisy)['conf'] == 'low'
+
+
+def test_unconfirmed_decodes_are_not_called_normal(tmp_path, monkeypatch):
+  _dir_with(tmp_path, monkeypatch)
+  agg = {'brickMaxV': [3.8, 3.9, 50, 1.0, 2.0], 'bmsMaxChargeA': [0.0, 250.0, 50, 1.0, 2.0], 'tpms1': [36.0, 39.0, 9, 1.0, 2.0],
+         'cellMax': [3.9, 3.95, 2, 1.0, 2.0],
+         'vrf:202c': [0.9, 0.99, 40, 1.0, 2.0],                                           # 40 ratios, none off
+         'vrf:332v:max': [0.0, 120.0, 10, 1.0, 2.0], 'vrfmiss:332v:max': [0, 0, 4, 1.0, 2.0]}   # 4 of 10 off
+  monkeypatch.setattr(vlog_api, '_stats', lambda days: {'agg': agg, 'files': 1, 'from': None})
+  c = vlog_api.checks()
+  rows = {r['key']: r for r in c['rows']}
+  dec = {d['key']: d['status'] for d in c['decodes']}
+  assert dec == {'332v': 'failed', '332t': 'insufficient', '202c': 'confirmed', '202d': 'insufficient'}
+  assert rows['brickMaxV']['level'] == 'unverified' and '불일치' in rows['brickMaxV']['why']
+  assert rows['bmsMaxChargeA']['level'] == 'info'
+  assert rows['tpms1']['level'] == 'unverified' and rows['cellMax']['level'] == 'few'
+  assert rows['degradation']['level'] == 'na'                                             # no new-pack figure set
+
+
+def test_charge_stop_event_takes_the_sessions_cause(tmp_path, monkeypatch):
+  import json
+  import time
+  now = time.time()
+  _dir_with(tmp_path, monkeypatch, events=[{'t': now - 500, 'type': 'CHARGE_STOPPED', 'value': 0.1, 'threshold': 0.3},
+                                           {'t': now - 100, 'type': 'CHARGE_STOPPED', 'value': 0.1, 'threshold': 0.3}])
+  with open(Path(vlog_api.VLOG_DIR) / 'sessions.jsonl', 'w') as f:
+    f.write(json.dumps({'type': 'AC_CHARGE', 'start': now - 4000, 'end': now - 480, 'endCause': 'unplugged',
+                        'endWhy': ['커넥터 근접 = 분리됨'], 'endT': now - 510}) + '\n')
+  monkeypatch.setattr(vlog_api, '_stats', lambda days: {'agg': {}, 'files': 0, 'from': None})
+  c = vlog_api.checks()
+  assert [(e['level'], e['note'].split(':')[0]) for e in c['events']] == [('info', '플러그 분리'), ('warn', '이 충전의 종료 원인 기록 없음 (원인 불명)')]
+  assert c['chargeEnds'][0]['label'] == '플러그 분리'
 
 
 def test_last_state_decodes_the_last_minutes(tmp_path, monkeypatch):

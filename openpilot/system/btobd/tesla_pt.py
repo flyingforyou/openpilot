@@ -82,6 +82,26 @@ THERMAL = [
   Sig('suctionPressure', '냉매 흡입 압력', 0x33A, 24, 7, 0.125, unit='bar', sna=127, min_len=4),
 ]
 
+# 0x202 and 0x332, decoded 2026-10-30 from this car's own frames (no Model S table had them). 0x202's
+# two currents times pack voltage follow 0x232's regen/discharge power limits at 0.95x (0.90-0.99, 41
+# driving frames); the charge current reads 0 parked and 250 A on AC; the voltages sit at 402-403 V
+# (96 x 4.2) and 241-244 V. 0x332's brick max/min match a synchronised 0x6F2 sweep within 3 mV at rest
+# (15 of 16) and its temperatures the 0x6F2 module temps within 0.2 C (28 of 28). The high nibble of
+# byte 1 was 8 in every 0x332 frame; anything else (another mux page?) is left undecoded.
+# vlog_api.decode_checks repeats these comparisons on every logged hour and the page trusts them only
+# while they hold.
+BMS_LIMITS = [
+  Sig('bmsMinDischargeV', 'BMS 방전 하한 전압', 0x202, 0, 16, 0.01, unit='V', min_len=2),
+  Sig('bmsMaxChargeV', 'BMS 충전 상한 전압', 0x202, 16, 16, 0.01, unit='V', min_len=4),
+  Sig('bmsMaxChargeA', 'BMS 충전·회생 허용 전류', 0x202, 32, 14, 0.1, unit='A', min_len=6),
+  Sig('bmsMaxDischargeA', 'BMS 방전 허용 전류', 0x202, 48, 14, 0.1, unit='A', min_len=8),
+  Sig('brickMaxV', '셀 최고 전압 (BMS 0x332)', 0x332, 0, 12, 0.002, unit='V', mux=(12, 4, 8), min_len=2),
+  Sig('brickMinV', '셀 최저 전압 (BMS 0x332)', 0x332, 32, 12, 0.002, unit='V', mux=(12, 4, 8), min_len=6),
+  Sig('bmsTempMax', '모듈 최고 온도 (BMS 0x332)', 0x332, 24, 8, 0.5, -40, '°C', mux=(12, 4, 8), min_len=4),
+  Sig('bmsTempMin', '모듈 최저 온도 (BMS 0x332)', 0x332, 56, 8, 0.5, -40, '°C', mux=(12, 4, 8), min_len=8),
+]
+BMS_LIMIT_IDS = sorted({s.msg for s in BMS_LIMITS})
+
 # Seen on 2026-10-27 with plausible scales but no second source yet.
 CANDIDATES = [
   Sig('tpms1', '타이어 공기압? 1', 0x3F8, 0, 16, 1 / 16, unit='psi', min_len=2),
@@ -263,7 +283,8 @@ def summarize(frames: list[tuple[float, int, bytes]], meta: dict | None = None) 
 
 # Live use: the logger polls these alongside the battery set while the car charges or idles. Enum
 # signals are kept as their raw numbers (the page and the mode logic map them), numbers scaled.
-LIVE_SIGS = [s for s in CHARGE + THERMAL if s.key != 'pump1Req']
+LIVE_SIGS = [s for s in CHARGE + THERMAL + BMS_LIMITS if s.key != 'pump1Req']
+SIG_BY_KEY = {s.key: s for s in CHARGE + THERMAL + BMS_LIMITS + CANDIDATES}
 LIVE_IDS = sorted({s.msg for s in LIVE_SIGS})
 
 

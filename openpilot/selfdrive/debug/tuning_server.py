@@ -1116,6 +1116,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, json.dumps(vlog_api.last_state() or {}))
       if rest == 'checks':
         return self._send(200, json.dumps(vlog_api.checks(), ensure_ascii=False))
+      if rest == 'rx':
+        return self._send(200, json.dumps(vlog_api.rx_state(), ensure_ascii=False))
       if rest == 'now':
         # the page's 5 s refresh: only the daemon's tmpfs state, none of the history
         return self._send(200, json.dumps(vlog_api.now(), ensure_ascii=False))
@@ -3428,7 +3430,20 @@ th{color:var(--mut);font-weight:normal}
   <div class="ck" id="anom"></div>
   <div class="hint" style="border-top:1px solid var(--line)">상시 기록의 모든 프레임을 다시 해독한 최저·최고값입니다. 값에 마우스를 올리면 그 시각이 나옵니다.
     판정은 기준을 벗어난 값이 한 번이라도 있으면 주의/나쁨입니다. 참고 항목은 정상 범위를 정하지 않고 범위만 보여줍니다.
-    충전 전력·셀 편차(충전 중)·AC 전압은 BMS가 충전 중일 때만, 방전 한계는 SOC 20%·모듈 10 °C 초과일 때만 집계합니다.</div>
+    충전 전력·셀 편차(충전 중)·AC 전압은 BMS가 충전 중일 때만, 방전 한계는 SOC 20%·모듈 10 °C 초과일 때만 집계합니다.
+    <b>미확인</b>은 신호 의미나 해독이 아직 검증되지 않은 항목, <b>표본 부족</b>은 3개 미만으로 들린 항목입니다. 둘 다 범위가 정상이어도 정상으로 판정하지 않습니다.</div>
+</div>
+
+<div class="grp">
+  <div class="gt"><span>해독 검증 · 내부저항 · 충전 종료</span><span class="a" id="vrfsub"></span></div>
+  <div class="ck" id="vrf"></div>
+</div>
+
+<div class="grp">
+  <div class="gt"><span>수신 상태 · 신호별 신선도</span><span class="a" id="rxsub">불러오는 중…</span></div>
+  <div class="ck" id="rx"></div>
+  <div class="hint" style="border-top:1px solid var(--line)">동글은 한 번에 ID 하나만 듣습니다. <b>누락</b>은 그 ID를 들으려 했는데 프레임이 오지 않은 것이고, 연속 3번이면 상태가 "누락"이 됩니다.
+    간격은 같은 ID를 다시 받기까지 걸린 시간입니다. 신선도 기준은 전력·속도 5초, 셀 15초, 나머지 90초이며, 이보다 오래된 값은 기록·판정에 쓰지 않습니다.</div>
 </div>
 
 <div class="grp">
@@ -3477,12 +3492,19 @@ th{color:var(--mut);font-weight:normal}
 <script>
 const $=i=>document.getElementById(i);
 const f=(v,d)=>v==null?null:(typeof v==='number'?v.toFixed(d):String(v));
-function row(label,v,unit,age){
-  const na=v==null; const old=!na&&age!=null&&age>10;
-  return `<div class="row"><span class="lb">${label}</span><span class="vl${na?' na':old?' old':''}">${na?'–':v+(unit?' '+unit:'')}</span></div>`;
+// the same freshness limits the logger uses (vlog.FAST_KEYS / CELL_KEYS / SLOW_FRESH_S)
+const FAST=new Set(['packVoltage','packCurrent','packPower','vehicleSpeedMph','gear','rearMechPower','frontMechPower','rearTorqueMeasured',
+ 'frontTorqueMeasured','rearMotorRpm','maxDischargePower','maxRegenPower']);
+const CELLK=new Set(['cellMin','cellMax','cellAvg','cellDelta','cellCount','cellSpanS','cellSync']);
+const maxAge=k=>FAST.has(k)?5:CELLK.has(k)?15:90;
+const fresh=(A,k)=>A[k]!=null&&A[k]<=maxAge(k);
+function row(label,v,unit,age,key){
+  const na=v==null; const old=!na&&(age==null||age>maxAge(key));
+  const ago=old&&age!=null?` <span class="a">${age<120?Math.round(age)+'초':Math.round(age/60)+'분'} 전</span>`:'';
+  return `<div class="row"><span class="lb">${label}</span><span class="vl${na?' na':old?' old':''}">${na?'–':v+(unit?' '+unit:'')}${ago}</span></div>`;
 }
-// a value this car has not given is left out rather than shown as –
-function rows(spec,V,A){return spec.filter(([k])=>V[k]!=null).map(([k,l,u,d])=>row(l,f(V[k],d??1),u,A[k])).join('');}
+// a value this car has not given is left out rather than shown as –; one older than its limit is dimmed with its age
+function rows(spec,V,A){return spec.filter(([k])=>V[k]!=null).map(([k,l,u,d])=>row(l,f(V[k],d??1),u,A[k],k)).join('');}
 const BAT=[['packCurrent','전류','A',1],['socUI','SOC (BMS, 버퍼 포함)','%',1],['socMin','SOC (최소)','%',1],['nominalFullPackEnergy','완충 용량 (공칭)','kWh',1],
  ['expectedEnergyRemaining','남은 에너지 (예상)','kWh',1],['idealEnergyRemaining','남은 에너지 (이상)','kWh',1],
  ['energyBuffer','보호 버퍼','kWh',1],
@@ -3506,20 +3528,23 @@ const tag=g=>`<span class="tag hv ${GRADE[g][1]}">${GRADE[g][0]}</span>`;
 function grade(v,a,b){return v==null?'na':v<a?'good':v<b?'mid':'bad';}
 let packEditing=false;
 function renderHealth(s){
-  const V=s.values||{},cv=s.cellsV||[],ct=s.cellsT||[];
+  const V=s.values||{},cv=s.cellsV||[],ct=s.cellsT||[],A=s.age||{};
   const nfp=V.nominalFullPackEnergy;
   let ref=parseFloat(s.packNewKwh), est=false;
   if(!(ref>0) && nfp!=null){ref=PACKS.find(p=>p>=nfp)||nfp; est=true;}
   const degr=(nfp!=null&&ref>0)?Math.max(0,(1-nfp/ref)*100):null;
-  const gDeg=grade(degr,10,20);
-  const cur=V.packCurrent, rest=cur!=null&&Math.abs(cur)<=10;
+  // judged only on what is confirmed: an estimated new-pack size, a stale value or a cell grid read at
+  // different moments gives a number but no verdict
+  const gDeg=est?'na':grade(degr,10,20);
+  const cur=V.packCurrent, rest=cur!=null&&fresh(A,'packCurrent')&&Math.abs(cur)<=10;
+  const sync=V.cellSync===true&&fresh(A,'cellDelta');
   const delta=V.cellDelta!=null?V.cellDelta*1000:null;
-  const gBal=(delta!=null&&rest)?grade(delta,20,40):'na';
+  const gBal=(delta!=null&&rest&&sync)?grade(delta,20,40):'na';
   let weak=[];
-  if(V.cellAvg!=null) cv.forEach((v,i)=>{if(v!=null&&(V.cellAvg-v)*1000>=30) weak.push(`#${i+1} (${((V.cellAvg-v)*1000).toFixed(0)} mV)`);});
+  if(V.cellAvg!=null&&sync) cv.forEach((v,i)=>{if(v!=null&&(V.cellAvg-v)*1000>=30) weak.push(`#${i+1} (${((V.cellAvg-v)*1000).toFixed(0)} mV)`);});
   let lo=-1,hi=-1; cv.forEach((v,i)=>{if(v==null)return; if(lo<0||v<cv[lo])lo=i; if(hi<0||v>cv[hi])hi=i;});
   const tspread=(V.moduleTempMax!=null)?V.moduleTempMax-V.moduleTempMin:null;
-  const gTemp=grade(tspread,5,10);
+  const gTemp=fresh(A,'moduleTempMax')?grade(tspread,5,10):'na';
   const cycles=(V.kwhDischargeTotal!=null&&ref>0)?V.kwhDischargeTotal/ref:null;
   const graded=[gDeg,gBal,gTemp].filter(g=>g!=='na');
   const overall=!graded.length?null:graded.includes('bad')?'bad':graded.includes('mid')?'mid':'good';
@@ -3533,10 +3558,11 @@ function renderHealth(s){
     +tile('SOC (계기판)',V.socDisplay==null?null:V.socDisplay.toFixed(1),'%');
   const r=(l,v,extra)=>v==null?'':`<div class="row"><span class="lb">${l}</span><span class="vl">${v}${extra||''}</span></div>`;
   $('hrows').innerHTML=
-    r('셀 밸런스 판정 조건', cur==null?null:`전류 ${cur.toFixed(1)} A`, cur==null?'':(rest?tag(gBal):'<span class="tag hv na">부하 중 · 보류</span>'))
+    r('셀 밸런스 판정 조건', cur==null?null:`전류 ${cur.toFixed(1)} A${sync?'':' · 셀 동시 측정 아님'}`, cur==null?'':(!rest?'<span class="tag hv na">부하 중 · 보류</span>':!sync?'<span class="tag hv na">보류</span>':tag(gBal)))
+   +r('열화 판정', est&&degr!=null?'신품 용량이 설정되지 않아 추정치로만 계산 · 판정 보류':null)
    +r('최저 셀', lo<0?null:`#${lo+1} · ${cv[lo].toFixed(3)} V`)
    +r('최고 셀', hi<0?null:`#${hi+1} · ${cv[hi].toFixed(3)} V`)
-   +r('약한 셀 (평균보다 30 mV 이상 낮음)', V.cellAvg==null?null:(weak.length?weak.slice(0,6).join(', '):'없음'), V.cellAvg==null?'':tag(weak.length?'bad':'good'))
+   +r('약한 셀 (평균보다 30 mV 이상 낮음)', V.cellAvg==null?null:!sync?'동시 측정 아님 · 보류':(weak.length?weak.slice(0,6).join(', '):'없음'), V.cellAvg==null||!sync?'':tag(weak.length?'bad':'good'))
    +r('셀 수신', V.cellCount==null?null:`${V.cellCount} / 96`)
    +r('모듈 온도 편차', tspread==null?null:`${tspread.toFixed(1)} °C (${V.moduleTempMin.toFixed(1)} ~ ${V.moduleTempMax.toFixed(1)})`, tspread==null?'':tag(gTemp))
    +r('남은 에너지 / 보호 버퍼', V.nominalEnergyRemaining==null?null:`${V.nominalEnergyRemaining.toFixed(1)} / ${(V.energyBuffer??0).toFixed(1)} kWh`)
@@ -3575,19 +3601,20 @@ async function summary(name){
 summary('');
 // the logger keeps adding frames while the car is awake; a capture someone opened stays put
 setInterval(()=>{if(smFile==='vlog')summary('');},60000);
-const LV={bad:['나쁨','bad'],warn:['주의','mid'],ok:['정상','good'],info:['참고','na'],na:['기록 없음','na']};
+const LV={bad:['나쁨','bad'],warn:['주의','mid'],ok:['정상','good'],info:['참고','na'],na:['기록 없음','na'],unverified:['미확인','na'],few:['표본 부족','na']};
 async function checks(){
   let j;try{j=await (await fetch('/api/vlog/checks')).json();}catch(e){return;}
   const tm=t=>t?new Date(t*1000).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
   const c=j.count||{};
-  $('ansub').innerHTML=`최근 ${j.days}일 · 시간 파일 ${j.files}개 · <span class="hv bad">나쁨 ${c.bad||0}</span> · <span class="hv mid">주의 ${c.warn||0}</span> · 정상 ${c.ok||0} · 참고 ${c.info||0}`;
+  $('ansub').innerHTML=`최근 ${j.days}일 · 시간 파일 ${j.files}개 · <span class="hv bad">나쁨 ${c.bad||0}</span> · <span class="hv mid">주의 ${c.warn||0}</span> · 정상 ${c.ok||0} · 참고 ${c.info||0}`
+    +(c.unverified?` · 미확인 ${c.unverified}`:'')+(c.few?` · 표본 부족 ${c.few}`:'');
   const tg=l=>`<span class="tag hv ${LV[l][1]}" style="margin:0">${LV[l][0]}</span>`;
   // four columns so the verdict stays on a phone screen; the range a row is held to sits under its name
   let html='<table><thead><tr><th>항목 · 기준</th><th class="r">최저</th><th class="r">최고</th><th>판정</th></tr></thead><tbody>',g='';
   const lab=(l,sub)=>`<td class="l">${esc(l)}${sub?`<br><span class="rf">${esc(sub)}</span>`:''}</td>`;
   j.rows.forEach(r=>{if(r.group!==g){g=r.group;html+=`<tr><th class="g" colspan="4">${esc(g)}</th></tr>`;}
     const v=(x,t)=>x==null?'–':`<span title="${tm(t)}">${Number(x).toFixed(r.digits)}</span>`;
-    html+=`<tr class="${r.level}">${lab(r.label,r.ref)}<td class="r">${v(r.min,r.tMin)}</td><td class="r">${v(r.max,r.tMax)} <span class="a">${esc(r.unit)}</span></td>
+    html+=`<tr class="${r.level}">${lab(r.label,[r.ref,r.why].filter(x=>x).join(' · '))}<td class="r">${v(r.min,r.tMin)}</td><td class="r">${v(r.max,r.tMax)} <span class="a">${esc(r.unit)}</span></td>
       <td>${tg(r.level)}</td></tr>`;});
   html+=`<tr><th class="g" colspan="4">고장 상태 · 이벤트</th></tr>`;
   const n2=x=>typeof x==='number'?(+x.toFixed(2)):x;
@@ -3595,7 +3622,48 @@ async function checks(){
   html+=ev.length?ev.map(x=>`<tr class="${x.level}">${lab(x.label,x.detail)}<td class="r" colspan="2">${tm(x.t)}</td><td>${tg(x.level)}</td></tr>`).join('')
     :'<tr><td class="l" colspan="3">BMS 오류·HVIL·파일럿 이상·히터 고장 상태와 기록 이벤트 없음</td><td>'+tg('ok')+'</td></tr>';
   $('anom').innerHTML=html+'</tbody></table>';
+  renderVerify(j,tm,tg,lab);
 }
+const VS={confirmed:['확인됨','good'],failed:['불일치','bad'],insufficient:['비교 표본 부족','na']};
+const CONF={high:['높음','good'],medium:['보통','mid'],low:['낮음','na']};
+const ENDL={complete:'정상 종료',user:'사용자 중지 (추정)',unplugged:'플러그 분리',abnormal:'비정상 중단',unknown:'원인 불명'};
+function renderVerify(j,tm,tg,lab){
+  const pill=(m,k)=>`<span class="tag hv ${m[k][1]}" style="margin:0">${m[k][0]}</span>`;
+  let h='<table><tbody><tr><th class="g" colspan="4">해독 검증 (매 시간 다시 비교)</th></tr>';
+  h+=(j.decodes||[]).map(d=>{const rng=d.n?(d.unit==='비'?`비 ${d.min}~${d.max}`:`오차 ${d.min}~${d.max} ${d.unit}`):'–';
+    return `<tr class="${d.status==='failed'?'bad':''}">${lab(d.label,d.against+` · 허용 ${d.unit==='비'?d.center+'±'+d.tol:'±'+d.tol+' '+d.unit}`)}
+      <td class="r">${d.n}회<br><span class="rf">벗어남 ${d.miss}</span></td><td class="r">${rng}</td><td>${pill(VS,d.status)}</td></tr>`;}).join('');
+  const R=(j.resistance||[]).slice().sort((a,b)=>b.t-a.t);
+  h+='<tr><th class="g" colspan="4">팩 내부저항 · 시간별 측정</th></tr>';
+  h+=R.length?R.map(r=>`<tr>${lab(tm(r.t)+` · ${r.mOhm} mΩ`,`쌍 ${r.n} · ΔI ${r.dI} A · ΔV ${r.dV} V · Δt ${r.dt}s · SOC ${r.soc??'–'}% · 온도 ${r.temp??'–'} °C`+(r.why&&r.why.length?' · '+r.why.join(', '):''))}
+      <td class="r">${r.iqr[0]}~${r.iqr[1]}<br><span class="rf">사분위 mΩ</span></td><td class="r">${r.spread==null?'–':Math.round(r.spread*100)+'%'}<br><span class="rf">흩어짐</span></td><td>${pill(CONF,r.conf)}</td></tr>`).join('')
+    :'<tr><td class="l" colspan="4">아직 측정 없음 (주행 중 10초 안에 전류가 60 A 이상 바뀌는 순간이 필요)</td></tr>';
+  h+='<tr><th class="g" colspan="4">충전 종료</th></tr>';
+  const E=(j.chargeEnds||[]).slice().sort((a,b)=>b.t-a.t);
+  h+=E.length?E.map(e=>`<tr class="${e.level}">${lab(e.label,(e.why||[]).join(' · ')||'근거 기록 없음')}<td class="r" colspan="2">${tm(e.t)}</td><td>${tg(e.level)}</td></tr>`).join('')
+    :'<tr><td class="l" colspan="4">기록된 충전 없음</td></tr>';
+  $('vrf').innerHTML=h+'</tbody></table>';
+  $('vrfsub').textContent=`저장된 내부저항 측정 ${R.length}건 · 충전 ${E.length}건`;
+}
+const RXS={ok:['정상','good'],missing:['누락','bad'],never:['미수신','na'],fresh:['신선','good'],stale:['오래됨','mid']};
+async function rx(){
+  let j;try{j=await (await fetch('/api/vlog/rx')).json();}catch(e){return;}
+  const c=j.count||{},pill=k=>`<span class="tag hv ${(RXS[k]||['?','na'])[1]}" style="margin:0">${(RXS[k]||[k])[0]}</span>`;
+  const ago=x=>x==null?'–':x<120?Math.round(x)+'초':x<7200?Math.round(x/60)+'분':Math.round(x/3600)+'시간';
+  $('rxsub').textContent=j.t==null?'기록 없음 (로거가 아직 쓰지 않음)':(j.liveS>30?`마지막 기록 ${ago(j.liveS)} 전 상태 · `:'실시간 · ')
+    +`신선 ${c.fresh||0} · 오래됨 ${c.stale||0} · 누락 ${c.missing||0} · 미수신 ${c.never||0}`;
+  if(j.t==null){$('rx').innerHTML='';return;}
+  const lab=(l,sub)=>`<td class="l">${esc(l)}${sub?`<br><span class="rf">${esc(sub)}</span>`:''}</td>`;
+  let h='<table><tbody><tr><th class="g" colspan="4">CAN ID별</th></tr><tr><th>ID · 간격</th><th class="r">마지막 수신</th><th class="r">누락</th><th>상태</th></tr>';
+  h+=j.ids.map(x=>`<tr class="${x.status==='missing'?'bad':''}">${lab('0x'+x.id,`간격 중앙 ${x.gapMed??'–'}s · 최대 ${x.gapMax??'–'}s · ${x.frames}프레임`)}
+    <td class="r">${ago(x.sinceS)} 전</td><td class="r">${x.missRate==null?'–':Math.round(x.missRate*100)+'%'}<br><span class="rf">연속 ${x.miss} · 최대 ${x.maxMiss}${x.day?` · 24h ${Math.round(x.day.missRate*100)}%`:''}</span></td><td>${pill(x.status)}</td></tr>`).join('');
+  h+='<tr><th class="g" colspan="4">신호별</th></tr><tr><th>신호 · ID</th><th class="r">나이</th><th class="r">기준</th><th>상태</th></tr>';
+  const order={missing:0,stale:1,never:2,fresh:3};
+  h+=j.signals.slice().sort((a,b)=>order[a.status]-order[b.status]||a.id.localeCompare(b.id)).map(x=>`<tr class="${x.status==='missing'?'bad':x.status==='stale'?'warn':''}">${lab(x.label,'0x'+x.id+(x.gapMed!=null?` · 간격 ${x.gapMed}s`:''))}
+    <td class="r">${x.ageS==null?'–':ago(x.ageS)}</td><td class="r">${x.maxAgeS}s</td><td>${pill(x.status)}</td></tr>`).join('');
+  $('rx').innerHTML=h+'</tbody></table>';
+}
+rx();setInterval(rx,10000);
 checks();setInterval(checks,60000);
 // Reuses the grid's own divs across ticks instead of rebuilding all n of them via innerHTML every
 // second -- 96+32 fresh elements a second is the main thing making this page feel like it stutters.
@@ -4006,6 +4074,7 @@ const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;',
 const MODE={DRIVE:'주행',AC_CHARGE:'완속 충전 (AC)',DC_CHARGE:'급속 충전 (DC)',CHARGE_UNKNOWN:'충전 (AC/DC 미확정)',PARKED:'주차'};
 const EV={CHARGE_STOPPED:'충전 멈춤',CHARGE_POWER_DROP:'충전 전력 급락',LIMIT_DROP_DISCHARGE:'방전 한계 급감',LIMIT_DROP_REGEN:'회생 한계 급감',LOW_12V:'12V 낮음',MODULE_HOT:'모듈 과열',CELL_DELTA_HIGH:'셀 편차 큼 (휴지)'};
 const BMS={0:'대기',1:'주행',2:'지원',3:'완속 충전',4:'급속 충전',5:'충전기 전압 맞춤',6:'폴트 해제',7:'폴트',8:'용접 검사',15:'SNA'};
+const ENDC={complete:['정상 종료','ok'],user:['사용자 중지 (추정)','ok'],unplugged:['플러그 분리','ok'],abnormal:['비정상 중단','bad'],unknown:['원인 불명','warn']};
 const pad=n=>String(n).padStart(2,'0');
 const dt=t=>{const d=new Date(t*1000);return `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;};
 const dur=s=>s==null?'–':s<90?Math.round(s)+'초':s<5400?Math.round(s/60)+'분':(s/3600).toFixed(1)+'시간';
@@ -4044,7 +4113,7 @@ function renderPower(d){
 }
 const cov=s=>s.coverage!=null?s.coverage:s.missingRate==null?1:1-s.missingRate;
 function renderSessions(d){
-  $('sess').innerHTML=d.sessions.map((s,i)=>`<tr data-i="${i}"${selS===s.start?' class="sel"':''}><td>${dt(s.start)}</td><td><span class="tag ${s.type}">${MODE[s.type]||s.type}</span></td>
+  $('sess').innerHTML=d.sessions.map((s,i)=>`<tr data-i="${i}"${selS===s.start?' class="sel"':''}><td>${dt(s.start)}</td><td><span class="tag ${s.type}">${MODE[s.type]||s.type}</span>${s.endCause?`<br><span class="${ENDC[s.endCause][1]}" style="font-size:10.5px">${ENDC[s.endCause][0]}</span>`:''}</td>
     <td class="r">${dur(s.durationS)}</td><td class="r">${s.socStart==null?'–':f(s.socStart)+'→'+f(s.socEnd)}%</td>
     <td class="r">${f(s.kwhIn,2)}</td><td class="r">${f(s.kwhOut,2)}</td><td class="r">${f(s.avgKw)}</td>
     <td class="r">${s.type==='DRIVE'?f(s.kwMin):f(s.kwMax)}</td><td class="r">${s.miles==null?'–':f(s.miles)+' mi'}</td>
@@ -4069,6 +4138,18 @@ function chart(rows,lines,h=170){
   const leg=lines.filter(l=>axes[l.side]&&axes[l.side].l===l).map(l=>`<span style="--c:${l.c}">${l.n}</span>`).join('');
   return `<div class="chart"><svg viewBox="0 0 ${W} ${h}" font-family="ui-monospace,Menlo,monospace">${out}</svg></div><div class="legend">${leg}</div>`;
 }
+function socChart(pts){
+  if(pts.length<2)return '';
+  const W=900,h=170,P=[44,20,12,24],x0=Math.min(...pts.map(p=>p.t)),x1=Math.max(...pts.map(p=>p.t)),y1=Math.max(...pts.map(p=>p.kw),1);
+  const X=t=>P[0]+(t-x0)/Math.max(1,x1-x0)*(W-P[0]-P[1]),Y=y=>P[2]+(1-y/y1)*(h-P[2]-P[3]);
+  let d='',prev=null;pts.forEach(p=>{d+=(prev!=null&&p.t-prev>1?'M':d?'L':'M')+X(p.t).toFixed(1)+' '+Y(p.kw).toFixed(1);prev=p.t;});
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${h}" font-family="ui-monospace,Menlo,monospace">`
+    +`<line x1="${P[0]}" x2="${W-P[1]}" y1="${Y(0)}" y2="${Y(0)}" stroke="var(--line)"/>`
+    +`<path d="${d}" fill="none" stroke="var(--ok)" stroke-width="1.8"/>`
+    +pts.map(p=>`<circle cx="${X(p.t).toFixed(1)}" cy="${Y(p.kw).toFixed(1)}" r="2.2" fill="var(--ok)"><title>${p.t}% · ${p.kw.toFixed(2)} kW</title></circle>`).join('')
+    +`<text x="${P[0]-6}" y="${P[2]+8}" text-anchor="end" font-size="10" fill="var(--ok)">${y1.toFixed(1)}</text><text x="${P[0]-6}" y="${Y(0)}" text-anchor="end" font-size="10" fill="var(--ok)">0</text>`
+    +`<text x="${P[0]}" y="${h-6}" font-size="10" fill="var(--dim)">${x0}%</text><text x="${W-P[1]}" y="${h-6}" font-size="10" fill="var(--dim)" text-anchor="end">${x1}%</text></svg></div>`;
+}
 async function openSession(s){
   selS=s.start;renderSessions(D);const el=$('detail');el.hidden=false;el.innerHTML='<div class="hint">불러오는 중…</div>';
   const rows=await (await fetch(`/api/vlog/series?start=${s.start-5}&end=${s.end+5}`)).json();
@@ -4087,16 +4168,28 @@ async function openSession(s){
       +kv('효율',s.whPerMi!=null?f(s.whPerMi,0)+' Wh/mi':s.whPerMiPart!=null?`${f(s.whPerMiPart,0)} Wh/mi (기록된 ${f(s.partMiles,2)} mi만)`:'–')
       +kv('동글 기록',s.coverage!=null?`${Math.round(s.coverage*100)}% · ${s.parts||0}구간`+(s.partList?' ('+s.partList.map(p=>dt(p.start).slice(-5)+'~'+dt(p.end).slice(-5)).join(', ')+')':''):'–')
       +(s.movingS!=null?kv('움직인 시간',dur(s.movingS)):'')+kv('회생 (기록 구간)',`${f(s.regenKwh,2)} kWh`):'')
-    +(s.min10to80!=null?kv('10→80%',s.min10to80+'분'):'')+(s.min20to80!=null?kv('20→80%',s.min20to80+'분'):'')
-    +kv('모듈 온도',`${f(s.tempMin)} ~ ${f(s.tempMax)} °C`)+kv('셀 편차 (동시 측정만)',s.cellDeltaSyncMax==null?'동시 측정 없음':f(s.cellDeltaSyncMax,0)+' mV')
+    +(s.min10to80!=null?kv('10→80% (실측)',s.min10to80+'분'):'')+(s.min20to80!=null?kv('20→80% (실측)',s.min20to80+'분'):'')
+    +kv('기록 / 누락 시간',`${dur(s.coveredS)} / ${dur(s.gapS)}`)
+    +kv('SOC 변화',s.socStart==null?'–':`${f(s.socStart)} → ${f(s.socEnd)}% (${s.socEnd-s.socStart>=0?'+':''}${f(s.socEnd-s.socStart)})`)
+    +kv('모듈 평균 온도 변화',s.tempStart==null?'–':`${f(s.tempStart)} → ${f(s.tempEnd)} °C (${s.tempEnd-s.tempStart>=0?'+':''}${f(s.tempEnd-s.tempStart)})`)
+    +kv('모듈 온도 범위',`${f(s.tempMin)} ~ ${f(s.tempMax)} °C`)
+    +(s.type.includes('CHARGE')?kv('종료 원인',s.endCause?`<span class="${ENDC[s.endCause][1]}">${ENDC[s.endCause][0]}</span><br><small>${esc((s.endWhy||[]).join(' · '))}</small>`:'기록 없음 (이 기능 이전 세션)'):'')+kv('셀 편차 (동시 측정만)',s.cellDeltaSyncMax==null?'동시 측정 없음':f(s.cellDeltaSyncMax,0)+' mV')
     +kv('BMS 한계 최저',`방전 ${f(s.limitMinDischarge,0)} · 회생 ${f(s.limitMinRegen,0)} kW`)
     +kv('데이터 품질',`표본 ${s.samples} · 공백 ${dur(s.gapS)} (${s.missingRate==null?'–':Math.round(s.missingRate*100)+'%'})`)
     +kv('표시',(s.flags||[]).join(', ')||'–')+'</div>';
   if(s.curve&&Object.keys(s.curve).length){
     const pts=Object.entries(s.curve).map(([k,v])=>({t:+k,kw:v}));
-    html+=`<div class="gt" style="border-top:1px solid var(--line)"><span>SOC별 평균 충전 전력</span></div>`+
+    html+=`<div class="gt" style="border-top:1px solid var(--line)"><span>SOC별 평균 충전 전력</span><span>가로 SOC % (계기판) · 세로 kW</span></div>`+socChart(pts)+
       `<div class="sc"><table><tr><th>SOC %</th>${pts.map(p=>`<td class="r">${p.t}</td>`).join('')}</tr><tr><th>kW</th>${pts.map(p=>`<td class="r">${f(p.kw,1)}</td>`).join('')}</tr></table></div>`;
     if(s.socBinS)html+=`<div class="hint">SOC 10% 구간별 시간: ${Object.entries(s.socBinS).map(([k,v])=>`${k}~${+k+10}% ${dur(v)}`).join(' · ')}</div>`;
+  }
+  const A=s.analysis;
+  if(A){
+    const CF={high:'높음',medium:'보통',low:'낮음'};
+    html+=`<div class="gt" style="border-top:1px solid var(--line)"><span>10 → 80% 충전 시간</span><span>${A.basis==='measured'?'전 구간 실측':A.basis==='estimated'?'일부 추정 · 신뢰도 '+CF[A.confidence]:'추정 안 함'}</span></div>`
+      +'<div class="kv">'+kv('10→80%',A.totalS==null?'–':dur(A.totalS))+kv('이 충전에서 측정한 구간',`${A.socLo}~${A.socHi}% 중 10~80%에 든 ${A.measuredPct}% (${dur(A.measuredS)})`)
+      +kv('%당 시간 (중앙값)',f(A.secPerPct/60,1)+'분')+(A.kwhPerPct!=null?kv('%당 팩 유입',f(A.kwhPerPct,3)+' kWh'):'')+'</div>'
+      +(A.note?`<div class="hint">${esc(A.note)}. 첫·마지막 %는 일부만 지나가서 빼고, 동글 공백 동안은 시간에 넣지 않았습니다.</div>`:'');
   }
   el.innerHTML=html;
 }

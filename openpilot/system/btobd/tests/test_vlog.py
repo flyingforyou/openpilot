@@ -311,3 +311,69 @@ def test_session_soc_is_the_cluster_figure():
   car.feed(0x302, bytes([0x00, (541 & 0x3F) << 2, 541 >> 6]), 1.0)
   assert car.values['socUI'] == 54.1 and car.values['socDisplay'] == pytest.approx(50.0, abs=0.05)
   assert car.stamp['socDisplay'] == 1.0
+
+
+def _end(kws, after, kind='AC_CHARGE', faults_at=None):
+  """Light samples: one per 5 s at the given kW, then `after` dicts (prox/ac/...) at 0 kW."""
+  s, t = [], 0.0
+  for kw in kws:
+    s.append({'t': t, 'kw': kw, 'prox': 3, 'pilot': 2, 'ac': 208.0, 'soc': 80.0, 'faults': []})
+    t += 5
+  for a in after:
+    s.append({'t': t, 'kw': 0.0, 'prox': None, 'pilot': None, 'ac': None, 'soc': 80.0, 'faults': [], **a})
+    t += 5
+  if faults_at is not None:
+    s[faults_at]['faults'] = ['BMS 상태']
+  return vlog.charge_end(s, max(kws), kind)
+
+
+@pytest.mark.parametrize('kws, after, kind, cause', [
+  ([5.9] * 30, [{'prox': 1, 'ac': 0.0}], 'AC_CHARGE', 'unplugged'),
+  ([5.9] * 30 + [5.9 - 0.2 * k for k in range(1, 25)], [{'prox': 3, 'ac': 208.0}], 'AC_CHARGE', 'complete'),   # 2 min taper
+  ([5.9] * 30 + [3.0], [{'prox': 3, 'ac': 208.0}], 'AC_CHARGE', 'user'),                    # one mid-ramp sample is not a taper
+  ([5.9] * 30, [{'prox': 3, 'ac': 208.0, 'pilot': 2}], 'AC_CHARGE', 'user'),
+  ([5.9] * 30, [{'prox': 3, 'ac': 0.0}], 'AC_CHARGE', 'abnormal'),     # plug latched, AC gone: outage/EVSE cut
+  ([5.9] * 30, [{'prox': None, 'ac': 0.0}], 'AC_CHARGE', 'unknown'),   # AC gone, plug state not heard
+  ([5.9] * 30, [{'prox': 3, 'ac': None}], 'AC_CHARGE', 'unknown'),     # AC not heard after the stop
+  ([5.9] * 30, [], 'AC_CHARGE', 'unknown'),                            # link dropped at the stop
+  ([90.0] * 10 + [40, 30, 25, 20, 18, 16, 15, 15, 14, 14, 13, 13], [{'prox': 3}], 'DC_CHARGE', 'complete'),
+])
+def test_charge_end_cause(kws, after, kind, cause):
+  r = _end(kws, after, kind)
+  assert r['endCause'] == cause and r['endWhy']
+
+
+def test_charge_end_fault_wins():
+  assert _end([5.9] * 30, [{'prox': 1, 'ac': 0.0}], faults_at=29)['endCause'] == 'abnormal'
+
+
+def test_real_unplug_is_classified():
+  # the 2026-10-30 AC charge's last minutes: power stopped, then the connector read 분리됨
+  vl = vlog.VehicleLog('', write=False)
+  base = {'packVoltage': 383.0, 'socDisplay': 73.7, 'moduleTempMin': 27.0, 'moduleTempMax': 28.0, 'gear': 'P',
+          'bmsState': 3, 'pilot': 2, 'proximity': 3, 'acVolts1': 208.0}
+  t = 1000.0
+  for _ in range(60):
+    v = {**base, 'packCurrent': 15.4}
+    vl.update(t, v, dict.fromkeys(v, 0.0))
+    t += 5
+  for k in range(12):
+    v = {**base, 'packCurrent': -0.4, 'bmsState': 2, 'pilot': 0, 'proximity': 1 if k > 2 else 2, 'acVolts1': 1.0}
+    vl.update(t, v, dict.fromkeys(v, 0.0))
+    t += 5
+  vl.close(t, 'end')
+  ch = [s for s in vl.out['sessions'] if s['type'] in vlog.CHARGE_MODES]
+  assert len(ch) == 1 and ch[0]['endCause'] == 'unplugged' and ch[0]['tempStart'] == 27.5
+
+
+def test_charge_session_has_covered_seconds_per_percent():
+  vl = vlog.VehicleLog('', write=False)
+  t, soc = 0.0, 50.0
+  for _ in range(400):
+    v = {'packVoltage': 380.0, 'packCurrent': 15.0, 'socDisplay': soc, 'gear': 'P', 'bmsState': 3, 'pilot': 2}
+    vl.update(t, v, dict.fromkeys(v, 0.0))
+    t, soc = t + 5, soc + 0.01            # 1% per 500 s
+  vl.close(t, 'end')
+  s = vl.out['sessions'][-1]
+  inner = [v for k, v in s['socPctS'].items() if 50 < int(k) < 53]
+  assert inner and all(v == pytest.approx(500, abs=10) for v in inner)

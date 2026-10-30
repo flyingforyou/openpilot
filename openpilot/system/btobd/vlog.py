@@ -146,8 +146,9 @@ class Session:
               'odoStart': v.get('batteryOdometerMi'), 'odoEnd': v.get('batteryOdometerMi'),
               'kwhIn': 0.0, 'kwhOut': 0.0, 'kwMax': None, 'kwMin': None, 'kwSum': 0.0, 'kwN': 0,
               'samples': 0, 'staleSamples': 0, 'gapS': 0.0, 'coveredS': 0.0, 'miSpeed': 0.0,
-              'tempMin': None, 'tempMax': None, 'cellDeltaSyncMax': None, 'events': [], 'flags': [],
-              'socFirstAt': {}, 'socBinS': {}, 'curve': {}, 'limitMinDischarge': None, 'limitMinRegen': None}
+              'tempMin': None, 'tempMax': None, 'tempStart': None, 'tempEnd': None, 'cellDeltaSyncMax': None,
+              'events': [], 'flags': [], 'socFirstAt': {}, 'socBinS': {}, 'socPctS': {}, 'curve': {},
+              'limitMinDischarge': None, 'limitMinRegen': None}
     self._last_kw_t: float | None = None
     self._last_kw: float | None = None
     self._last_spd_t: float | None = None
@@ -187,6 +188,10 @@ class Session:
         if self._last_soc is not None:
           b = str(int(self._last_soc // 10 * 10))
           d['socBinS'][b] = d['socBinS'].get(b, 0.0) + dt
+          # covered seconds per whole percent: a gap adds nothing, so a percent's time is not
+          # inflated by a link drop (the first and last percent seen are partial; see charge_analysis)
+          p = str(int(self._last_soc))
+          d['socPctS'][p] = round(d['socPctS'].get(p, 0.0) + dt, 1)
       self._last_kw_t, self._last_kw = t, kw
     spd = v.get('vehicleSpeedMph')
     if spd is not None:
@@ -203,6 +208,10 @@ class Session:
     for k, lo in (('moduleTempMin', 'tempMin'), ('moduleTempMax', 'tempMax')):
       if v.get(k) is not None:
         d[lo] = v[k] if d[lo] is None else (min if lo == 'tempMin' else max)(d[lo], v[k])
+    if v.get('moduleTempMin') is not None and v.get('moduleTempMax') is not None:
+      avg = round((v['moduleTempMin'] + v['moduleTempMax']) / 2, 1)   # module average at start and end
+      d['tempStart'] = d['tempStart'] if d['tempStart'] is not None else avg
+      d['tempEnd'] = avg
     if v.get('cellSync') and v.get('cellDelta') is not None:
       mv = v['cellDelta'] * 1000
       d['cellDeltaSyncMax'] = mv if d['cellDeltaSyncMax'] is None else max(d['cellDeltaSyncMax'], mv)
@@ -246,6 +255,7 @@ class Session:
       d['curve'] = {k: round(s / n, 2) for k, (s, n) in sorted(d['curve'].items(), key=lambda kv: int(kv[0]))}
     else:
       d.pop('curve')
+      d.pop('socPctS')
     d.pop('socFirstAt')
     d.pop('kwSum')
     if reason:
@@ -253,6 +263,62 @@ class Session:
     if d['missingRate'] and d['missingRate'] > 0.2:
       d['flags'].append('gappy')
     return d
+
+
+# ---- why a charge ended ------------------------------------------------------------------------------
+# Decided when the charge session closes, from light samples kept for END_KEEP_S. Every verdict needs
+# its own evidence heard after the power stopped; when that was not heard the answer is 'unknown',
+# never a guess. 'user' is an inference: power stopped from near full with the plug latched, AC on
+# and no fault, which is what the app/screen stop button or a scheduled departure looks like on CAN.
+CHARGE_END = {'complete': '정상 종료', 'user': '사용자 중지 (추정)', 'unplugged': '플러그 분리',
+              'abnormal': '비정상 중단', 'unknown': '원인 불명'}
+END_KEEP_S = 900.0
+END_BEFORE_S = 300.0
+END_AFTER_S = 120.0
+TAPER_S = 30.0        # power below 90% of the peak for this long before stopping = it tapered off (BMS ending)
+
+
+def charge_end(samples: list, peak_kw: float | None, kind: str) -> dict:
+  """samples: {'t', 'kw', 'prox', 'pilot', 'ac', 'faults', 'soc'} around the end of one charge."""
+  # charging = over 1 kW, the same line Events uses; a DC session tapering to 10 kW is still charging
+  charging = [s for s in samples if s['kw'] is not None and s['kw'] >= 1.0]
+  if not charging:
+    return {'endCause': 'unknown', 'endWhy': ['충전 전력이 기록되지 않음']}
+  t_stop = charging[-1]['t']
+  before = [s for s in samples if t_stop - END_BEFORE_S <= s['t'] <= t_stop]
+  after = [s for s in samples if t_stop < s['t'] <= t_stop + END_AFTER_S]
+  out = {'endT': round(t_stop, 1), 'endAfterS': round(after[-1]['t'] - t_stop, 1) if after else 0.0}
+  faults = sorted({f for s in before[-6:] + after for f in s['faults']})
+  if faults:
+    return {**out, 'endCause': 'abnormal', 'endWhy': ['고장 신호: ' + ', '.join(faults)]}
+  if not after:
+    return {**out, 'endCause': 'unknown', 'endWhy': ['멈춘 뒤 기록 없음 (동글 끊김 또는 차가 잠듦)']}
+
+  def last(k):
+    return next((s[k] for s in reversed(after) if s[k] is not None), None)
+  prox, ac = last('prox'), last('ac')
+  if prox == 1:
+    return {**out, 'endCause': 'unplugged', 'endWhy': ['커넥터 근접 = 분리됨']}
+  if kind != 'DC_CHARGE':
+    if ac is not None and ac < 50:
+      if prox in (2, 3):
+        return {**out, 'endCause': 'abnormal', 'endWhy': [f'플러그가 꽂힌 채 AC 끊김 ({ac:.0f} V): 정전·충전기 차단']}
+      return {**out, 'endCause': 'unknown', 'endWhy': [f'AC 끊김 ({ac:.0f} V), 커넥터 근접은 못 들음: 분리인지 정전인지 모름']}
+    if ac is None:
+      return {**out, 'endCause': 'unknown', 'endWhy': ['멈춘 뒤 AC 전압을 못 들음']}
+  if prox is None:
+    return {**out, 'endCause': 'unknown', 'endWhy': ['멈춘 뒤 커넥터 상태를 못 들음']}
+  peak = peak_kw or charging[-1]['kw']
+  near_peak = [s['t'] for s in before if s['kw'] is not None and s['kw'] >= 0.9 * peak]
+  taper_s = t_stop - near_peak[-1] if near_peak else END_BEFORE_S
+  last_kw = charging[-1]['kw']
+  soc = next((s['soc'] for s in reversed(before) if s['soc'] is not None), None)
+  where = f'SOC {soc:.1f}%' if soc is not None else 'SOC 모름'
+  if taper_s >= TAPER_S:
+    return {**out, 'endCause': 'complete',
+            'endWhy': [f'최대 {peak:.1f} kW의 90% 아래로 내려간 뒤 {taper_s:.0f}초 동안 줄다가 {last_kw:.1f} kW에서 멈춤', where]}
+  return {**out, 'endCause': 'user',
+          'endWhy': [f'{last_kw:.1f} kW(최대의 {last_kw / peak * 100:.0f}%)에서 {taper_s:.0f}초 만에 멈춤, 플러그·전원 유지, 고장 신호 없음', where]}
 
 
 class Events:
@@ -346,6 +412,9 @@ class VehicleLog:
     self.last_health_soc: float | None = None
     self.raw_buf: list = []
     self.raw_flush = 0.0
+    self.recent: deque = deque()          # light samples for charge_end
+    from openpilot.system.btobd.tesla_pt import LIVE_SIGS
+    self._fault_sigs = [(s.key, s.bad, s.label) for s in LIVE_SIGS if s.bad]
     self.out: dict = {'sessions': [], 'events': [], 'health': [], 'series': []}   # what was written, for tests/replay
     if write:
       os.makedirs(directory, exist_ok=True)
@@ -447,9 +516,15 @@ class VehicleLog:
     if self.session and t - self.session.d['end'] > LINK_GAP_S:
       # the link was down long enough that the car may have done anything meanwhile
       self.close(self.session.d['end'], 'link-gap')
+    kw = v['packVoltage'] * v['packCurrent'] / 1000 if 'packVoltage' in v and 'packCurrent' in v else None
+    ac = [v[k] for k in ('acVolts1', 'acVolts2', 'acVolts3') if v.get(k) is not None]
+    self.recent.append({'t': t, 'kw': kw, 'prox': v.get('proximity'), 'pilot': v.get('pilot'), 'ac': max(ac) if ac else None,
+                        'soc': v.get(SOC_KEY), 'faults': [lb for k, bad, lb in self._fault_sigs if v.get(k) in bad]})
+    while self.recent and t - self.recent[0]['t'] > END_KEEP_S:
+      self.recent.popleft()
     if self.modes.update(t, v, onroad):
       if self.session:
-        self._append('sessions.jsonl', self.session.finish())
+        self._append('sessions.jsonl', self._finish())
       self.session = Session(self.modes.mode, self.modes.since, v)
       self._save_open()
     elif self.session and self.modes.mode in CHARGE_MODES and self.session.d['type'] != self.modes.mode:
@@ -507,10 +582,16 @@ class VehicleLog:
     self._append('health.jsonl', snap)
     self.last_health, self.last_health_soc = t, soc
 
+  def _finish(self, reason: str = '') -> dict:
+    d = self.session.finish(reason)
+    if d['type'] in CHARGE_MODES:
+      d.update(charge_end([s for s in self.recent if s['t'] >= d['start']], d.get('kwMax'), d['type']))
+    return d
+
   def close(self, t: float, reason: str = 'stopped') -> None:
     if self.session:
       self.session.d['end'] = max(self.session.d['end'], t if t else 0)
-      self._append('sessions.jsonl', self.session.finish(reason))
+      self._append('sessions.jsonl', self._finish(reason))
       self.session = None
       self.modes = ModeMachine()
     self._save_open()

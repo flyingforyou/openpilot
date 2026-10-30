@@ -24,6 +24,8 @@ import os
 import sys
 import time
 
+from openpilot.system.btobd import rxstats
+
 STATE_PATH = '/dev/shm/btobd.json'
 CMD_PATH = '/dev/shm/btobd_cmd.json'
 VIEWER_PATH = '/dev/shm/btobd_viewer'
@@ -47,9 +49,10 @@ CORE_IDS = {
   None: [0x212, 0x77D, 0x116, 0x302, 0x102],
 }
 ROTATE_N = 4
-# DISCOVERY is listened to one per cycle, raw only, so the candidates (0x202 limits?, 0x332
-# min/max?, 0x3F8 TPMS?) build up a record without a decoder.
-DISCOVERY = [0x202, 0x332, 0x3F8, 0x388, 0x246, 0x528, 0x467, 0x252, 0x3F2, 0x51F, 0x21C, 0x37A, 0x33A, 0x39A]
+# DISCOVERY is listened to one per cycle, raw only, so the candidates (0x3F8 TPMS?, ...) build up a
+# record without a decoder. 0x202/0x332 left it on 2026-10-30 once decoded (tesla_pt.BMS_LIMITS) and
+# rotate in every mode, driving included: their check against 0x232 needs driving frames.
+DISCOVERY = [0x3F8, 0x388, 0x246, 0x528, 0x467, 0x252, 0x3F2, 0x51F, 0x21C, 0x37A, 0x33A, 0x39A]
 RETRY_S = 15.0
 DWELL = 0.15
 # ~1 Hz messages: 0.15 s caught 0x382 about 30 times an hour while charging. Wait for one frame.
@@ -57,6 +60,7 @@ SLOW_IDS = {0x302: 1.1, 0x382: 1.1, 0x3D2: 1.1}
 CELL_DWELL = 1.2
 CELL_EVERY = 6        # cycles between brick-voltage sweeps
 RAW_KEEP = 40
+RX_WRITE_S = 10.0     # rx.json (per-ID/per-signal reception) rewrite interval
 
 
 def _param(key: str, default: str = '') -> str:
@@ -137,9 +141,10 @@ class CarPower:
 
 def cycle_ids(mode: str | None, cycle: int, watch: list, live: list) -> list:
   """The IDs one poll cycle listens to, in order: cell sweep, discovery, rotation, then CORE."""
+  from openpilot.system.btobd.tesla_pt import BMS_LIMIT_IDS
   from openpilot.system.btobd.vlog import CHARGE_MODES
   core = CORE_IDS['CHARGE' if mode in CHARGE_MODES else mode if mode in CORE_IDS else None]
-  pool = [i for i in watch if i != 0x6F2] + ([] if mode == 'DRIVE' else list(live))
+  pool = [i for i in watch if i != 0x6F2] + BMS_LIMIT_IDS + ([] if mode == 'DRIVE' else list(live))
   pool = [i for i in dict.fromkeys(pool) if i not in core]
   ids = []
   if cycle % CELL_EVERY == 0 or (mode != 'DRIVE' and cycle % 2 == 0):
@@ -169,6 +174,8 @@ class Daemon:
     self.watch = WATCH_IDS
     self.car = TeslaSXState()
     self.vlog = vlog.VehicleLog(os.path.join(tdiag.LOG_DIR, 'vlog'))
+    self.rx = rxstats.RxStats()
+    self.rx_written = 0.0
     self.power = CarPower()
     self.power_state: dict = {}
     self.last_power_log = 0.0
@@ -259,7 +266,7 @@ class Daemon:
     mode = self.vlog.modes.mode
     ids = cycle_ids(mode, self.cycle, self.watch, tesla_pt.LIVE_IDS)
     self.cycle += 1
-    start, nframes, heard = time.monotonic(), 0, set()
+    start, nframes, heard, learnt = time.monotonic(), 0, set(), set()
     for msg_id in ids:
       cell = msg_id == 0x6F2
       if cell:
@@ -268,10 +275,14 @@ class Daemon:
         frames = self.elm.monitor(msg_id, SLOW_IDS.get(msg_id, DWELL), max_frames=1 if msg_id in SLOW_IDS else 4)
       now, wall = time.monotonic(), time.time()
       window = f'{self.cycle}:{msg_id:03X}'
+      self.rx.poll(msg_id, sum(1 for fid, _ in frames if fid == msg_id), wall, now)
       for fid, data in frames:
         self.car.feed(fid, data, now)
         if fid in tesla_pt.LIVE_IDS:
           tesla_pt.feed_live(self.car, fid, data, now)
+        if fid not in learnt:
+          learnt.add(fid)
+          self.rx.learn(fid, [k for k, t in self.car.stamp.items() if t == now])
         self.vlog.frame(wall, now, fid, data, window)
         r = self.raw.setdefault(fid, {'n': 0})
         r.update(data=data.hex(' ').upper(), len=len(data), t=wall)
@@ -289,6 +300,12 @@ class Daemon:
          **self.elm.stats}
     self.vlog.update(time.time(), snap['values'], snap['age'], onroad=_onroad(), cells=self.car.cell_set(now),
                      temps=snap.get('cellsT'), quality=q, mono=now)
+    wall = time.time()
+    hour_lines = self.rx.roll_hour(wall)
+    if hour_lines or now - self.rx_written >= RX_WRITE_S:
+      self.rx_written = now
+      from openpilot.system.btobd import vlog
+      rxstats.write(self.vlog.dir, self.rx.summary(wall, now, snap['age'], vlog.max_age), hour_lines)
 
   # --- page ------------------------------------------------------------------------------------
   def _handle_cmd(self) -> None:

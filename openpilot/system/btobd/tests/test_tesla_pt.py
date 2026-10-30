@@ -100,3 +100,20 @@ def test_solar_and_heading():
   out = p.summarize([(0.0, 0x246, b('68 00 3D 00 FE'))], {})
   rows = {r['key']: r for r in next(g for g in out['groups'] if g['key'] == 'where')['rows']}
   assert rows['heading']['value'] == '43' and rows['sunElevation']['value'] == '-2'
+
+
+def test_bms_limits_from_real_frames():
+  # 2026-10-30 frames. 0x332 at rest next to a synchronised sweep that read 3.837-3.841 V and module
+  # temps 25.6-27.7 C; 0x202 while AC charging and while driving.
+  def dec(key, hexs):
+    return p.decode(p.SIG_BY_KEY[key], b(hexs))
+  f332 = '81 87 03 87 7F 07 B5 83'
+  assert dec('brickMaxV', f332) == pytest.approx(3.842) and dec('brickMinV', f332) == pytest.approx(3.838)
+  assert dec('bmsTempMax', f332) == 27.5 and dec('bmsTempMin', f332) == 25.5
+  assert dec('brickMaxV', '81 97 03 87 7F 07 B5 83') is None        # another high nibble: not this layout
+  charging = '46 5E 66 9D C4 09 AE 01'
+  assert dec('bmsMinDischargeV', charging) == pytest.approx(241.34) and dec('bmsMaxChargeV', charging) == pytest.approx(402.94)
+  assert dec('bmsMaxChargeA', charging) == pytest.approx(250.0) and dec('bmsMaxDischargeA', charging) == pytest.approx(43.0)
+  driving = '03 5F 39 9D C4 09 3F 23'                                   # 0x232 said 97.9 kW regen / 349 kW at 363 V
+  assert dec('bmsMaxChargeA', driving) * 363 / 1000 == pytest.approx(97.9 * 0.93, rel=0.05)
+  assert dec('bmsMaxDischargeA', driving) * 363 / 1000 == pytest.approx(349 * 0.94, rel=0.05)

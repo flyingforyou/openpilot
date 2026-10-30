@@ -292,9 +292,57 @@ def merge_charges(sessions: list, join_s: float = vlog.CHARGE_JOIN_S) -> list:
     if s.get('socEnd') is not None:
       m['socEnd'] = s['socEnd']
     m['curve'] = {**(p.get('curve') or {}), **(s.get('curve') or {})}
+    m['socPctS'] = {k: round((p.get('socPctS') or {}).get(k, 0) + (s.get('socPctS') or {}).get(k, 0), 1)
+                    for k in {*(p.get('socPctS') or {}), *(s.get('socPctS') or {})}}
+    if m.get('tempStart') is None:
+      m['tempStart'] = s.get('tempStart')
+    if s.get('tempEnd') is not None:
+      m['tempEnd'] = s['tempEnd']
+    # how the plug-in ended is how its last part ended
+    for k in ('endCause', 'endWhy', 'endT', 'endAfterS'):
+      m.pop(k, None)
+      if k in s:
+        m[k] = s[k]
     m['events'] = (p.get('events') or []) + (s.get('events') or [])
     m['flags'] = sorted(set((p.get('flags') or []) + (s.get('flags') or [])) - {'interrupted'}) + ['merged']
     out[-1] = m
+  return out
+
+
+ANALYSIS_LO, ANALYSIS_HI = 10, 80
+
+
+def charge_analysis(s: dict) -> dict | None:
+  """10->80% for one charge: covered seconds of every whole percent this charge passed through,
+  and the rest of 10-79 filled in from this charge's own median seconds per percent. The first and
+  last percent seen are partial and left out. AC charges at a near-constant power, so the fill is a
+  fair estimate there; DC power falls with SOC, so a DC estimate is only given with 80% of the range
+  measured."""
+  pct = {int(k): v for k, v in (s.get('socPctS') or {}).items()}
+  if len(pct) < 3:
+    return None
+  lo, hi = min(pct), max(pct)
+  whole = {k: v for k, v in pct.items() if lo < k < hi and v > 0}
+  if not whole:
+    return None
+  span = range(ANALYSIS_LO, ANALYSIS_HI)
+  meas = {k: whole[k] for k in span if k in whole}
+  per = sorted(whole.values())
+  med = per[len(per) // 2]
+  missing = [k for k in span if k not in whole]
+  out = {'socLo': lo, 'socHi': hi, 'measuredPct': len(meas), 'measuredS': round(sum(meas.values())),
+         'secPerPct': round(med, 1), 'missingPct': len(missing)}
+  if s.get('kwhIn') and s.get('socEnd') is not None and s.get('socStart') is not None and s['socEnd'] - s['socStart'] >= 3:
+    out['kwhPerPct'] = round(s['kwhIn'] / (s['socEnd'] - s['socStart']), 3)
+  share = len(meas) / len(span)
+  if s['type'] == 'DC_CHARGE' and share < 0.8:
+    out.update(totalS=None, basis='none', note='급속은 SOC에 따라 전력이 크게 바뀌어 측정 구간이 80% 미만이면 추정하지 않음')
+    return out
+  out['totalS'] = round(sum(meas.values()) + len(missing) * med)
+  out['basis'] = 'measured' if not missing else 'estimated'
+  out['confidence'] = 'high' if share >= 0.9 else 'medium' if share >= 0.3 else 'low'
+  if missing:
+    out['note'] = f'측정 {len(meas)}% + 미측정 {len(missing)}%는 이 충전의 %당 중앙 {med / 60:.1f}분으로 추정'
   return out
 
 
@@ -346,6 +394,9 @@ def overview() -> dict:
   sessions = [s for s in sessions if s.get('end', 0) >= s.get('start', 0)]
   sessions.sort(key=lambda s: s['start'])
   sessions = merge_charges(sessions)
+  for x in sessions:
+    if x.get('type') in vlog.CHARGE_MODES:
+      x['analysis'] = charge_analysis(x)
   routes = drives()
   sessions = merge_drives(sessions, routes)
   sessions.sort(key=lambda s: s['start'], reverse=True)
@@ -548,6 +599,45 @@ def last_state() -> dict | None:
   return out
 
 
+# ---- reception (rx.json / rx.jsonl, written by btobdd) ----------------------------------------------
+RX_HISTORY_S = 24 * 3600
+
+
+def rx_state() -> dict:
+  """btobdd's last per-ID / per-signal reception summary with labels, plus the last 24 h of hourly
+  per-ID counts. 'liveS' is how long ago btobdd wrote it: more than ~30 s and it is the state the
+  logger was in when the link last stopped, not now."""
+  from openpilot.system.btobd import tesla_pt
+  try:
+    with open(os.path.join(VLOG_DIR, 'rx.json')) as f:
+      cur = json.load(f)
+  except (OSError, ValueError):
+    cur = {'t': None, 'ids': [], 'signals': []}
+  labels = {k: lb for _, k, lb, *_ in CHECKS}
+  labels.update({k: s.label for k, s in tesla_pt.SIG_BY_KEY.items()})
+  for x in cur.get('signals', []):
+    x['label'] = labels.get(x['key'], x['key'])
+  since = time.time() - RX_HISTORY_S
+  hist: dict = {}
+  for r in vlog.read_jsonl(os.path.join(VLOG_DIR, 'rx.jsonl')):
+    if r.get('t', 0) < since:
+      continue
+    h = hist.setdefault(r['id'], {'polls': 0, 'hits': 0, 'gapMax': 0.0, 'maxMiss': 0, 'hours': 0})
+    h['polls'] += r['polls']
+    h['hits'] += r['hits']
+    h['gapMax'] = max(h['gapMax'], r.get('gapMax') or 0)
+    h['maxMiss'] = max(h['maxMiss'], r.get('maxMiss') or 0)
+    h['hours'] += 1
+  for x in cur.get('ids', []):
+    h = hist.get(x['id'])
+    if h and h['polls']:
+      x['day'] = {**h, 'missRate': round(1 - h['hits'] / h['polls'], 3)}
+  count: dict = {}
+  for x in cur.get('signals', []):
+    count[x['status']] = count.get(x['status'], 0) + 1
+  return {**cur, 'liveS': round(time.time() - cur['t'], 1) if cur.get('t') else None, 'count': count}
+
+
 # ---- checks over the log -----------------------------------------------------------------------------
 # Every frame of the raw log is decoded again and each signal's min/max kept (with when), per raw hour
 # file, cached on disk by the file's mtime: a closed hour is decoded once. Derived values are taken
@@ -555,13 +645,31 @@ def last_state() -> dict | None:
 # discharge limit only above 20% and 10 C, cell spread only from a synchronised sweep, ...).
 CHECK_DAYS = 14
 STATS_CACHE = os.path.join(tdiag.LOG_DIR, 'vlog-stats-cache.json')
-STATS_VERSION = 2           # bump when file_stats derives something new: cached hours are decoded again
+STATS_VERSION = 3           # bump when file_stats derives something new: cached hours are decoded again
 BMS_FAULT = (7, 8)
+MIN_N = 3                   # fewer samples than this and a check is "표본 부족", never 정상
 # Pack resistance: dV/dI between two 0x102 readings at most R_WINDOW_S apart whose current differs by
-# R_MIN_STEP_A. A single pair is noisy (58-87 mOhm on 2026-10-30), so one median per hour file is kept.
+# R_MIN_STEP_A. A single pair is noisy (58-87 mOhm on 2026-10-30), so one median per hour file is kept,
+# with what it was measured from and how far to trust it (_r_record). Only medium/high hours feed the
+# check row; the others are listed with their reason.
 R_WINDOW_S = 10.0
 R_MIN_STEP_A = 60.0
 R_MIN_PAIRS = 15
+R_HIGH_PAIRS = 40
+# Decoder cross-checks, repeated on every logged hour (tesla_pt.BMS_LIMITS): 0x332 brick max/min
+# against a synchronised 0x6F2 sweep at rest, its temperatures against 0x6F2's module temps, 0x202's
+# currents x pack voltage against 0x232's power limits while driving. A comparison outside its
+# tolerance counts as a miss; a decode is confirmed with VERIFY_MIN_N comparisons and at most
+# VERIFY_MAX_MISS of them missed.
+VERIFY_MIN_N = 5
+VERIFY_MAX_MISS = 0.1
+VERIFY = {
+  '332v': ('0x332 셀 최고/최저 전압', '0x6F2 동시 측정 96셀의 최고/최저 (휴지, |I| < 5 A)', 'mV', 10.0),
+  '332t': ('0x332 모듈 최고/최저 온도', '0x6F2 모듈 온도 (30초 이내)', '°C', 1.5),
+  '202c': ('0x202 충전·회생 허용 전류', '× 팩 전압 ÷ 0x232 회생 한계 (주행 중)', '비', 0.15),
+  '202d': ('0x202 방전 허용 전류', '× 팩 전압 ÷ 0x232 방전 한계 (주행 중)', '비', 0.15),
+}
+VERIFY_CENTER = {'202c': 0.95, '202d': 0.95}
 DCDC_EFF_MIN_W = 500        # input power is in 16 W steps: below this the ratio is +-3% noise
 
 
@@ -597,6 +705,15 @@ def file_stats(path: str) -> dict:
     if v > r[1]:
       r[1], r[4] = v, t
 
+  def vrf(name, err, t):
+    # one comparison of a decode against its reference: |error| kept as min/max, misses counted
+    k = name.split(':')[0]
+    put('vrf:' + name, abs(err), t)
+    if abs(err - VERIFY_CENTER.get(k, 0.0)) > VERIFY[k][3]:
+      r = st.setdefault('vrfmiss:' + name, [0, 0, 0, t, t])
+      r[2] += 1
+      r[4] = t
+
   win: collections.deque = collections.deque()
   rs: list = []
   for wall, mono, i, d in _raw_frames([path]):
@@ -619,9 +736,11 @@ def file_stats(path: str) -> dict:
       win.append((wall, V['packVoltage'], V['packCurrent']))
       while win[0][0] < wall - R_WINDOW_S:
         win.popleft()
-      for _, v0, i0 in win:
+      for t0, v0, i0 in win:
         if abs(V['packCurrent'] - i0) > R_MIN_STEP_A:
-          rs.append(((V['packVoltage'] - v0) / (V['packCurrent'] - i0) * 1000, wall))
+          dv, di = V['packVoltage'] - v0, V['packCurrent'] - i0
+          tm = (V['moduleTempMin'] + V['moduleTempMax']) / 2 if V.get('moduleTempMin') is not None and V.get('moduleTempMax') is not None else None
+          rs.append((dv / di * 1000, wall, abs(dv), abs(di), wall - t0, V.get('socDisplay'), tm))
           break
     if 'dcdcInputPower' in changed and V['dcdcInputPower'] >= DCDC_EFF_MIN_W and V.get('dcdcOutputPower') is not None:
       put('dcdcEfficiency', V['dcdcOutputPower'] / V['dcdcInputPower'] * 100, wall)
@@ -640,16 +759,69 @@ def file_stats(path: str) -> dict:
         put('acVoltsCharge', V[k], wall)
     if 'pilotHigh' in changed and V.get('pilot') == 2:
       put('pilotHighCharge', V['pilotHigh'], wall)
+    if i == 0x332 and 'brickMaxV' in changed:
+      cs = car.cell_set(mono)
+      at = [a for a in car.cells_v_at if a is not None]
+      if cs and mono - max(at) <= 10 and abs(V.get('packCurrent') if V.get('packCurrent') is not None else 99) < 5 \
+         and V.get('bmsState') != 1:
+        vrf('332v:max', (V['brickMaxV'] - max(cs)) * 1000, wall)
+        if 'brickMinV' in changed:
+          vrf('332v:min', (V['brickMinV'] - min(cs)) * 1000, wall)
+    if i == 0x332 and 'bmsTempMax' in changed and car.stamp.get('moduleTempMax') is not None \
+       and mono - car.stamp['moduleTempMax'] <= 30:
+      vrf('332t:max', V['bmsTempMax'] - V['moduleTempMax'], wall)
+      if 'bmsTempMin' in changed:
+        vrf('332t:min', V['bmsTempMin'] - V['moduleTempMin'], wall)
+    if i == 0x202 and V.get('bmsState') == 1 and V.get('packVoltage') and car.stamp.get('maxRegenPower') is not None \
+       and mono - car.stamp['maxRegenPower'] <= 3:
+      if 'bmsMaxChargeA' in changed and V['maxRegenPower'] > 10:
+        vrf('202c', V['bmsMaxChargeA'] * V['packVoltage'] / 1000 / V['maxRegenPower'], wall)
+      if 'bmsMaxDischargeA' in changed and V['maxDischargePower'] > 20:
+        vrf('202d', V['bmsMaxDischargeA'] * V['packVoltage'] / 1000 / V['maxDischargePower'], wall)
     for x in bad_sigs:
       if x.key in changed and V[x.key] in x.bad:
         r = st.setdefault('bad:' + x.key, [V[x.key], V[x.key], 0, wall, wall])
         r[2] += 1
         r[4] = wall
-  if len(rs) >= R_MIN_PAIRS:
-    rs.sort()
-    r, t = rs[len(rs) // 2]
-    st['packResistance'] = [r, r, 1, t, t]
+  rec = _r_record(rs)
+  if rec:
+    st['_r'] = rec
+    if rec['conf'] in ('high', 'medium'):
+      st['packResistance'] = [rec['mOhm'], rec['mOhm'], 1, rec['t'], rec['t']]
   return st
+
+
+def _r_record(rs: list) -> dict | None:
+  """One hour's resistance: median of its pairs with the ΔV/ΔI/Δt/SOC/temperature behind it."""
+  if not rs:
+    return None
+  import statistics
+  rs = sorted(rs)
+  def med(k):
+    vals = [x[k] for x in rs if x[k] is not None]
+    return statistics.median(vals) if vals else None
+  r = rs[len(rs) // 2][0]
+  q1, q3 = rs[len(rs) // 4][0], rs[3 * len(rs) // 4][0]
+  spread = (q3 - q1) / r if r > 0 else None
+  temp = med(6)
+  why = []
+  if len(rs) < R_MIN_PAIRS:
+    why.append(f'쌍 {len(rs)}개 (< {R_MIN_PAIRS})')
+  if spread is None or spread > 0.3:
+    why.append('흩어짐 큼' if spread is not None else '음수 저항')
+  if temp is None:
+    why.append('온도 모름')
+  if why:
+    conf = 'low'
+  elif len(rs) >= R_HIGH_PAIRS and spread <= 0.15 and med(3) >= 80:
+    conf = 'high'
+  else:
+    conf = 'medium'
+  def rnd(v, n):
+    return None if v is None else round(v, n)
+  return {'t': rs[len(rs) // 2][1], 'n': len(rs), 'mOhm': round(r, 1), 'iqr': [round(q1, 1), round(q3, 1)],
+          'spread': rnd(spread, 3), 'dV': rnd(med(2), 2), 'dI': rnd(med(3), 1), 'dt': rnd(med(4), 1),
+          'soc': rnd(med(5), 1), 'temp': rnd(temp, 1), 'conf': conf, 'why': why}
 
 
 def _stats(days: float) -> dict:
@@ -661,6 +833,7 @@ def _stats(days: float) -> dict:
   since = time.strftime('%Y%m%d-%H', time.gmtime(time.time() - days * 86400))
   names = [n for n in sorted(raw_files()) if n >= since]
   agg: dict = {}
+  rrec: list = []
   dirty = False
   for n in names:
     p = os.path.join(VLOG_DIR, f'raw-{n}.jsonl.gz')
@@ -669,7 +842,9 @@ def _stats(days: float) -> dict:
     if not hit or hit['mtime'] != mt or hit.get('v') != STATS_VERSION:
       hit = disk[n] = {'mtime': mt, 'v': STATS_VERSION, 'stats': file_stats(p)}
       dirty = True
-    for k, (lo, hi, cnt, tlo, thi) in hit['stats'].items():
+    if '_r' in hit['stats']:
+      rrec.append(hit['stats']['_r'])
+    for k, (lo, hi, cnt, tlo, thi) in ((k, v) for k, v in hit['stats'].items() if not k.startswith('_')):
       a = agg.get(k)
       if a is None:
         agg[k] = [lo, hi, cnt, tlo, thi]
@@ -687,7 +862,7 @@ def _stats(days: float) -> dict:
       os.replace(STATS_CACHE + '.tmp', STATS_CACHE)
     except OSError:
       pass
-  return {'agg': agg, 'files': len(names), 'from': names[0] if names else None}
+  return {'agg': agg, 'files': len(names), 'from': names[0] if names else None, 'resistance': rrec}
 
 
 # (group, key, label, unit, digits, warn (lo, hi), bad (lo, hi), reference shown). No warn/bad = 참고:
@@ -712,6 +887,14 @@ CHECKS = [
   ('배터리', 'socUI', 'SOC (BMS 실제)', '%', 1, None, None, '계기판보다 높음 (바닥 버퍼 포함)'),
   ('배터리', 'energyBuffer', '바닥 버퍼 (벽돌 방지)', 'kWh', 1, None, None, ''),
   ('배터리', 'rangeIdealFull', '완충 환산 이상 주행거리', 'mi', 0, None, None, '이상 주행거리 ÷ SOC(BMS) · SOC 30% 초과에서만'),
+  ('배터리', 'brickMaxV', '셀 최고 전압 (BMS 0x332)', 'V', 3, (None, 4.17), (None, 4.2), '4.17 V 이하 · 해독 검증 통과 시만 판정'),
+  ('배터리', 'brickMinV', '셀 최저 전압 (BMS 0x332)', 'V', 3, (3.2, None), (3.0, None), '3.2 V 이상 · 해독 검증 통과 시만 판정'),
+  ('배터리', 'bmsTempMax', '모듈 최고 온도 (BMS 0x332)', '°C', 1, (None, 45), (None, 55), '45 °C 이하 · 해독 검증 통과 시만 판정'),
+  ('배터리', 'bmsTempMin', '모듈 최저 온도 (BMS 0x332)', '°C', 1, (0, None), None, '0 °C 미만은 충전·회생 제한'),
+  ('배터리', 'bmsMaxChargeA', 'BMS 충전·회생 허용 전류 (0x202)', 'A', 0, None, None, '주차 0 · 충전·주행 중 BMS가 받아들이는 최대'),
+  ('배터리', 'bmsMaxDischargeA', 'BMS 방전 허용 전류 (0x202)', 'A', 0, None, None, ''),
+  ('배터리', 'bmsMaxChargeV', 'BMS 충전 상한 전압 (0x202)', 'V', 2, None, None, '96 × 4.2 V = 403.2 V 부근'),
+  ('배터리', 'bmsMinDischargeV', 'BMS 방전 하한 전압 (0x202)', 'V', 2, None, None, ''),
   ('12V', 'dcdcOutputVoltage', 'DC-DC 출력 전압', 'V', 2, (13.0, 15.0), (12.5, 15.5), '13.0~15.0 V'),
   ('12V', 'dcdcOutputCurrent', 'DC-DC 전류', 'A', 0, (None, 150), None, '150 A 이하'),
   ('12V', 'rearInverter12V', '12V (뒤 인버터 측)', 'V', 1, (12.5, None), (12.0, None), '12.5 V 이상'),
@@ -751,7 +934,12 @@ CHECKS = [
   ('후보 (미검증)', 'tpms3', '타이어 공기압? 3', 'psi', 1, (32, 45), None, '32~45 psi'),
   ('후보 (미검증)', 'tpms4', '타이어 공기압? 4', 'psi', 1, (32, 45), None, '32~45 psi'),
 ]
-EVENT_NAMES = {'CHARGE_STOPPED': 'AC가 있는데 충전 멈춤', 'CHARGE_POWER_DROP': '충전 전력 급감', 'LIMIT_DROP_DISCHARGE': 'BMS 방전 한계 급감',
+# A check whose decode is only trusted while its cross-check holds (VERIFY): judged when confirmed,
+# otherwise "미확인" with the reason.
+CHECK_NEEDS = {'brickMaxV': '332v', 'brickMinV': '332v', 'bmsTempMax': '332t', 'bmsTempMin': '332t',
+               'bmsMaxChargeA': '202c', 'bmsMaxChargeV': '202c', 'bmsMinDischargeV': '202c', 'bmsMaxDischargeA': '202d'}
+UNVERIFIED_GROUPS = ('후보 (미검증)',)
+EVENT_NAMES = {'CHARGE_STOPPED': '충전 멈춤', 'CHARGE_POWER_DROP': '충전 전력 급감', 'LIMIT_DROP_DISCHARGE': 'BMS 방전 한계 급감',
                'LIMIT_DROP_REGEN': 'BMS 회생 한계 급감', 'LOW_12V': '12V 낮음', 'MODULE_HOT': '모듈 고온', 'CELL_DELTA_HIGH': '셀 편차 큼'}
 
 
@@ -786,6 +974,8 @@ def checks(days: float = CHECK_DAYS) -> dict:
     lo, hi, n, tlo, thi = agg['kwhDischargeTotal']
     agg['cycles'] = [lo / ref, hi / ref, n, tlo, thi]
 
+  decodes = decode_checks(agg)
+  dstat = {d['key']: d for d in decodes}
   rows = []
   for group, key, label, unit, dg, warn, bad, refs in CHECKS:
     a = agg.get(key)
@@ -800,26 +990,67 @@ def checks(days: float = CHECK_DAYS) -> dict:
       for v, t in ((lo, tlo), (hi, thi)):
         if _out(v, rng):
           level, worst = lvl, t
-    rows.append({**row, 'min': round(lo, dg), 'max': round(hi, dg), 'n': n, 'tMin': tlo, 'tMax': thi, 'level': level, 'tWorst': worst})
+    why = ''
+    # rule: nothing is called normal on data that was not confirmed. An out-of-range value still shows
+    # as unconfirmed rather than ok; only ok/info are downgraded.
+    need = dstat.get(CHECK_NEEDS.get(key, ''))
+    if group in UNVERIFIED_GROUPS:
+      level, why = 'unverified', '신호 의미 미검증: 판정하지 않음'
+    elif need and need['status'] != 'confirmed':
+      level, why = 'unverified', f"해독 검증 {need['statusText']}: 판정하지 않음"
+    elif key != 'degradation' and key not in ('cycles',) and n < MIN_N and level in ('ok', 'info'):
+      level, why = 'few', f'표본 {n}개: 판정하지 않음'
+    rows.append({**row, 'min': round(lo, dg), 'max': round(hi, dg), 'n': n, 'tMin': tlo, 'tMax': thi, 'level': level,
+                 'tWorst': worst, 'why': why})
   if ref > 0:
     next(r for r in rows if r['key'] == 'degradation')['ref'] += f' (신품 {ref:.1f} kWh)'
+  else:
+    r = next(r for r in rows if r['key'] == 'degradation')
+    r.update(level='na', why='신품 용량(BtObdPackNewKwh) 미설정')
 
   faults = []
   for x in tesla_pt.LIVE_SIGS:
     a = agg.get('bad:' + x.key)
     if a:
       faults.append({'label': x.label, 'value': x.enum.get(a[0], a[0]) if x.enum else a[0], 'n': a[2], 't': a[4], 'level': 'bad'})
+  sessions = [s for s in vlog.read_jsonl(os.path.join(VLOG_DIR, 'sessions.jsonl'))
+              if s.get('type') in vlog.CHARGE_MODES and s.get('end', 0) >= since]
   events = []
   for e in vlog.read_jsonl(os.path.join(VLOG_DIR, 'events.jsonl')):
     if e.get('t', 0) < since:
       continue
-    ctx = e.get('context') or {}
-    normal = e['type'] == 'CHARGE_STOPPED' and ((ctx.get('acVolts1') or 0) < 50 or ctx.get('pilot') == 0)
+    level, note = 'warn', ''
+    if e['type'] == 'CHARGE_STOPPED':
+      s = next((s for s in sessions if s['start'] - 60 <= e['t'] <= s['end'] + 300 and s.get('endCause')), None)
+      cause = s.get('endCause') if s else None
+      level = END_LEVEL.get(cause, 'warn')
+      note = (vlog.CHARGE_END.get(cause, cause) + ': ' + ' · '.join(s.get('endWhy') or [])) if s else '이 충전의 종료 원인 기록 없음 (원인 불명)'
     events.append({'type': e['type'], 'label': EVENT_NAMES.get(e['type'], e['type']), 'value': e.get('value'),
-                   'threshold': e.get('threshold'), 't': e['t'], 'level': 'info' if normal else 'warn',
-                   'note': 'AC가 끊긴 시점 — 플러그 분리·충전 종료로 정상' if normal else ''})
+                   'threshold': e.get('threshold'), 't': e['t'], 'level': level, 'note': note})
+  ends = [{'t': s.get('endT') or s['end'], 'type': s['type'], 'cause': s.get('endCause'),
+           'label': vlog.CHARGE_END.get(s.get('endCause'), '원인 기록 없음'), 'why': s.get('endWhy') or [],
+           'level': END_LEVEL.get(s.get('endCause'), 'warn')} for s in sessions]
   count = {}
   for r in rows + faults + events:
     count[r['level']] = count.get(r['level'], 0) + 1
   return {'rows': rows, 'faults': faults, 'events': events, 'count': count, 'days': days, 'files': S['files'],
-          'health': len(health), 'from': S['from']}
+          'health': len(health), 'from': S['from'], 'decodes': decodes, 'resistance': S.get('resistance', []),
+          'chargeEnds': ends}
+
+
+END_LEVEL = {'complete': 'info', 'user': 'info', 'unplugged': 'info', 'abnormal': 'bad', 'unknown': 'warn'}
+VERIFY_TEXT = {'confirmed': '확인됨', 'failed': '불일치', 'insufficient': '비교 표본 부족'}
+
+
+def decode_checks(agg: dict) -> list:
+  """Each VERIFY comparison over the window: how many, how far off, how many outside tolerance."""
+  out = []
+  for k, (label, against, unit, tol) in VERIFY.items():
+    parts = [v for n, v in agg.items() if n.startswith('vrf:' + k)]
+    n = sum(p[2] for p in parts)
+    miss = sum(v[2] for name, v in agg.items() if name.startswith('vrfmiss:' + k))
+    status = 'insufficient' if n < VERIFY_MIN_N else 'confirmed' if miss <= VERIFY_MAX_MISS * n else 'failed'
+    out.append({'key': k, 'label': label, 'against': against, 'unit': unit, 'tol': tol, 'center': VERIFY_CENTER.get(k, 0.0),
+                'n': n, 'miss': miss, 'min': round(min(p[0] for p in parts), 3) if parts else None,
+                'max': round(max(p[1] for p in parts), 3) if parts else None, 'status': status, 'statusText': VERIFY_TEXT[status]})
+  return out
