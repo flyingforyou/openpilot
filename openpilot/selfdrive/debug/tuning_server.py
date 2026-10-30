@@ -3629,19 +3629,20 @@ const CONF={high:['높음','good'],medium:['보통','mid'],low:['낮음','na']};
 const ENDL={complete:'정상 종료',user:'사용자 중지 (추정)',unplugged:'플러그 분리',abnormal:'비정상 중단',unknown:'원인 불명'};
 function renderVerify(j,tm,tg,lab){
   const pill=(m,k)=>`<span class="tag hv ${m[k][1]}" style="margin:0">${m[k][0]}</span>`;
-  let h='<table><tbody><tr><th class="g" colspan="4">해독 검증 (매 시간 다시 비교)</th></tr>';
+  // three columns (name · numbers · verdict) so the verdict stays on a phone screen
+  let h='<table><tbody><tr><th class="g" colspan="3">해독 검증 (매 시간 다시 비교)</th></tr>';
   h+=(j.decodes||[]).map(d=>{const rng=d.n?(d.unit==='비'?`비 ${d.min}~${d.max}`:`오차 ${d.min}~${d.max} ${d.unit}`):'–';
     return `<tr class="${d.status==='failed'?'bad':''}">${lab(d.label,d.against+` · 허용 ${d.unit==='비'?d.center+'±'+d.tol:'±'+d.tol+' '+d.unit}`)}
-      <td class="r">${d.n}회<br><span class="rf">벗어남 ${d.miss}</span></td><td class="r">${rng}</td><td>${pill(VS,d.status)}</td></tr>`;}).join('');
+      <td class="r">${rng}<br><span class="rf">${d.n}회 · 벗어남 ${d.miss}</span></td><td>${pill(VS,d.status)}</td></tr>`;}).join('');
   const R=(j.resistance||[]).slice().sort((a,b)=>b.t-a.t);
-  h+='<tr><th class="g" colspan="4">팩 내부저항 · 시간별 측정</th></tr>';
+  h+='<tr><th class="g" colspan="3">팩 내부저항 · 시간별 측정</th></tr>';
   h+=R.length?R.map(r=>`<tr>${lab(tm(r.t)+` · ${r.mOhm} mΩ`,`쌍 ${r.n} · ΔI ${r.dI} A · ΔV ${r.dV} V · Δt ${r.dt}s · SOC ${r.soc??'–'}% · 온도 ${r.temp??'–'} °C`+(r.why&&r.why.length?' · '+r.why.join(', '):''))}
-      <td class="r">${r.iqr[0]}~${r.iqr[1]}<br><span class="rf">사분위 mΩ</span></td><td class="r">${r.spread==null?'–':Math.round(r.spread*100)+'%'}<br><span class="rf">흩어짐</span></td><td>${pill(CONF,r.conf)}</td></tr>`).join('')
-    :'<tr><td class="l" colspan="4">아직 측정 없음 (주행 중 10초 안에 전류가 60 A 이상 바뀌는 순간이 필요)</td></tr>';
-  h+='<tr><th class="g" colspan="4">충전 종료</th></tr>';
+      <td class="r">${r.iqr[0]}~${r.iqr[1]}<br><span class="rf">사분위 mΩ · 흩어짐 ${r.spread==null?'–':Math.round(r.spread*100)+'%'}</span></td><td>${pill(CONF,r.conf)}</td></tr>`).join('')
+    :'<tr><td class="l" colspan="3">아직 측정 없음 (주행 중 10초 안에 전류가 60 A 이상 바뀌는 순간이 필요)</td></tr>';
+  h+='<tr><th class="g" colspan="3">충전 종료</th></tr>';
   const E=(j.chargeEnds||[]).slice().sort((a,b)=>b.t-a.t);
-  h+=E.length?E.map(e=>`<tr class="${e.level}">${lab(e.label,(e.why||[]).join(' · ')||'근거 기록 없음')}<td class="r" colspan="2">${tm(e.t)}</td><td>${tg(e.level)}</td></tr>`).join('')
-    :'<tr><td class="l" colspan="4">기록된 충전 없음</td></tr>';
+  h+=E.length?E.map(e=>`<tr class="${e.level}">${lab(e.label,(e.why||[]).join(' · ')||'근거 기록 없음')}<td class="r">${tm(e.t)}</td><td>${tg(e.level)}</td></tr>`).join('')
+    :'<tr><td class="l" colspan="3">기록된 충전 없음</td></tr>';
   $('vrf').innerHTML=h+'</tbody></table>';
   $('vrfsub').textContent=`저장된 내부저항 측정 ${R.length}건 · 충전 ${E.length}건`;
 }
@@ -3654,13 +3655,13 @@ async function rx(){
     +`신선 ${c.fresh||0} · 오래됨 ${c.stale||0} · 누락 ${c.missing||0} · 미수신 ${c.never||0}`;
   if(j.t==null){$('rx').innerHTML='';return;}
   const lab=(l,sub)=>`<td class="l">${esc(l)}${sub?`<br><span class="rf">${esc(sub)}</span>`:''}</td>`;
-  let h='<table><tbody><tr><th class="g" colspan="4">CAN ID별</th></tr><tr><th>ID · 간격</th><th class="r">마지막 수신</th><th class="r">누락</th><th>상태</th></tr>';
+  let h='<table><tbody><tr><th class="g" colspan="3">CAN ID별</th></tr><tr><th>ID · 간격</th><th class="r">마지막 수신 · 누락</th><th>상태</th></tr>';
   h+=j.ids.map(x=>`<tr class="${x.status==='missing'?'bad':''}">${lab('0x'+x.id,`간격 중앙 ${x.gapMed??'–'}s · 최대 ${x.gapMax??'–'}s · ${x.frames}프레임`)}
-    <td class="r">${ago(x.sinceS)} 전</td><td class="r">${x.missRate==null?'–':Math.round(x.missRate*100)+'%'}<br><span class="rf">연속 ${x.miss} · 최대 ${x.maxMiss}${x.day?` · 24h ${Math.round(x.day.missRate*100)}%`:''}</span></td><td>${pill(x.status)}</td></tr>`).join('');
-  h+='<tr><th class="g" colspan="4">신호별</th></tr><tr><th>신호 · ID</th><th class="r">나이</th><th class="r">기준</th><th>상태</th></tr>';
+    <td class="r">${ago(x.sinceS)} 전<br><span class="rf">누락 ${x.missRate==null?'–':Math.round(x.missRate*100)+'%'} · 연속 ${x.miss} · 최대 ${x.maxMiss}${x.day?` · 24h ${Math.round(x.day.missRate*100)}%`:''}</span></td><td>${pill(x.status)}</td></tr>`).join('');
+  h+='<tr><th class="g" colspan="3">신호별</th></tr><tr><th>신호 · ID</th><th class="r">나이 / 기준</th><th>상태</th></tr>';
   const order={missing:0,stale:1,never:2,fresh:3};
   h+=j.signals.slice().sort((a,b)=>order[a.status]-order[b.status]||a.id.localeCompare(b.id)).map(x=>`<tr class="${x.status==='missing'?'bad':x.status==='stale'?'warn':''}">${lab(x.label,'0x'+x.id+(x.gapMed!=null?` · 간격 ${x.gapMed}s`:''))}
-    <td class="r">${x.ageS==null?'–':ago(x.ageS)}</td><td class="r">${x.maxAgeS}s</td><td>${pill(x.status)}</td></tr>`).join('');
+    <td class="r">${x.ageS==null?'–':ago(x.ageS)} / ${x.maxAgeS}s</td><td>${pill(x.status)}</td></tr>`).join('');
   $('rx').innerHTML=h+'</tbody></table>';
 }
 rx();setInterval(rx,10000);
