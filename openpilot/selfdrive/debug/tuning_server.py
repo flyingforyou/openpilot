@@ -1114,8 +1114,8 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(200, json.dumps({**vlog_api.overview(), 'rawFiles': vlog_api.raw_files()[:48]}, ensure_ascii=False))
       if rest == 'state':
         return self._send(200, json.dumps(vlog_api.last_state() or {}))
-      if rest == 'anomalies':
-        return self._send(200, json.dumps(vlog_api.anomalies(), ensure_ascii=False))
+      if rest == 'checks':
+        return self._send(200, json.dumps(vlog_api.checks(), ensure_ascii=False))
       if rest == 'now':
         # the page's 5 s refresh: only the daemon's tmpfs state, none of the history
         return self._send(200, json.dumps(vlog_api.now(), ensure_ascii=False))
@@ -2122,7 +2122,7 @@ border:1px solid var(--line);color:var(--mut)}
   <div class="st"><span class="pill" id="p-shd">–</span></div>
 </a>
 
-<!-- /checks is left out of the menu: /diag lists anomalies from the always-on log instead.
+<!-- /checks is left out of the menu: /diag checks the always-on log instead (min/max against limits).
 <a class="card" href="/checks">
   <div class="t">점검 · 주차 중 이상 징후</div>
   <div class="d">주차해 둔 상태에서 배터리·12V·온도·BMS 출력을 정상 범위와 비교해 이상한 곳을
@@ -3414,14 +3414,20 @@ th{color:var(--mut);font-weight:normal}
 .smr .u,.smr .a{font-family:var(--m);font-size:10.5px;color:var(--dim)}
 .smr .d{grid-column:1/-1;font-family:var(--m);font-size:10.5px;color:var(--dim)}
 .smr .l{font-size:13px}.smr .l .a{margin-left:6px}
+.ck{overflow-x:auto}.ck table td{font-size:11.5px;padding:6px 10px}.ck td.l{font-family:var(--s);font-size:12.5px;white-space:normal;min-width:130px}
+.ck td.r{text-align:right}.ck tr.warn td{background:color-mix(in srgb,var(--hot) 9%,transparent)}.ck tr.bad td{background:color-mix(in srgb,var(--bad) 10%,transparent)}
+.ck th.g{color:var(--tx);font-family:var(--s);font-size:12px;padding-top:10px}.ck .rf{color:var(--dim);white-space:normal}
 @media(max-width:560px){.cells{grid-template-columns:repeat(8,1fr)}}
 </style></head><body>
 <a class="back" href="/">← 메뉴</a>
 <h1>진단 · 배터리</h1><div class="sub" id="sub">불러오는 중…</div>
 
 <div class="grp">
-  <div class="gt"><span>이상 징후 (기록 기준)</span><span class="a" id="ansub"></span></div>
-  <div id="anom"></div>
+  <div class="gt"><span>점검 · 기록 기준 최저/최고</span><span class="a" id="ansub"></span></div>
+  <div class="ck" id="anom"></div>
+  <div class="hint" style="border-top:1px solid var(--line)">상시 기록의 모든 프레임을 다시 해독한 최저·최고값입니다. 값에 마우스를 올리면 그 시각이 나옵니다.
+    판정은 기준을 벗어난 값이 한 번이라도 있으면 주의/나쁨입니다. 참고 항목은 정상 범위를 정하지 않고 범위만 보여줍니다.
+    충전 전력·셀 편차(충전 중)·AC 전압은 BMS가 충전 중일 때만, 방전 한계는 SOC 20%·모듈 10 °C 초과일 때만 집계합니다.</div>
 </div>
 
 <div class="grp">
@@ -3568,16 +3574,25 @@ async function summary(name){
 summary('');
 // the logger keeps adding frames while the car is awake; a capture someone opened stays put
 setInterval(()=>{if(smFile==='vlog')summary('');},60000);
-const LV={bad:['나쁨','bad'],warn:['주의','mid']};
-async function anomalies(){
-  let j;try{j=await (await fetch('/api/vlog/anomalies')).json();}catch(e){return;}
-  const tm=t=>new Date(t*1000).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
-  $('ansub').textContent=`최근 ${j.days}일 · 시계열 ${j.samples} · 셀 스냅샷 ${j.health}`;
-  $('anom').innerHTML=j.items.length?j.items.map(i=>`<div class="row"><span class="lb"><span class="tag hv ${LV[i.level][1]}" style="margin:0 8px 0 0">${LV[i.level][0]}</span>${esc(i.title)}
-      <br><span class="a" style="font-family:var(--m);font-size:11px;color:var(--mut)">${esc(i.detail)}</span></span><span class="vl na">${i.t?tm(i.t):''}</span></div>`).join('')
-    :'<div class="hint">기록에서 이상 징후가 없습니다.</div>';
+const LV={bad:['나쁨','bad'],warn:['주의','mid'],ok:['정상','good'],info:['참고','na'],na:['기록 없음','na']};
+async function checks(){
+  let j;try{j=await (await fetch('/api/vlog/checks')).json();}catch(e){return;}
+  const tm=t=>t?new Date(t*1000).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
+  const c=j.count||{};
+  $('ansub').innerHTML=`최근 ${j.days}일 · 시간 파일 ${j.files}개 · <span class="hv bad">나쁨 ${c.bad||0}</span> · <span class="hv mid">주의 ${c.warn||0}</span> · 정상 ${c.ok||0} · 참고 ${c.info||0}`;
+  const tg=l=>`<span class="tag hv ${LV[l][1]}" style="margin:0">${LV[l][0]}</span>`;
+  let html='<table><thead><tr><th>항목</th><th class="r">최저</th><th class="r">최고</th><th>기준</th><th>판정</th></tr></thead><tbody>',g='';
+  j.rows.forEach(r=>{if(r.group!==g){g=r.group;html+=`<tr><th class="g" colspan="5">${esc(g)}</th></tr>`;}
+    const v=(x,t)=>x==null?'–':`<span title="${tm(t)}">${Number(x).toFixed(r.digits)}</span>`;
+    html+=`<tr class="${r.level}"><td class="l">${esc(r.label)}</td><td class="r">${v(r.min,r.tMin)}</td><td class="r">${v(r.max,r.tMax)} <span class="a">${esc(r.unit)}</span></td>
+      <td class="rf">${esc(r.ref||'')}</td><td>${tg(r.level)}</td></tr>`;});
+  html+=`<tr><th class="g" colspan="5">고장 상태 · 이벤트</th></tr>`;
+  const ev=[...j.faults.map(x=>({...x,detail:`${x.value} · ${x.n}회`})),...j.events.map(x=>({...x,detail:`값 ${x.value} · 기준 ${x.threshold}${x.note?' · '+x.note:''}`}))];
+  html+=ev.length?ev.map(x=>`<tr class="${x.level}"><td class="l">${esc(x.label)}</td><td class="r" colspan="2">${tm(x.t)}</td><td class="rf">${esc(x.detail)}</td><td>${tg(x.level)}</td></tr>`).join('')
+    :'<tr><td class="l" colspan="4">BMS 오류·HVIL·파일럿 이상·히터 고장 상태와 기록 이벤트 없음</td><td>'+tg('ok')+'</td></tr>';
+  $('anom').innerHTML=html+'</tbody></table>';
 }
-anomalies();setInterval(anomalies,60000);
+checks();setInterval(checks,60000);
 // Reuses the grid's own divs across ticks instead of rebuilding all n of them via innerHTML every
 // second -- 96+32 fresh elements a second is the main thing making this page feel like it stutters.
 function renderGrid(id,n,get){

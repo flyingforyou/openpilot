@@ -547,12 +547,13 @@ def last_state() -> dict | None:
   return out
 
 
-# ---- anomalies from the log -------------------------------------------------------------------------
-# Thresholds are the /diag health criteria; the rest are where this car's own logs say "normal" ends
-# (DC-DC 13.5-14.7 V awake, module spread <= 2 C, discharge limit >= 330 kW on 2026-10-29/30).
-ANOMALY_DAYS = 14
-LIMITS = {'cellDeltaMv': (20.0, 40.0), 'weakCellMv': 30.0, 'degradation': (0.10, 0.20), 'moduleHotC': (45.0, 55.0),
-          'moduleSpreadC': (5.0, 10.0), 'low12V': 13.0, 'dischargeLimitKw': 150.0, 'tpmsLowPsi': 32.0, 'tpmsSpreadPsi': 4.0}
+# ---- checks over the log -----------------------------------------------------------------------------
+# Every frame of the raw log is decoded again and each signal's min/max kept (with when), per raw hour
+# file, cached on disk by the file's mtime: a closed hour is decoded once. Derived values are taken
+# only in the condition they mean something in (charging power while the BMS says charging, the
+# discharge limit only above 20% and 10 C, cell spread only from a synchronised sweep, ...).
+CHECK_DAYS = 14
+STATS_CACHE = os.path.join(tdiag.LOG_DIR, 'vlog-stats-cache.json')
 BMS_FAULT = (7, 8)
 
 
@@ -564,108 +565,213 @@ def _param_file(key: str) -> str:
     return ''
 
 
-def _series_days(days: float) -> list:
-  out, now = [], time.time()
-  for k in range(int(days) + 1):
-    name = 'series-' + time.strftime('%Y%m%d', time.gmtime(now - k * 86400)) + '.jsonl'
-    out += vlog.read_jsonl(os.path.join(VLOG_DIR, name))
-  return sorted((r for r in out if r.get('t', 0) >= now - days * 86400), key=lambda r: r['t'])
+def file_stats(path: str) -> dict:
+  """{key: [min, max, n, t_min, t_max]} for one raw file; 'bad:<sig>' keys count fault enum values."""
+  from openpilot.system.btobd import tesla_pt
+  from openpilot.system.btobd.tesla_sx import TeslaSXState
+  car = TeslaSXState()
+  st: dict = {}
+  bad_sigs = [x for x in tesla_pt.LIVE_SIGS if x.bad]
+  cand = {}
+  for x in tesla_pt.CANDIDATES:
+    cand.setdefault(x.msg, []).append(x)
+
+  def put(k, v, t):
+    if v is None or isinstance(v, (str, bool)):
+      return
+    r = st.get(k)
+    if r is None:
+      st[k] = [v, v, 1, t, t]
+      return
+    r[2] += 1
+    if v < r[0]:
+      r[0], r[3] = v, t
+    if v > r[1]:
+      r[1], r[4] = v, t
+
+  for wall, mono, i, d in _raw_frames([path]):
+    before = dict(car.stamp)
+    car.feed(i, d, mono)
+    if i in tesla_pt.LIVE_IDS:
+      tesla_pt.feed_live(car, i, d, mono)
+    for x in cand.get(i, ()):
+      put(x.key, tesla_pt.decode(x, d), wall)
+    V = car.values
+    changed = [k for k, t in car.stamp.items() if before.get(k) != t]
+    for k in changed:
+      put(k, V[k], wall)
+    if 'packCurrent' in changed and V.get('packVoltage') is not None:
+      kw = V['packVoltage'] * V['packCurrent'] / 1000
+      if V.get('bmsState') in (3, 4):
+        put('chargeKw', kw, wall)
+      elif V.get('gear') in ('D', 'R', 'N'):
+        put('driveKw', kw, wall)
+    if 'moduleTempMax' in changed and V.get('moduleTempMin') is not None:
+      put('moduleSpread', V['moduleTempMax'] - V['moduleTempMin'], wall)
+    if 'cellDelta' in changed and V.get('cellSync') and V.get('bmsState') in (3, 4):
+      put('chargeDeltaMv', V['cellDelta'] * 1000, wall)
+    if 'maxDischargePower' in changed and (V.get('socDisplay') or 0) > 20 and (V.get('moduleTempMin') or 0) > 10:
+      put('dischargeLimitOk', V['maxDischargePower'], wall)
+    for k in ('acVolts1', 'acVolts2', 'acVolts3'):
+      if k in changed and V[k] > 80:
+        put('acVoltsCharge', V[k], wall)
+    if 'pilotHigh' in changed and V.get('pilot') == 2:
+      put('pilotHighCharge', V['pilotHigh'], wall)
+    for x in bad_sigs:
+      if x.key in changed and V[x.key] in x.bad:
+        r = st.setdefault('bad:' + x.key, [V[x.key], V[x.key], 0, wall, wall])
+        r[2] += 1
+        r[4] = wall
+  return st
 
 
-def anomalies(days: float = ANOMALY_DAYS) -> dict:
-  """Only what is out of line in the logged data, each with the number behind it and when."""
-  L = LIMITS
-  items: list = []
+def _stats(days: float) -> dict:
+  try:
+    with open(STATS_CACHE) as f:
+      disk = json.load(f)
+  except (OSError, ValueError):
+    disk = {}
+  since = time.strftime('%Y%m%d-%H', time.gmtime(time.time() - days * 86400))
+  names = [n for n in sorted(raw_files()) if n >= since]
+  agg: dict = {}
+  dirty = False
+  for n in names:
+    p = os.path.join(VLOG_DIR, f'raw-{n}.jsonl.gz')
+    mt = _mtime(p)
+    hit = disk.get(n)
+    if not hit or hit['mtime'] != mt:
+      hit = disk[n] = {'mtime': mt, 'stats': file_stats(p)}
+      dirty = True
+    for k, (lo, hi, cnt, tlo, thi) in hit['stats'].items():
+      a = agg.get(k)
+      if a is None:
+        agg[k] = [lo, hi, cnt, tlo, thi]
+        continue
+      a[2] += cnt
+      if lo < a[0]:
+        a[0], a[3] = lo, tlo
+      if hi > a[1]:
+        a[1], a[4] = hi, thi
+  if dirty:
+    disk = {n: v for n, v in disk.items() if n >= since}
+    try:
+      with open(STATS_CACHE + '.tmp', 'w') as f:
+        json.dump(disk, f)
+      os.replace(STATS_CACHE + '.tmp', STATS_CACHE)
+    except OSError:
+      pass
+  return {'agg': agg, 'files': len(names), 'from': names[0] if names else None}
 
-  def add(level, title, detail, t=None):
-    items.append({'level': level, 'title': title, 'detail': detail, 't': t})
+
+# (group, key, label, unit, digits, warn (lo, hi), bad (lo, hi), reference shown). No warn/bad = 참고:
+# shown with its range, not judged. Limits are general Li-ion/Tesla figures or this car's own normal.
+CHECKS = [
+  ('배터리', 'packVoltage', '팩 전압', 'V', 1, (300, 403), (288, 410), '96셀 × 3.1~4.2 V'),
+  ('배터리', 'packCurrent', '팩 전류', 'A', 1, None, None, '+ 충전·회생 / − 방전'),
+  ('배터리', 'driveKw', '주행 중 팩 출력', 'kW', 1, None, None, '+ 회생 / − 구동'),
+  ('배터리', 'socDisplay', 'SOC (계기판)', '%', 1, (5, None), None, '5% 미만 주의'),
+  ('배터리', 'cellMin', '셀 최저 전압', 'V', 3, (3.2, None), (3.0, None), '3.2 V 이상 (부하 중 포함)'),
+  ('배터리', 'cellMax', '셀 최고 전압', 'V', 3, (None, 4.17), (None, 4.2), '4.17 V 이하'),
+  ('배터리', 'restDeltaMv', '셀 편차 (휴지·동시 측정)', 'mV', 0, (None, 20), (None, 40), '20 mV 미만'),
+  ('배터리', 'chargeDeltaMv', '셀 편차 (충전 중·동시 측정)', 'mV', 0, (None, 25), (None, 40), '25 mV 미만'),
+  ('배터리', 'moduleTempMax', '모듈 최고 온도', '°C', 1, (None, 45), (None, 55), '45 °C 이하'),
+  ('배터리', 'moduleTempMin', '모듈 최저 온도', '°C', 1, (0, None), None, '0 °C 미만은 충전·회생 제한'),
+  ('배터리', 'moduleSpread', '모듈 온도 편차', '°C', 1, (None, 5), (None, 10), '5 °C 미만'),
+  ('배터리', 'nominalFullPackEnergy', '공칭 완충 용량', 'kWh', 1, None, None, 'BMS 추정, 몇 % 오르내림'),
+  ('배터리', 'degradation', '열화 (신품 기준 대비)', '%', 1, (None, 10), (None, 20), '10% 미만 좋음 · 20% 이상 나쁨'),
+  ('배터리', 'dischargeLimitOk', 'BMS 방전 한계 (SOC>20%·>10 °C)', 'kW', 0, (150, None), (80, None), '150 kW 이상'),
+  ('배터리', 'maxRegenPower', 'BMS 회생 한계', 'kW', 0, None, None, '고SOC·저온에서 낮아짐'),
+  ('12V', 'dcdcOutputVoltage', 'DC-DC 출력 전압', 'V', 2, (13.0, 15.0), (12.5, 15.5), '13.0~15.0 V'),
+  ('12V', 'dcdcOutputCurrent', 'DC-DC 전류', 'A', 0, (None, 150), None, '150 A 이하'),
+  ('12V', 'rearInverter12V', '12V (뒤 인버터 측)', 'V', 1, (12.5, None), (12.0, None), '12.5 V 이상'),
+  ('12V', 'frontInverter12V', '12V (앞 인버터 측)', 'V', 1, (12.5, None), (12.0, None), '12.5 V 이상'),
+  ('12V', 'dcdcInletTemp', 'DC-DC 냉각수 입구 온도', '°C', 0, None, None, ''),
+  ('구동', 'inverterTemp', '인버터 온도', '°C', 0, (None, 75), (None, 90), '75 °C 이하 (대략)'),
+  ('구동', 'motorTemp', '모터 온도', '°C', 0, (None, 120), (None, 150), '120 °C 이하 (대략)'),
+  ('구동', 'rearMechPower', '뒤 모터 출력', 'kW', 0, None, None, ''),
+  ('구동', 'frontMechPower', '앞 모터 출력', 'kW', 0, None, None, ''),
+  ('구동', 'rearStatorCurrent', '뒤 고정자 전류', 'A', 0, None, None, ''),
+  ('구동', 'frontStatorCurrent', '앞 고정자 전류', 'A', 0, None, None, ''),
+  ('구동', 'vehicleSpeedMph', '속도', 'mph', 0, None, None, ''),
+  ('충전', 'chargeKw', '충전 전력 (팩 기준)', 'kW', 1, None, None, ''),
+  ('충전', 'acVoltsCharge', 'AC 입력 전압 (충전 중)', 'V', 0, (190, 264), (180, 270), '190~264 V'),
+  ('충전', 'pilotHighCharge', '파일럿 전압 (충전 중)', 'V', 2, (5.0, 7.0), None, 'J1772 충전 중 6 V'),
+  ('열관리', 'refrigPressure', '냉매 압력', 'bar', 1, None, None, ''),
+  ('열관리', 'suctionPressure', '냉매 흡입 압력', 'bar', 1, None, None, ''),
+  ('열관리', 'dischargeTemp', '냉매 토출 온도', '°C', 0, None, None, ''),
+  ('열관리', 'heaterTemp', '히터 온도', '°C', 1, None, None, ''),
+  ('열관리', 'pump1', '배터리 펌프', '%', 0, None, None, ''),
+  ('후보 (미검증)', 'tpms1', '타이어 공기압? 1', 'psi', 1, (32, 45), None, '32~45 psi'),
+  ('후보 (미검증)', 'tpms2', '타이어 공기압? 2', 'psi', 1, (32, 45), None, '32~45 psi'),
+  ('후보 (미검증)', 'tpms3', '타이어 공기압? 3', 'psi', 1, (32, 45), None, '32~45 psi'),
+  ('후보 (미검증)', 'tpms4', '타이어 공기압? 4', 'psi', 1, (32, 45), None, '32~45 psi'),
+]
+EVENT_NAMES = {'CHARGE_STOPPED': 'AC가 있는데 충전 멈춤', 'CHARGE_POWER_DROP': '충전 전력 급감', 'LIMIT_DROP_DISCHARGE': 'BMS 방전 한계 급감',
+               'LIMIT_DROP_REGEN': 'BMS 회생 한계 급감', 'LOW_12V': '12V 낮음', 'MODULE_HOT': '모듈 고온', 'CELL_DELTA_HIGH': '셀 편차 큼'}
+
+
+def _out(v, rng) -> bool:
+  return rng is not None and ((rng[0] is not None and v < rng[0]) or (rng[1] is not None and v > rng[1]))
+
+
+def checks(days: float = CHECK_DAYS) -> dict:
+  """Every check with its logged min/max, the range it is held to and a verdict, plus the fault
+  states and logger events seen. Nothing is left out for being normal."""
+  from openpilot.system.btobd import tesla_pt
+  S = _stats(days)
+  agg = S['agg']
   since = time.time() - days * 86400
-
   health = [h for h in vlog.read_jsonl(os.path.join(VLOG_DIR, 'health.jsonl')) if h.get('t', 0) >= since]
-  if health:
-    last = health[-1]
-    worst = max(health, key=lambda h: h.get('deltaMv') or 0)
-    if (worst.get('deltaMv') or 0) >= L['cellDeltaMv'][0]:
-      add('bad' if worst['deltaMv'] >= L['cellDeltaMv'][1] else 'warn', '셀 편차 큼 (휴지·동시 측정)',
-          f"{worst['deltaMv']:.0f} mV (기준 {L['cellDeltaMv'][0]:.0f} mV 미만)", worst['t'])
-    cells = last.get('cells') or []
-    if len(cells) == 96:
-      avg = sum(cells) / 96
-      weak = [(i + 1, (avg - v) * 1000) for i, v in enumerate(cells) if (avg - v) * 1000 >= L['weakCellMv']]
-      if weak:
-        add('bad', '약한 셀', ', '.join(f'#{i} −{mv:.0f} mV' for i, mv in weak[:6]) + ' (평균 대비)', last['t'])
-    lows = [h.get('lowIndex') for h in health[-5:]]
-    if len(lows) >= 4:
-      top = max(set(lows), key=lows.count)
-      if lows.count(top) >= 3:
-        add('warn', '같은 셀이 반복 최저', f'#{top}: 최근 스냅샷 {len(lows)}개 중 {lows.count(top)}번', last['t'])
-    bad_sum = [h for h in health if h.get('sumCheck') and abs(h['sumCheck'] - 1) > 0.02]
-    if bad_sum:
-      add('warn', '셀 합 ≠ 팩 전압', f"합/팩 {bad_sum[-1]['sumCheck']:.3f} — 셀 해독 확인 필요", bad_sum[-1]['t'])
-
-  rows = _series_days(days)
-  nfp = next((h['nominalFullPackEnergy'] for h in reversed(health) if h.get('nominalFullPackEnergy')), None)
-  st = last_state()
-  if nfp is None and st:
-    nfp = st['values'].get('nominalFullPackEnergy')
+  for h in health:
+    if h.get('deltaMv') is not None:
+      a = agg.setdefault('restDeltaMv', [h['deltaMv'], h['deltaMv'], 0, h['t'], h['t']])
+      a[2] += 1
+      if h['deltaMv'] < a[0]:
+        a[0], a[3] = h['deltaMv'], h['t']
+      if h['deltaMv'] > a[1]:
+        a[1], a[4] = h['deltaMv'], h['t']
   try:
     ref = float(_param_file('BtObdPackNewKwh') or 0)
   except ValueError:
     ref = 0.0
-  if nfp and ref > 0:
-    deg = 1 - nfp / ref
-    if deg >= L['degradation'][0]:
-      add('bad' if deg >= L['degradation'][1] else 'warn', '배터리 열화',
-          f"{deg * 100:.1f}% · 공칭 완충 {nfp:.1f} / 신품 {ref:.1f} kWh (기준 10% 미만, 20% 이상 나쁨)", None)
+  if ref > 0 and 'nominalFullPackEnergy' in agg:
+    lo, hi, n, tlo, thi = agg['nominalFullPackEnergy']
+    agg['degradation'] = [(1 - hi / ref) * 100, (1 - lo / ref) * 100, n, thi, tlo]
 
-  hot = [r for r in rows if (r.get('moduleTempMax') or 0) > L['moduleHotC'][0]]
-  if hot:
-    m = max(hot, key=lambda r: r['moduleTempMax'])
-    add('bad' if m['moduleTempMax'] > L['moduleHotC'][1] else 'warn', '배터리 모듈 고온',
-        f"최고 {m['moduleTempMax']:.1f} °C · {len(hot)}회 (기준 {L['moduleHotC'][0]:.0f} °C)", m['t'])
-  spread = [r for r in rows if r.get('moduleTempMax') is not None and r.get('moduleTempMin') is not None
-            and r['moduleTempMax'] - r['moduleTempMin'] > L['moduleSpreadC'][0]]
-  if spread:
-    m = max(spread, key=lambda r: r['moduleTempMax'] - r['moduleTempMin'])
-    d = m['moduleTempMax'] - m['moduleTempMin']
-    add('bad' if d > L['moduleSpreadC'][1] else 'warn', '모듈 온도 편차 큼', f'{d:.1f} °C · {len(spread)}회 (기준 5 °C)', m['t'])
-  low = [r for r in rows if r.get('dcdcOutputVoltage') is not None and r['dcdcOutputVoltage'] < L['low12V']]
-  if low:
-    m = min(low, key=lambda r: r['dcdcOutputVoltage'])
-    add('warn', '12V 낮음 (DC-DC 출력)', f"최저 {m['dcdcOutputVoltage']:.2f} V · {len(low)}회 (평소 13.5~14.7 V)", m['t'])
-  fault = [r for r in rows if r.get('bmsState') in BMS_FAULT]
-  if fault:
-    add('bad', 'BMS 오류 상태', f'{len(fault)}회 기록', fault[-1]['t'])
-  lim = [r for r in rows if r.get('maxDischargePower') is not None and r['maxDischargePower'] < L['dischargeLimitKw']
-         and (r.get('socDisplay') or 100) > 20 and (r.get('moduleTempMin') or 20) > 10]
-  if lim:
-    m = min(lim, key=lambda r: r['maxDischargePower'])
-    add('warn', 'BMS 방전 한계 낮음', f"{m['maxDischargePower']:.0f} kW (SOC 20% 초과·10 °C 초과인데 {L['dischargeLimitKw']:.0f} kW 미만)", m['t'])
+  rows = []
+  for group, key, label, unit, dg, warn, bad, refs in CHECKS:
+    a = agg.get(key)
+    row = {'group': group, 'key': key, 'label': label, 'unit': unit, 'digits': dg, 'ref': refs}
+    if a is None:
+      rows.append({**row, 'level': 'na'})
+      continue
+    lo, hi, n, tlo, thi = a
+    level = 'info' if warn is None and bad is None else 'ok'
+    worst = None
+    for lvl, rng in (('warn', warn), ('bad', bad)):
+      for v, t in ((lo, tlo), (hi, thi)):
+        if _out(v, rng):
+          level, worst = lvl, t
+    rows.append({**row, 'min': round(lo, dg), 'max': round(hi, dg), 'n': n, 'tMin': tlo, 'tMax': thi, 'level': level, 'tWorst': worst})
+  if ref > 0:
+    next(r for r in rows if r['key'] == 'degradation')['ref'] += f' (신품 {ref:.1f} kWh)'
 
+  faults = []
+  for x in tesla_pt.LIVE_SIGS:
+    a = agg.get('bad:' + x.key)
+    if a:
+      faults.append({'label': x.label, 'value': x.enum.get(a[0], a[0]) if x.enum else a[0], 'n': a[2], 't': a[4], 'level': 'bad'})
+  events = []
   for e in vlog.read_jsonl(os.path.join(VLOG_DIR, 'events.jsonl')):
     if e.get('t', 0) < since:
       continue
     ctx = e.get('context') or {}
-    # the charge ending because AC went away (unplugged, schedule, charge limit) is not a fault
-    if e['type'] == 'CHARGE_STOPPED' and ((ctx.get('acVolts1') or 0) < 50 or ctx.get('pilot') == 0):
-      continue
-    add('warn', {'CHARGE_STOPPED': 'AC가 있는데 충전 멈춤', 'CHARGE_POWER_DROP': '충전 전력 급감',
-                 'LIMIT_DROP_DISCHARGE': 'BMS 방전 한계 급감', 'LIMIT_DROP_REGEN': 'BMS 회생 한계 급감',
-                 'LOW_12V': '12V 낮음', 'MODULE_HOT': '모듈 고온', 'CELL_DELTA_HIGH': '셀 편차 큼'}.get(e['type'], e['type']),
-        f"값 {e.get('value')} · 기준 {e.get('threshold')}", e['t'])
-
-  sm = recent_summary()
-  if sm:
-    for g in sm['groups']:
-      for r in g['rows']:
-        if g['key'] in ('charge', 'thermal', 'ident') and r['status'] in ('bad', 'warn'):
-          add(r['status'], r['label'], f"{r['value']} {r.get('unit') or ''} {r.get('detail') or ''}".strip(), sm['end'])
-    tp = [float(r['value']) for g in sm['groups'] if g['key'] == 'candidate' for r in g['rows']
-          if r['key'].startswith('tpms') and r['status'] != 'na']
-    if len(tp) == 4 and (min(tp) < L['tpmsLowPsi'] or max(tp) - min(tp) > L['tpmsSpreadPsi']):
-      add('warn', '타이어 공기압 차이 (미검증 신호 0x3F8)', ' / '.join(f'{p:.1f}' for p in tp) + ' psi', sm['end'])
-
-  order = {'bad': 0, 'warn': 1}
-  items.sort(key=lambda x: (order.get(x['level'], 2), -(x['t'] or 0)))
-  return {'items': items, 'days': days, 'samples': len(rows), 'health': len(health),
-          'from': rows[0]['t'] if rows else None, 'to': rows[-1]['t'] if rows else None}
+    normal = e['type'] == 'CHARGE_STOPPED' and ((ctx.get('acVolts1') or 0) < 50 or ctx.get('pilot') == 0)
+    events.append({'type': e['type'], 'label': EVENT_NAMES.get(e['type'], e['type']), 'value': e.get('value'),
+                   'threshold': e.get('threshold'), 't': e['t'], 'level': 'info' if normal else 'warn',
+                   'note': 'AC가 끊긴 시점 — 플러그 분리·충전 종료로 정상' if normal else ''})
+  count = {}
+  for r in rows + faults + events:
+    count[r['level']] = count.get(r['level'], 0) + 1
+  return {'rows': rows, 'faults': faults, 'events': events, 'count': count, 'days': days, 'files': S['files'],
+          'health': len(health), 'from': S['from']}

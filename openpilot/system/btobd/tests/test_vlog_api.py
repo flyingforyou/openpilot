@@ -98,37 +98,43 @@ def _dir_with(tmp_path, monkeypatch, health=(), series=(), events=(), pack=''):
   monkeypatch.setattr(vlog_api, '_cache', {})
 
 
-def test_a_healthy_log_lists_only_degradation(tmp_path, monkeypatch):
+RAW_FIXTURE = Path(__file__).parent / 'data' / 'raw_charge_20261030.jsonl.gz'
+
+
+def test_every_check_has_min_max_and_a_verdict(tmp_path, monkeypatch):
   import time
   now = time.time()
-  cells = [3.95 + (i % 4) * 0.001 for i in range(96)]
   _dir_with(tmp_path, monkeypatch, pack='85.8',
-            health=[{'t': now - 3600, 'deltaMv': 3.0, 'cells': cells, 'lowIndex': 54, 'sumCheck': 1.0, 'nominalFullPackEnergy': 73.0}],
-            series=[{'t': now - 60, 'moduleTempMin': 27.0, 'moduleTempMax': 28.2, 'dcdcOutputVoltage': 14.6, 'bmsState': 3,
-                     'maxDischargePower': 340.0, 'socDisplay': 60.0}],
-            # the 2026-10-30 unplug: AC gone, pilot off -- a normal end, not an anomaly
-            events=[{'t': now - 100, 'type': 'CHARGE_STOPPED', 'context': {'acVolts1': 1.0, 'pilot': 0}, 'value': -5.2, 'threshold': 0.3}])
-  items = vlog_api.anomalies()['items']
-  assert [i['title'] for i in items] == ['배터리 열화'] and items[0]['level'] == 'warn' and '14.9%' in items[0]['detail']
+            health=[{'t': now - 3600, 'deltaMv': 3.0}, {'t': now - 1800, 'deltaMv': 4.2}],
+            events=[{'t': now - 100, 'type': 'CHARGE_STOPPED', 'context': {'acVolts1': 1.0, 'pilot': 0}, 'value': -5.2, 'threshold': 0.3},
+                    {'t': now - 50, 'type': 'CHARGE_STOPPED', 'context': {'acVolts1': 230.0, 'pilot': 2}, 'value': 0.1, 'threshold': 0.3}])
+  # the fixture's hour, renamed into the window
+  (Path(vlog_api.VLOG_DIR) / ('raw-' + time.strftime('%Y%m%d-%H', time.gmtime(now)) + '.jsonl.gz')).write_bytes(RAW_FIXTURE.read_bytes())
+  monkeypatch.setattr(vlog_api, 'STATS_CACHE', str(tmp_path / 'stats.json'))
+  c = vlog_api.checks()
+  rows = {r['key']: r for r in c['rows']}
+  assert set(rows) == {x[1] for x in vlog_api.CHECKS}            # normal rows are listed too
+  assert rows['packVoltage']['level'] == 'ok' and 360 < rows['packVoltage']['min'] < rows['packVoltage']['max'] < 385
+  assert rows['restDeltaMv']['min'] == 3.0 and rows['restDeltaMv']['max'] == 4 and rows['restDeltaMv']['level'] == 'ok'
+  assert 5.0 < rows['chargeKw']['max'] < 6.5 and rows['chargeKw']['level'] == 'info'
+  assert rows['acVoltsCharge']['min'] >= 200 and rows['acVoltsCharge']['level'] == 'ok'
+  assert rows['degradation']['level'] == 'warn' and rows['degradation']['max'] == pytest.approx(14.9, abs=0.1)
+  assert rows['motorTemp']['level'] == 'na'                       # parked and charging: no drive frames
+  assert [e['level'] for e in c['events']] == ['info', 'warn'] and c['faults'] == []
+  assert vlog_api.checks()['rows'] == c['rows']                   # second call from the stats cache
 
 
-def test_anomalies_are_found_and_ranked(tmp_path, monkeypatch):
-  import time
-  now = time.time()
-  cells = [3.95] * 96
-  cells[40] = 3.90
-  _dir_with(tmp_path, monkeypatch,
-            health=[{'t': now - 3600 * k, 'deltaMv': 50.0, 'cells': cells, 'lowIndex': 41, 'sumCheck': 1.0} for k in (5, 4, 3, 2, 1)],
-            series=[{'t': now - 60, 'moduleTempMin': 30.0, 'moduleTempMax': 47.0, 'dcdcOutputVoltage': 12.6, 'bmsState': 7,
-                     'maxDischargePower': 90.0, 'socDisplay': 60.0}],
-            events=[{'t': now - 100, 'type': 'CHARGE_STOPPED', 'context': {'acVolts1': 230.0, 'pilot': 2}, 'value': 0.1, 'threshold': 0.3}])
-  items = vlog_api.anomalies()['items']
-  titles = {i['title'] for i in items}
-  assert {'셀 편차 큼 (휴지·동시 측정)', '약한 셀', '같은 셀이 반복 최저', '배터리 모듈 고온', '모듈 온도 편차 큼', '12V 낮음 (DC-DC 출력)',
-          'BMS 오류 상태', 'BMS 방전 한계 낮음', 'AC가 있는데 충전 멈춤'} <= titles
-  levels = [i['level'] for i in items]
-  assert levels == sorted(levels, key=lambda x: {'bad': 0, 'warn': 1}[x])
-  assert next(i for i in items if i['title'] == '약한 셀')['detail'].startswith('#41')
+def test_out_of_range_values_are_flagged(tmp_path, monkeypatch):
+  _dir_with(tmp_path, monkeypatch)
+  agg = {'cellMin': [2.95, 3.9, 10, 1.0, 2.0], 'dcdcOutputVoltage': [12.8, 14.6, 10, 3.0, 4.0], 'moduleSpread': [0.5, 6.0, 10, 5.0, 6.0],
+         'bad:bmsState': [7, 7, 2, 7.0, 8.0]}
+  monkeypatch.setattr(vlog_api, '_stats', lambda days: {'agg': agg, 'files': 1, 'from': None})
+  c = vlog_api.checks()
+  rows = {r['key']: r for r in c['rows']}
+  assert rows['cellMin']['level'] == 'bad' and rows['cellMin']['tWorst'] == 1.0
+  assert rows['dcdcOutputVoltage']['level'] == 'warn' and rows['moduleSpread']['level'] == 'warn'
+  assert c['faults'][0]['label'] == 'BMS 상태' and c['faults'][0]['n'] == 2
+  assert c['count']['bad'] == 2
 
 
 def test_last_state_decodes_the_last_minutes(tmp_path, monkeypatch):
