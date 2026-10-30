@@ -1189,8 +1189,12 @@ class Handler(BaseHTTPRequestHandler):
       out.update(name=name, meta=meta, profile=prof_name if prof else '')
       return self._send(200, json.dumps(out, ensure_ascii=False))
     if kind == 'summary':
-      # no name: the newest capture that holds more than a probe's worth of frames
-      if not name:
+      # no name: the always-on logger's last hours of raw frames; else the newest full capture
+      if not name or name == 'vlog':
+        out = vlog_api.recent_summary()
+        if out:
+          return self._send(200, json.dumps(out, ensure_ascii=False))
+      if not name or name == 'vlog':
         name = next((c['name'] for c in tdiag.list_captures() if (c['meta'] or {}).get('frames', 0) >= 1000), '')
       p = tdiag.downloadable_path(name) if name else None
       if not p or not tdiag.CAP_RE.fullmatch(name):
@@ -3457,7 +3461,7 @@ th{color:var(--mut);font-weight:normal}
 <div class="grp"><div class="gt"><span>구동</span></div><div id="drive"></div></div>
 <div class="grp"><div class="gt"><span>기타</span></div><div id="misc"></div></div>
 <div class="grp" id="sm">
-  <div class="gt"><span>충전 · 열관리 · 식별 (저장된 캡처)</span><span class="a" id="smsub">불러오는 중…</span></div>
+  <div class="gt"><span>충전 · 열관리 · 식별 (상시 기록)</span><span class="a" id="smsub">불러오는 중…</span></div>
   <div id="smbody"></div>
   <div class="hint" style="border-top:1px solid var(--line)">아래 "버스 확인 · 캡처"로 찍은 마지막 캡처를 해독합니다. 실시간 값이 아니라 캡처한 순간의 값입니다.</div>
 </div>
@@ -3591,13 +3595,17 @@ async function summary(name){
   if(j.error){$('smsub').textContent=j.error;$('smbody').innerHTML='';return;}
   smFile=j.name;
   const tm=t=>new Date(t*1000).toLocaleString('ko-KR');
-  $('smsub').textContent=`${j.saved?tm(j.saved):j.name} · ${j.frames}프레임`;
+  const hm=t=>new Date(t*1000).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
+  $('smsub').textContent=j.source==='vlog'?`최근 기록 ${tm(j.start).replace(/:\d\d$/,'')} ~ ${hm(j.end)} · ${j.frames}프레임`
+    :`캡처 ${j.saved?tm(j.saved):j.name} · ${j.frames}프레임`;
   $('smbody').innerHTML=j.groups.map(g=>`<div class="smh"><b>${esc(g.title)}</b><span class="a">${g.heard}/${g.rows.length} 들림</span></div>`+
     g.rows.map(r=>`<div class="smr"><span class="l">${esc(r.label)}${r.id?`<span class="a">0x${esc(r.id)}${r.n?' · '+r.n:''}</span>`:''}</span>
       <span class="v ${r.status}">${esc(r.ts?tm(r.ts):r.value)}</span><span class="u">${esc(r.ts?'':r.unit)}</span>${r.detail?`<span class="d">${esc(r.detail)}</span>`:''}</div>`).join('')+
     (g.note?`<div class="hint" style="border-top:1px solid var(--line)">${esc(g.note)}</div>`:'')).join('');
 }
 summary('');
+// the logger keeps adding frames while the car is awake; a capture someone opened stays put
+setInterval(()=>{if(smFile==='vlog')summary('');},60000);
 $('sniff').onclick=()=>post({cmd:'sniff',seconds:parseInt($('snsec').value,10),protocol:parseInt($('snproto').value,10)});
 // Reuses the grid's own divs across ticks instead of rebuilding all n of them via innerHTML every
 // second -- 96+32 fresh elements a second is the main thing making this page feel like it stutters.

@@ -2,6 +2,7 @@
 inside it only the share they covered (2026-10-28: three page-open fragments of a 30 min drive had
 been shown as three 1-4 min drives of 1-2 mi)."""
 import pytest
+from pathlib import Path
 
 from openpilot.selfdrive.debug import vlog_api
 
@@ -64,3 +65,17 @@ def test_history_is_computed_once_per_cutoff(tmp_path, monkeypatch):
   assert vlog_api._disk_cached('x', 100.0, lambda: calls.append(1) or [9]) == [1, 2]
   assert vlog_api._disk_cached('x', 200.0, lambda: calls.append(1) or [3]) == [3]
   assert len(calls) == 2
+
+
+def test_diag_summary_comes_from_the_logger_raw(tmp_path, monkeypatch):
+  import os
+  raw = os.path.join(os.path.dirname(__file__), 'data', 'raw_charge_20261030.jsonl.gz')
+  (tmp_path / 'raw-20261030-14.jsonl.gz').write_bytes(Path(raw).read_bytes())
+  monkeypatch.setattr(vlog_api, 'VLOG_DIR', str(tmp_path))
+  monkeypatch.setattr(vlog_api, '_cache', {})
+  out = vlog_api.recent_summary()
+  assert out['source'] == 'vlog' and out['frames'] > 2000 and out['end'] - out['start'] <= 6 * 3600
+  charge = next(g for g in out['groups'] if g['key'] == 'charge')
+  rows = {r['key']: r for r in charge['rows']}
+  assert rows['bmsState']['value'] == '완속 충전' and rows['pilot']['status'] == 'ok'
+  assert 5.0 < float(rows['packPower']['value']) < 6.5

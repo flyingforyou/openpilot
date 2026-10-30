@@ -452,3 +452,43 @@ def raw_files() -> list:
     return sorted((n[4:-9] for n in os.listdir(VLOG_DIR) if n.startswith('raw-') and n.endswith('.jsonl.gz')), reverse=True)
   except OSError:
     return []
+
+
+SUMMARY_HOURS = 6
+
+
+def recent_summary(hours: float = SUMMARY_HOURS) -> dict | None:
+  """The /diag charge/thermal/ident card from the always-on logger's raw frames: the last `hours` of
+  logging, ending at the last frame heard (the car may have slept since). Replaces the one-off
+  capture it used to read, which went stale as soon as it was taken."""
+  from openpilot.system.btobd import tesla_pt
+  names = sorted(raw_files())          # newest first, then sorted oldest first
+  if not names:
+    return None
+  paths = [os.path.join(VLOG_DIR, f'raw-{n}.jsonl.gz') for n in names[-int(hours) - 2:]]
+  key = [(p, _mtime(p)) for p in paths]
+  hit = _cache.get('summary')
+  if hit and hit[0] == key:
+    return hit[1]
+  frames = []
+  for p in paths:
+    try:
+      with gzip.open(p, 'rt') as f:
+        lines = f.readlines()
+    except (OSError, EOFError):
+      continue
+    for ln in lines:
+      try:
+        wall, _, fid, data, _ = json.loads(ln)
+        frames.append((wall, int(fid, 16), bytes.fromhex(data)))
+      except (ValueError, TypeError):
+        continue
+  if not frames:
+    return None
+  frames.sort(key=lambda f: f[0])
+  end = frames[-1][0]
+  frames = [f for f in frames if f[0] >= end - hours * 3600]
+  out = tesla_pt.summarize(frames, {'saved': end, 'seconds': round(end - frames[0][0])})
+  out.update(name='vlog', source='vlog', start=frames[0][0], end=end)
+  _cache['summary'] = (key, out)
+  return out

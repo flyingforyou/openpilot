@@ -5,6 +5,7 @@ import json
 import os
 
 import pytest
+from pathlib import Path
 
 from openpilot.system.btobd import tesla_pt, vlog
 from openpilot.system.btobd.tesla_sx import TeslaSXState
@@ -287,7 +288,7 @@ def test_rebuild_from_raw_recovers_a_real_charge(tmp_path):
   # AC/unknown fragments with no power or SOC; replayed, it is one AC charge at ~5.9 kW.
   d = tmp_path / 'vlog'
   d.mkdir()
-  (d / 'raw-20261030-14.jsonl.gz').write_bytes(open(RAW, 'rb').read())
+  (d / 'raw-20261030-14.jsonl.gz').write_bytes(Path(RAW).read_bytes())
   (d / 'sessions.jsonl').write_text(json.dumps({'type': 'CHARGE_UNKNOWN', 'start': 1793371600.0, 'end': 1793371611.0}) + '\n'
                                    + json.dumps({'type': 'DRIVE', 'start': 1793300000.0, 'end': 1793300100.0}) + '\n')
   n = vlog.rebuild(str(d), 1793371400.0, 1793372200.0)
