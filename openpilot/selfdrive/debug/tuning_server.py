@@ -3416,7 +3416,8 @@ th{color:var(--mut);font-weight:normal}
 .smr .l{font-size:13px}.smr .l .a{margin-left:6px}
 .ck{overflow-x:auto}.ck table td{font-size:11.5px;padding:6px 10px}.ck td.l{font-family:var(--s);font-size:12.5px;white-space:normal;min-width:130px}
 .ck td.r{text-align:right}.ck tr.warn td{background:color-mix(in srgb,var(--hot) 9%,transparent)}.ck tr.bad td{background:color-mix(in srgb,var(--bad) 10%,transparent)}
-.ck th.g{color:var(--tx);font-family:var(--s);font-size:12px;padding-top:10px}.ck .rf{color:var(--dim);white-space:normal}
+.ck th.g{color:var(--tx);font-family:var(--s);font-size:12px;padding-top:10px}.ck .rf{color:var(--dim);font-size:10.5px;font-family:var(--m)}
+.ck td,.ck th{padding-left:8px;padding-right:8px}.ck td:first-child,.ck th:first-child{padding-left:13px}
 @media(max-width:560px){.cells{grid-template-columns:repeat(8,1fr)}}
 </style></head><body>
 <a class="back" href="/">← 메뉴</a>
@@ -3581,15 +3582,18 @@ async function checks(){
   const c=j.count||{};
   $('ansub').innerHTML=`최근 ${j.days}일 · 시간 파일 ${j.files}개 · <span class="hv bad">나쁨 ${c.bad||0}</span> · <span class="hv mid">주의 ${c.warn||0}</span> · 정상 ${c.ok||0} · 참고 ${c.info||0}`;
   const tg=l=>`<span class="tag hv ${LV[l][1]}" style="margin:0">${LV[l][0]}</span>`;
-  let html='<table><thead><tr><th>항목</th><th class="r">최저</th><th class="r">최고</th><th>기준</th><th>판정</th></tr></thead><tbody>',g='';
-  j.rows.forEach(r=>{if(r.group!==g){g=r.group;html+=`<tr><th class="g" colspan="5">${esc(g)}</th></tr>`;}
+  // four columns so the verdict stays on a phone screen; the range a row is held to sits under its name
+  let html='<table><thead><tr><th>항목 · 기준</th><th class="r">최저</th><th class="r">최고</th><th>판정</th></tr></thead><tbody>',g='';
+  const lab=(l,sub)=>`<td class="l">${esc(l)}${sub?`<br><span class="rf">${esc(sub)}</span>`:''}</td>`;
+  j.rows.forEach(r=>{if(r.group!==g){g=r.group;html+=`<tr><th class="g" colspan="4">${esc(g)}</th></tr>`;}
     const v=(x,t)=>x==null?'–':`<span title="${tm(t)}">${Number(x).toFixed(r.digits)}</span>`;
-    html+=`<tr class="${r.level}"><td class="l">${esc(r.label)}</td><td class="r">${v(r.min,r.tMin)}</td><td class="r">${v(r.max,r.tMax)} <span class="a">${esc(r.unit)}</span></td>
-      <td class="rf">${esc(r.ref||'')}</td><td>${tg(r.level)}</td></tr>`;});
-  html+=`<tr><th class="g" colspan="5">고장 상태 · 이벤트</th></tr>`;
-  const ev=[...j.faults.map(x=>({...x,detail:`${x.value} · ${x.n}회`})),...j.events.map(x=>({...x,detail:`값 ${x.value} · 기준 ${x.threshold}${x.note?' · '+x.note:''}`}))];
-  html+=ev.length?ev.map(x=>`<tr class="${x.level}"><td class="l">${esc(x.label)}</td><td class="r" colspan="2">${tm(x.t)}</td><td class="rf">${esc(x.detail)}</td><td>${tg(x.level)}</td></tr>`).join('')
-    :'<tr><td class="l" colspan="4">BMS 오류·HVIL·파일럿 이상·히터 고장 상태와 기록 이벤트 없음</td><td>'+tg('ok')+'</td></tr>';
+    html+=`<tr class="${r.level}">${lab(r.label,r.ref)}<td class="r">${v(r.min,r.tMin)}</td><td class="r">${v(r.max,r.tMax)} <span class="a">${esc(r.unit)}</span></td>
+      <td>${tg(r.level)}</td></tr>`;});
+  html+=`<tr><th class="g" colspan="4">고장 상태 · 이벤트</th></tr>`;
+  const n2=x=>typeof x==='number'?(+x.toFixed(2)):x;
+  const ev=[...j.faults.map(x=>({...x,detail:`${x.value} · ${x.n}회`})),...j.events.map(x=>({...x,detail:`값 ${n2(x.value)} · 기준 ${n2(x.threshold)}${x.note?' · '+x.note:''}`}))];
+  html+=ev.length?ev.map(x=>`<tr class="${x.level}">${lab(x.label,x.detail)}<td class="r" colspan="2">${tm(x.t)}</td><td>${tg(x.level)}</td></tr>`).join('')
+    :'<tr><td class="l" colspan="3">BMS 오류·HVIL·파일럿 이상·히터 고장 상태와 기록 이벤트 없음</td><td>'+tg('ok')+'</td></tr>';
   $('anom').innerHTML=html+'</tbody></table>';
 }
 checks();setInterval(checks,60000);
