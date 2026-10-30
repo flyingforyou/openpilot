@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 from openpilot.selfdrive.debug import vlog_api
 from openpilot.system.btobd import tdiag, tesla_pt, vlog
 
-VERSION = 2
+VERSION = 3
 DAILY_DIR = os.path.join(tdiag.LOG_DIR, 'daily')
 DEFAULT_TZ = 'America/Los_Angeles'
 # The device boots on a stale clock (2026-07-28) until NTP/GPS sets it; frames stamped before this are
@@ -393,7 +393,8 @@ def _resistance(pairs: list) -> dict:
   for key, ps in sorted(bins.items()):
     rec = vlog_api._r_record(ps)
     soc_lo, temp_lo = map(int, key.split('|'))
-    out.append({'bin': key, 'soc': [soc_lo, soc_lo + SOC_BIN], 'temp': [temp_lo, temp_lo + TEMP_BIN], **rec})
+    # rec carries the measured median 'soc'/'temp'; the bin's own range goes alongside, not over them
+    out.append({**rec, 'bin': key, 'socBin': [soc_lo, soc_lo + SOC_BIN], 'tempBin': [temp_lo, temp_lo + TEMP_BIN]})
   usable = [b for b in out if b['conf'] in ('high', 'medium')]
   head = max(usable, key=lambda b: b['n']) if usable else None
   return {'bins': out, 'headline': head, 'pairs': len(pairs), 'unbinned': unbinned}

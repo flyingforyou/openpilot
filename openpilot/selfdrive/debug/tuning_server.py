@@ -4389,7 +4389,11 @@ async function openDay(d){
   const D=s.day;
   if(!D){el.innerHTML=h+'<div class="hint">이날은 수신 기록이 없습니다.</div>';return;}
   const S=s.snapshot||{};
-  h+=`<div class="h3">스냅샷 · ${tm(S.t)} (그날 마지막 기록 순간)</div><div class="sc"><table><tbody>`+Object.entries(S.values||{}).sort().map(([k,x])=>`<tr><td>${esc(k)}</td><td class="r">${esc(typeof x.v==='number'?+x.v.toFixed(3):x.v)}</td><td class="r na">${f(x.ageS,1)}초 전</td></tr>`).join('')+'</tbody></table></div>';
+  const SV=S.values||{},sv=k=>SV[k]?(typeof SV[k].v==='number'?+SV[k].v.toFixed(2):SV[k].v):'–';
+  h+=`<div class="h3">스냅샷 · ${tm(S.t)} (그날 마지막 기록 순간, 그 순간 신선한 값만)</div><div class="kv">`
+    +kv('팩',`${sv('packVoltage')} V · ${sv('packCurrent')} A`)+kv('SOC (계기판)',sv('socDisplay')+' %')+kv('공칭 완충 용량',sv('nominalFullPackEnergy')+' kWh')
+    +kv('모듈 온도',`${sv('moduleTempMin')} ~ ${sv('moduleTempMax')} °C`)+kv('BMS 한계',`방전 ${sv('maxDischargePower')} · 회생 ${sv('maxRegenPower')} kW`)+kv('12V',sv('dcdcOutputVoltage')+' V')+'</div>'
+    +`<details><summary>스냅샷 전체 값 ${Object.keys(SV).length}개 (값마다 수신 시각)</summary><div class="sc"><table><tbody>`+Object.entries(SV).sort().map(([k,x])=>`<tr><td>${esc(k)}</td><td class="r">${esc(typeof x.v==='number'?+x.v.toFixed(3):x.v)}</td><td class="r na">${f(x.ageS,1)}초 전</td></tr>`).join('')+'</tbody></table></div></details>';
   if((S.missing||[]).length)h+=`<details><summary>스냅샷 순간에 오래돼서 뺀 값 ${S.missing.length}개 (전 값으로 채우지 않음)</summary><div class="hint">${S.missing.map(x=>`${esc(x.key)} (${dur(x.ageS)} 전)`).join(' · ')}</div></details>`;
   const cb=D.cellBalance||{},soh=D.soh,nfp=D.nominalFullPack;
   h+='<div class="h3">하루 집계 · 배터리</div><div class="kv">'
@@ -4401,7 +4405,7 @@ async function openDay(d){
     +kv('모듈 온도 편차',ext(D.moduleSpread,'°C'))+kv('모듈 최고 온도',ext(D.temps.moduleTempMax,'°C'))+kv('모듈 최저 온도',ext(D.temps.moduleTempMin,'°C'))+'</div>';
   const R=D.resistance||{};
   h+=`<div class="h3">내부저항 · SOC/온도 구간별 (구간끼리 비교하지 않음)</div><div class="sc"><table><thead><tr><th>SOC · 온도</th><th class="r">mΩ</th><th class="r">사분위</th><th class="r">쌍</th><th class="r">ΔI / ΔV</th><th>신뢰도</th></tr></thead><tbody>`
-    +((R.bins||[]).map(b=>`<tr><td>${b.soc[0]}~${b.soc[1]}% · ${b.temp[0]}~${b.temp[1]} °C</td><td class="r">${f(b.mOhm,1)}</td><td class="r">${b.iqr[0]}~${b.iqr[1]}</td><td class="r">${b.n}</td><td class="r">${f(b.dI,0)} A / ${f(b.dV,2)} V</td><td><span class="pill ${b.conf==='low'?'low':''}">${{high:'높음',medium:'보통',low:'낮음'}[b.conf]}</span>${b.why.length?' <span class="na">'+esc(b.why.join(', '))+'</span>':''}</td></tr>`).join('')
+    +((R.bins||[]).map(b=>`<tr><td>${b.socBin[0]}~${b.socBin[1]}% · ${b.tempBin[0]}~${b.tempBin[1]} °C<br><span class="na">측정 SOC ${f(b.soc,0)}% · ${f(b.temp,1)} °C</span></td><td class="r">${f(b.mOhm,1)}</td><td class="r">${b.iqr[0]}~${b.iqr[1]}</td><td class="r">${b.n}</td><td class="r">${f(b.dI,0)} A / ${f(b.dV,2)} V</td><td><span class="pill ${b.conf==='low'?'low':''}">${{high:'높음',medium:'보통',low:'낮음'}[b.conf]}</span>${b.why.length?' <span class="na">'+esc(b.why.join(', '))+'</span>':''}</td></tr>`).join('')
     ||'<tr><td colspan="6" class="na">측정 없음 (10초 안에 60 A 이상 바뀌는 순간 필요)</td></tr>')+'</tbody></table></div>';
   const E=D.energy||{},cnt=E.counters||{};
   const cv=(k,l)=>cnt[k]?`${l} ${f(cnt[k].diff,k==='batteryOdometerMi'?1:2)}${cnt[k].coversSessions?'':' <span class="pill low" title="첫·끝 수신이 세션을 다 감싸지 못함">구간 일부</span>'}<br><small>${tm(cnt[k].from)} ~ ${tm(cnt[k].to)} · ${f(cnt[k].first,1)} → ${f(cnt[k].last,1)}</small>`:'';

@@ -122,6 +122,7 @@ def test_resistance_is_kept_per_condition_bin():
   assert set(bins) == {'60|20', '60|5'} and r['unbinned'] == 1
   assert bins['60|20']['mOhm'] == pytest.approx(76, abs=1) and bins['60|5']['mOhm'] == pytest.approx(111, abs=1)
   assert r['headline']['bin'] == '60|20'                         # the most measured usable bin, not a pooled mean
+  assert bins['60|5']['socBin'] == [60, 70] and bins['60|5']['tempBin'] == [5, 10] and bins['60|5']['temp'] == 6.0
 
 
 def test_trend_compares_resistance_within_one_bin_only():
