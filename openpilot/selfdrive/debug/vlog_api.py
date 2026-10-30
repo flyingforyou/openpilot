@@ -311,13 +311,13 @@ def now() -> dict:
 
 def overview() -> dict:
   own = vlog.read_jsonl(os.path.join(VLOG_DIR, 'sessions.jsonl'))
-  # a session that straddled the boot-time clock being set runs backwards; it has no usable times
-  own = [s for s in own if s.get('end', 0) >= s.get('start', 0)]
   for s in own:
     s['source'] = '상시 로거' + (' (raw 재구성)' if s.get('rebuilt') else '')
   rep = replayed()
   first_own = min((s['start'] for s in own), default=float('inf'))
   sessions = [s for s in rep['sessions'] if s['end'] < first_own] + own
+  # a session that straddled the boot-time clock being set runs backwards; it has no usable times
+  sessions = [s for s in sessions if s.get('end', 0) >= s.get('start', 0)]
   sessions.sort(key=lambda s: s['start'])
   sessions = merge_charges(sessions)
   routes = drives()
