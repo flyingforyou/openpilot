@@ -1014,7 +1014,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, '{}')
       return self._send_file(path, 'application/x-ndjson', name)
     if self.path.startswith('/api/obd'):
-      return self._send(200, json.dumps(self._obd_state()))
+      return self._send(200, json.dumps(self._obd_state(touch='passive=1' not in self.path)))
     if self.path.startswith('/api/checks'):
       return self._send(200, json.dumps(self._checks()))
     if self.path.startswith('/api/vlog'):
@@ -1112,6 +1112,10 @@ class Handler(BaseHTTPRequestHandler):
     try:
       if rest == '':
         return self._send(200, json.dumps({**vlog_api.overview(), 'rawFiles': vlog_api.raw_files()[:48]}, ensure_ascii=False))
+      if rest == 'state':
+        return self._send(200, json.dumps(vlog_api.last_state() or {}))
+      if rest == 'anomalies':
+        return self._send(200, json.dumps(vlog_api.anomalies(), ensure_ascii=False))
       if rest == 'now':
         # the page's 5 s refresh: only the daemon's tmpfs state, none of the history
         return self._send(200, json.dumps(vlog_api.now(), ensure_ascii=False))
@@ -1320,8 +1324,9 @@ class Handler(BaseHTTPRequestHandler):
       out['history'] = hist[-12:]
     return out
 
-  def _obd_state(self) -> dict:
-    self._touch_obd_viewer()
+  def _obd_state(self, touch: bool = True) -> dict:
+    if touch:
+      self._touch_obd_viewer()
     try:
       with open(OBD_STATE_PATH) as f:
         st = json.load(f)
@@ -2117,12 +2122,14 @@ border:1px solid var(--line);color:var(--mut)}
   <div class="st"><span class="pill" id="p-shd">–</span></div>
 </a>
 
+<!-- /checks is left out of the menu: /diag lists anomalies from the always-on log instead.
 <a class="card" href="/checks">
   <div class="t">점검 · 주차 중 이상 징후</div>
   <div class="d">주차해 둔 상태에서 배터리·12V·온도·BMS 출력을 정상 범위와 비교해 이상한 곳을
     찾습니다. 항목마다 기준을 같이 보여주고, 실행할 때마다 기록해 추세를 봅니다.
     차에는 아무것도 보내지 않고, 주행 중에는 실행되지 않습니다.</div>
 </a>
+-->
 
 <a class="card" href="/vlog">
   <div class="t">차량 기록 · 배터리 (상시 로깅)</div>
@@ -2131,10 +2138,9 @@ border:1px solid var(--line);color:var(--mut)}
 </a>
 
 <a class="card" href="/diag">
-  <div class="t">진단 · 배터리 (블루투스 OBD)</div>
-  <div class="d">진단 단자에 꽂은 블루투스 ELM327 동글로 배터리 전압·전류·SOC·에너지,
-    셀 전압 96개, 모터 출력과 온도를 Scan My Tesla처럼 실시간으로 봅니다.
-    저장된 캡처에서 충전 상태·배터리 열관리·차량 식별도 해독해 보여줍니다.</div>
+  <div class="t">진단 · 배터리 (상시 기록)</div>
+  <div class="d">기록에서 찾은 이상 징후, 배터리 건강(열화·셀 밸런스·온도), 셀 전압 96개와 모듈 온도,
+    구동·충전·열관리 값을 봅니다. 동글이 수신 중이면 실시간, 아니면 마지막 기록을 보여줍니다.</div>
 </a>
 
 <!-- /tdiag is left out of the menu: this port answers no UDS, so the diag tools have nothing to talk to.
@@ -3411,7 +3417,12 @@ th{color:var(--mut);font-weight:normal}
 @media(max-width:560px){.cells{grid-template-columns:repeat(8,1fr)}}
 </style></head><body>
 <a class="back" href="/">← 메뉴</a>
-<h1>진단 · 배터리</h1><div class="sub" id="sub">연결 중…</div>
+<h1>진단 · 배터리</h1><div class="sub" id="sub">불러오는 중…</div>
+
+<div class="grp">
+  <div class="gt"><span>이상 징후 (기록 기준)</span><span class="a" id="ansub"></span></div>
+  <div id="anom"></div>
+</div>
 
 <div class="grp">
   <div class="gt"><span>배터리 건강 요약</span><span class="hv na" id="hverdict">데이터 없음</span></div>
@@ -3443,16 +3454,6 @@ th{color:var(--mut);font-weight:normal}
   </div>
 </div>
 
-<div class="grp">
-  <div class="gt"><span>블루투스 · OBD 동글</span><span id="pills"></span></div>
-  <div id="target"></div>
-  <div class="row"><span class="lb">주변 동글 찾기 <span class="a" id="scanst"></span></span>
-    <span>PIN <input id="pin" value="1234" aria-label="PIN"></span>
-    <button id="scan">검색</button></div>
-  <div id="devs"></div>
-  <div class="err" id="err" hidden></div>
-</div>
-
 <div class="grp"><div class="gt"><span>배터리</span><span class="a" id="bage"></span></div>
   <div class="big" id="bigbat"></div><div id="bat"></div></div>
 <div class="grp"><div class="gt"><span>셀 전압 (96)</span><span class="a" id="cellsum"></span></div>
@@ -3463,36 +3464,11 @@ th{color:var(--mut);font-weight:normal}
 <div class="grp" id="sm">
   <div class="gt"><span>충전 · 열관리 · 식별 (상시 기록)</span><span class="a" id="smsub">불러오는 중…</span></div>
   <div id="smbody"></div>
-  <div class="hint" style="border-top:1px solid var(--line)">아래 "버스 확인 · 캡처"로 찍은 마지막 캡처를 해독합니다. 실시간 값이 아니라 캡처한 순간의 값입니다.</div>
+  <div class="hint" style="border-top:1px solid var(--line)">상시 기록의 최근 6시간(마지막 수신 기준)을 해독합니다. 1분마다 갱신됩니다.</div>
 </div>
-<div class="grp"><div class="gt"><span>원본 프레임</span><span class="a">ID · 길이 · 데이터 · 수신 수</span></div>
-  <table><tbody id="raw"></tbody></table></div>
-<div class="grp">
-  <div class="gt"><span>버스 확인 · 캡처 (듣기 전용)</span><span class="a" id="snst"></span></div>
-  <div class="row"><span class="lb">시간
-      <select id="snsec" aria-label="캡처 시간"><option>30</option><option>60</option><option selected>120</option><option>300</option></select> 초 · 프로토콜
-      <select id="snproto" aria-label="CAN 프로토콜"><option value="6">6 · CAN 11비트 500k</option><option value="8">8 · CAN 11비트 250k</option></select></span>
-    <button id="sniff">캡처 시작</button></div>
-  <div class="hint" id="snnote">주차 중에만 됩니다. 차에는 아무것도 요청하지 않습니다. 무음 감시(ATCSM1) 미지원 동글은 ACK만 보내며, 이는 배터리 화면 감시와 같습니다.
-    ID 공간을 8구간으로 나눠 돌아가며 듣기 때문에(동글 버퍼가 넘치지 않도록) 각 ID는 전체 시간의 1/8만 들립니다. 10초에 한 번 오는 메시지까지 잡으려면 120초 이상으로 하세요.
-    프로토콜 6(CAN 11비트 500k)에서 이 차의 0x102·0x302·0x382·0x6F2가 들어오는 것을 확인했습니다.</div>
-  <div id="snsum"></div>
-  <div class="err" id="snwarn" hidden></div>
-  <table><thead id="snhead" hidden><tr><th>ID</th><th>수신</th><th>Hz</th><th>마지막 데이터</th><th>해독</th></tr></thead><tbody id="snids"></tbody></table>
-</div>
-<div class="grp"><div class="hint">
-  동글을 CAN 감시 모드(ATMA, 가능하면 무음 감시 ATCSM1)로 두고 배터리·구동장치가 원래 방송하는
-  메시지를 ID별로 돌아가며 듣습니다. 차에는 요청을 보내지 않습니다. Scan My Tesla가 정확히 같은 방식인지는
-  확인하지 못했습니다. 이 값들은 구형 S/X의 진단 커넥터(전용 어댑터 케이블)에서만 나오고, 일반 OBD-II
-  단자에는 이 CAN이 없을 수 있습니다. 아래 "원본 프레임"이 비어 있으면 연결 위치부터 확인하세요.
-  해독은 wk057의 Model S CAN 해독 문서(2016)와 OVMS 코드 기준이라, 차 펌웨어에 따라 값이 어긋날 수 있습니다.
-  처음엔 화면의 SOC·전압과 맞는지 확인해 주세요. 동글 연결은 주행 중이거나 이 페이지를 열어 둔 동안에만 유지합니다.
-</div></div>
 
 <script>
 const $=i=>document.getElementById(i);
-const BT={absent:['블루투스 커널 없음','bad'],off:['꺼짐','warn'],starting:['켜는 중','warn'],up:['블루투스 켜짐','ok'],error:['블루투스 오류','bad']};
-const LINK={idle:['동글 대기','warn'],connecting:['연결 중','warn'],connected:['동글 연결됨','ok'],error:['연결 실패','bad']};
 const f=(v,d)=>v==null?null:(typeof v==='number'?v.toFixed(d):String(v));
 function row(label,v,unit,age){
   const na=v==null; const old=!na&&age!=null&&age>10;
@@ -3501,12 +3477,12 @@ function row(label,v,unit,age){
 function rows(spec,V,A){return spec.map(([k,l,u,d])=>row(l,f(V[k],d??1),u,A[k])).join('');}
 const BAT=[['packCurrent','전류','A',1],['socUI','SOC (BMS, 버퍼 포함)','%',1],['socMin','SOC (최소)','%',1],['nominalFullPackEnergy','완충 용량 (공칭)','kWh',1],
  ['expectedEnergyRemaining','남은 에너지 (예상)','kWh',1],['idealEnergyRemaining','남은 에너지 (이상)','kWh',1],
- ['energyBuffer','보호 버퍼','kWh',1],['energyToChargeComplete','충전 완료까지','kWh',1],
- ['maxDischargePower','최대 방전 출력','kW',1],['maxRegenPower','최대 회생 출력','kW',1],['negTerminalTemp','음극 단자 온도','°C',1]];
+ ['energyBuffer','보호 버퍼','kWh',1],
+ ['maxDischargePower','최대 방전 출력','kW',1],['maxRegenPower','최대 회생 출력','kW',1]];
 const DRIVE=[['rearMechPower','뒤 모터 출력','kW',1],['frontMechPower','앞 모터 출력','kW',1],
  ['rearTorqueMeasured','뒤 토크 (측정)','Nm',0],['frontTorqueMeasured','앞 토크 (측정)','Nm',0],['rearMotorRpm','뒤 모터 RPM','rpm',0],
- ['rearStatorCurrent','뒤 고정자 전류','A',0],['frontStatorCurrent','앞 고정자 전류','A',0],['rearDissipation','뒤 인버터 발열','W',0],
- ['frontDissipation','앞 인버터 발열','W',0],['rearDrivePowerMax','뒤 최대 구동','kW',0],['frontDrivePowerMax','앞 최대 구동','kW',0],
+ ['rearStatorCurrent','뒤 고정자 전류','A',0],['frontStatorCurrent','앞 고정자 전류','A',0],
+ ['rearDrivePowerMax','뒤 최대 구동','kW',0],['frontDrivePowerMax','앞 최대 구동','kW',0],
  ['rearRegenPowerMax','뒤 최대 회생','kW',0],['inverterTemp','인버터 온도','°C',0],['motorTemp','모터 온도','°C',0],
  ['pedalPos','가속 페달','%',1],['gear','기어','',0],['vehicleSpeedMph','속도','mph',1]];
 const MISC=[['dcdcOutputVoltage','12V (DC-DC 출력)','V',1],['dcdcOutputCurrent','DC-DC 전류','A',0],['dcdcOutputPower','DC-DC 출력','W',0],
@@ -3516,8 +3492,6 @@ const MISC=[['dcdcOutputVoltage','12V (DC-DC 출력)','V',1],['dcdcOutputCurrent
 let busy=false;
 async function post(body){busy=true;try{const r=await fetch('/api/obd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const j=await r.json(); if(j.error) alert(j.error);}finally{busy=false;tick();}}
-$('scan').onclick=()=>post({cmd:'scan'});
-function connect(a){post({cmd:'connect',addr:a,pin:$('pin').value.trim()});}
 const PACKS=[74.5,81.5,85.8,98.0];
 const GRADE={good:['좋음','good'],mid:['보통','mid'],bad:['나쁨','bad'],na:['판정 보류','na']};
 const tag=g=>`<span class="tag hv ${GRADE[g][1]}">${GRADE[g][0]}</span>`;
@@ -3573,21 +3547,8 @@ $('packsel').onchange=()=>{const v=$('packsel').value;
   if(v==='custom'){packEditing=true;$('packkwh').hidden=false;$('packsave').hidden=false;$('packkwh').focus();return;}
   packEditing=false; post({cmd:'pack',kwh:v});};
 $('packsave').onclick=()=>{packEditing=false; post({cmd:'pack',kwh:$('packkwh').value.trim()});};
-function renderSniff(s){
-  const n=s.sniff, el=s.elm||{};
-  $('sniff').disabled=busy||s.link!=='connected'||(n&&n.status==='running');
-  if(!n){$('snst').textContent='';return;}
-  if(n.status==='running'){$('snst').textContent=`캡처 중… ${n.seconds}초`;return;}
-  if(n.status==='error'){$('snst').textContent='실패';$('snwarn').hidden=false;$('snwarn').textContent=n.error;return;}
-  if(n.file&&n.file!==smFile&&n.frames>=1000)summary(n.file);
-  $('snst').innerHTML=`${n.frames}프레임 · ${n.unique}개 ID · 초당 ${n.fps} · <a href="/api/obd/capture/${n.file}" style="color:inherit">${n.file}</a>`;
-  $('snsum').innerHTML=`<div class="row"><span class="lb">동글</span><span class="vl">${esc(el.version||'')} · ${esc(el.protocol||'')} · ${el.silent?'무음 감시':'무음 감시 미지원'}</span></div>`;
-  $('snwarn').hidden=!n.warnings.length; $('snwarn').innerHTML=n.warnings.map(esc).join('<br>');
-  $('snhead').hidden=!n.ids.length;
-  $('snids').innerHTML=n.ids.map(i=>`<tr><td>0x${i.id}</td><td>${i.n}</td><td>${i.hz}</td><td>${esc(i.last)}</td><td>${i.known?esc(i.known):'–'}</td></tr>`).join('');
-}
 function esc(x){return String(x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
-// Decoded rows of one saved capture; with no name the server picks the newest full one.
+// Decoded rows of the logger's last hours (or a capture opened by name).
 let smFile=null;
 async function summary(name){
   smFile=name;
@@ -3596,7 +3557,7 @@ async function summary(name){
   smFile=j.name;
   const tm=t=>new Date(t*1000).toLocaleString('ko-KR');
   const hm=t=>new Date(t*1000).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'});
-  $('smsub').textContent=j.source==='vlog'?`최근 기록 ${tm(j.start).replace(/:\d\d$/,'')} ~ ${hm(j.end)} · ${j.frames}프레임`
+  $('smsub').textContent=j.source==='vlog'?`최근 기록 ${tm(j.start).replace(/:\\d\\d$/,'')} ~ ${hm(j.end)} · ${j.frames}프레임`
     :`캡처 ${j.saved?tm(j.saved):j.name} · ${j.frames}프레임`;
   $('smbody').innerHTML=j.groups.map(g=>`<div class="smh"><b>${esc(g.title)}</b><span class="a">${g.heard}/${g.rows.length} 들림</span></div>`+
     g.rows.map(r=>`<div class="smr"><span class="l">${esc(r.label)}${r.id?`<span class="a">0x${esc(r.id)}${r.n?' · '+r.n:''}</span>`:''}</span>
@@ -3606,7 +3567,16 @@ async function summary(name){
 summary('');
 // the logger keeps adding frames while the car is awake; a capture someone opened stays put
 setInterval(()=>{if(smFile==='vlog')summary('');},60000);
-$('sniff').onclick=()=>post({cmd:'sniff',seconds:parseInt($('snsec').value,10),protocol:parseInt($('snproto').value,10)});
+const LV={bad:['나쁨','bad'],warn:['주의','mid']};
+async function anomalies(){
+  let j;try{j=await (await fetch('/api/vlog/anomalies')).json();}catch(e){return;}
+  const tm=t=>new Date(t*1000).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'});
+  $('ansub').textContent=`최근 ${j.days}일 · 시계열 ${j.samples} · 셀 스냅샷 ${j.health}`;
+  $('anom').innerHTML=j.items.length?j.items.map(i=>`<div class="row"><span class="lb"><span class="tag hv ${LV[i.level][1]}" style="margin:0 8px 0 0">${LV[i.level][0]}</span>${esc(i.title)}
+      <br><span class="a" style="font-family:var(--m);font-size:11px;color:var(--mut)">${esc(i.detail)}</span></span><span class="vl na">${i.t?tm(i.t):''}</span></div>`).join('')
+    :'<div class="hint">기록에서 이상 징후가 없습니다.</div>';
+}
+anomalies();setInterval(anomalies,60000);
 // Reuses the grid's own divs across ticks instead of rebuilding all n of them via innerHTML every
 // second -- 96+32 fresh elements a second is the main thing making this page feel like it stutters.
 function renderGrid(id,n,get){
@@ -3623,21 +3593,8 @@ function renderGrid(id,n,get){
 }
 function render(s){
   renderHealth(s);
-  renderSniff(s);
-  const b=BT[s.bt]||[s.bt,''],l=LINK[s.link]||[s.link,''];
-  $('pills').innerHTML=`<span class="pill ${b[1]}">${b[0]}</span> <span class="pill ${l[1]}">${l[0]}</span>`
-    +(s.elm&&s.elm.version?` <span class="pill">${s.elm.version}${s.elm.silent?' · 무음감시':''}</span>`:'');
-  $('sub').textContent=s.stale?'데몬 응답 없음 — 블루투스 커널/데몬을 확인하세요':(s.wanted?'수신 대기 중':'시동 꺼짐 · 페이지 열림 동안만 연결');
-  if(document.activeElement!==$('pin')) $('pin').value=s.pin||'1234';
-  $('target').innerHTML=s.target?`<div class="dev"><span class="n">연결 대상 <span class="a">${s.target}</span></span>
-     <button id="disc">연결 해제</button></div>`:'<div class="hint">연결된 동글이 없습니다. 검색한 뒤 목록에서 연결하세요.</div>';
-  if(s.target) $('disc').onclick=()=>post({cmd:'disconnect'});
-  $('scanst').textContent=s.discovering?'· 검색 중…':'';
-  $('scan').disabled=busy||s.bt!=='up'||s.discovering;
-  $('devs').innerHTML=(s.devices||[]).map(d=>`<div class="dev"><span class="n">${d.name||'(이름 없음)'} ${d.paired?'<span class="pill ok">페어링됨</span>':''}<br>
-     <span class="a">${d.addr} · ${d.rssi??'–'} dBm</span></span><button class="pri" data-a="${d.addr}">연결</button></div>`).join('');
-  document.querySelectorAll('#devs button').forEach(x=>x.onclick=()=>connect(x.dataset.a));
-  $('err').hidden=!s.error; $('err').textContent=s.error||'';
+  const ago=s.asOf?Math.round((Date.now()/1000-s.asOf)/60):0;
+  $('sub').textContent=s.live?'실시간 · 동글 수신 중':s.asOf?`마지막 기록 ${new Date(s.asOf*1000).toLocaleString('ko-KR')} (${ago<90?ago+'분':Math.round(ago/60)+'시간'} 전) · 차가 깨어 있으면 자동으로 이어서 기록합니다`:'아직 기록이 없습니다';
   const V=s.values||{},A=s.age||{};
   const big=[['packVoltage','팩 전압','V',1],['packPower','출력','kW',1],['socDisplay','SOC (계기판)','%',1],['nominalEnergyRemaining','남은 에너지','kWh',1]];
   $('bigbat').innerHTML=big.map(([k,l,u,d])=>`<div><div class="k">${l}</div><div class="v">${V[k]==null?'–':f(V[k],d)}<small>${u}</small></div></div>`).join('');
@@ -3649,15 +3606,17 @@ function render(s){
     return {text:v==null?'·':v.toFixed(3),cls:v==null?'':(avg&&v<=V.cellMin+1e-4?'lo':avg&&v>=V.cellMax-1e-4?'hi':'')};});
   const ct=s.cellsT||[];
   renderGrid('temps',32,i=>({text:ct[i]==null?'·':ct[i].toFixed(1),cls:''}));
-  const now=Date.now()/1000;
-  $('raw').innerHTML=Object.entries(s.raw||{}).map(([id,r])=>`<tr><td>0x${id}</td><td>${r.len}</td><td>${r.data}</td><td>${r.n}</td><td>${(now-r.t).toFixed(0)}s</td></tr>`).join('')
-    ||'<tr><td>아직 받은 프레임이 없습니다</td></tr>';
 }
 // Fetch and render are two different jobs: the fetch can land at any arbitrary moment setInterval
 // picks, but handing the DOM work to requestAnimationFrame instead of running it straight off the
 // fetch lines rendering up with the browser's own paint cycle instead of competing with it.
-async function tick(){try{const s=await(await fetch('/api/obd')).json();requestAnimationFrame(()=>render(s));}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}}
-tick(); setInterval(()=>{if(!busy) tick();},1000);
+// Live while the logger holds the dongle; otherwise the last logged state, decoded again from raw.
+// passive: looking at this page no longer keeps the dongle linked -- the logger decides that.
+async function tick(){try{let s=await(await fetch('/api/obd?passive=1')).json();
+  s.live=s.link==='connected'&&!s.stale&&s.values&&s.values.packVoltage!=null;
+  if(!s.live){const l=await(await fetch('/api/vlog/state')).json();if(l&&l.values)s={...s,...l};}
+  requestAnimationFrame(()=>render(s));}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}}
+tick(); setInterval(()=>{if(!busy) tick();},2000);
 </script></body></html>
 """
 
@@ -3968,7 +3927,7 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
 .kv>div{background:var(--card);padding:8px 13px}.kv .k{font-size:11px;color:var(--mut)}.kv .v{font-family:var(--m);font-size:13px;margin-top:2px}
 @media(max-width:560px){.cells{grid-template-columns:repeat(8,1fr)}.lane{grid-template-columns:48px 1fr}.axis{grid-template-columns:48px 1fr}}
 </style></head><body>
-<a class="back" href="/">← 메뉴</a> &nbsp; <a class="back" href="/diag">배터리 실시간 →</a>
+<a class="back" href="/">← 메뉴</a> &nbsp; <a class="back" href="/diag">진단 · 배터리 →</a>
 <h1>차량 기록 · 배터리</h1><div class="sub" id="sub">불러오는 중…</div>
 
 <div class="grp"><div class="gt"><span>지금</span><span class="tag" id="mode">–</span></div><div class="big" id="now"></div></div>
