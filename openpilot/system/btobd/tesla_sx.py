@@ -159,9 +159,14 @@ def dcdc(d: bytes) -> dict:
 
 
 def lifetime_energy(d: bytes) -> dict:
-  """0x3D2 lifetime charge/discharge energy, ~1 Hz. kWh."""
-  return {'kwhDischargeTotal': int.from_bytes(d[0:4], 'little') / 1000.0,
-          'kwhChargeTotal': int.from_bytes(d[4:8], 'little') / 1000.0}
+  """0x3D2 lifetime charge/discharge energy, ~1 Hz. kWh.
+
+  Bytes 0-3 are energy INTO the pack, bytes 4-7 energy out -- the reverse of OVMS's labels. On this
+  car (2026-10-30) bytes 0-3 rose 5.7 kWh an hour through an AC charge, matching the pack's own V x I
+  integral, while bytes 4-7 stood still; driving and parked-awake hours moved bytes 4-7 instead. It
+  also puts lifetime charge (76,284 kWh) above discharge (71,927), as losses require."""
+  return {'kwhChargeTotal': int.from_bytes(d[0:4], 'little') / 1000.0,
+          'kwhDischargeTotal': int.from_bytes(d[4:8], 'little') / 1000.0}
 
 
 def battery_odometer(d: bytes) -> dict:

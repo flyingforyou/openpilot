@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import threading
+import urllib.parse
 import time
 
 # The shadow replay's background thread spends most of a solve inside C calls (zstandard,
@@ -42,7 +43,7 @@ from openpilot.selfdrive.debug import shadow_replay
 from openpilot.system.btobd import capture as obd_capture
 from openpilot.system.btobd import checks as obd_checks
 from openpilot.system.btobd import tdiag
-from openpilot.selfdrive.debug import vlog_api
+from openpilot.selfdrive.debug import daily, vlog_api
 from openpilot.selfdrive.debug.intervention_log import (InterventionLog, list_events,
                                                         locate_segment, read_event)
 from openpilot.selfdrive.modeld.model_manager import ModelManager
@@ -1019,6 +1020,8 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, json.dumps(self._checks()))
     if self.path.startswith('/api/vlog'):
       return self._vlog_get()
+    if self.path.startswith('/api/daily'):
+      return self._daily_get()
 
     page = self.path.split('?')[0].rstrip('/')
 
@@ -1072,6 +1075,8 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, PAGE_TDIAG, 'text/html; charset=utf-8')
     if page == '/vlog':
       return self._send(200, PAGE_VLOG, 'text/html; charset=utf-8')
+    if page == '/daily':
+      return self._send(200, PAGE_DAILY, 'text/html; charset=utf-8')
     return self._send(200, PAGE_INDEX, 'text/html; charset=utf-8')
 
   def _onroad(self) -> bool:
@@ -1141,6 +1146,21 @@ class Handler(BaseHTTPRequestHandler):
         return None
     except (ValueError, OSError) as e:
       return self._send(500, json.dumps({'error': f'{type(e).__name__}: {e}'}, ensure_ascii=False))
+    return self._send(404, '{}')
+
+  # ---- daily snapshots (/daily) ------------------------------------------------------------------
+  def _daily_get(self):
+    path, _, qs = self.path.partition('?')
+    q = dict(x.partition('=')[::2] for x in qs.split('&') if x)
+    rest = path[len('/api/daily'):].strip('/')
+    if rest == '':
+      idx = daily.index()
+      pack = urllib.parse.unquote(q.get('pack', '')) or None
+      return self._send(200, json.dumps({**idx, 'trend': daily.trend([d for d in idx['days'] if d['status'] != 'NO_DATA'], pack),
+                                         'building': self.daily.building, 'error': self.daily.error}, ensure_ascii=False))
+    if rest.startswith('day/'):
+      s = daily.day(rest[4:])
+      return self._send(200 if s else 404, json.dumps(s or {}, ensure_ascii=False))
     return self._send(404, '{}')
 
   # ---- Tesla diag page (/tdiag) ------------------------------------------------------------------
@@ -1345,6 +1365,8 @@ class Handler(BaseHTTPRequestHandler):
     return json.loads(self.rfile.read(n) or b'{}')
 
   def do_POST(self):
+    if self.path.split('?')[0] == '/api/daily/rebuild':
+      return self._send(200, json.dumps(self.daily.run_once(force=True), ensure_ascii=False))
     if self.path.startswith('/api/models/'):
       try:
         req = self._read_json()
@@ -2137,6 +2159,12 @@ border:1px solid var(--line);color:var(--mut)}
   <div class="t">차량 기록 · 배터리 (상시 로깅)</div>
   <div class="d">차가 깨어 있는 동안(주행·충전·대기) 블루투스 동글로 자동 기록한 주행·충전 세션, 이벤트,
     휴지 상태 셀 스냅샷, 차량 12V로 본 전원 이력(충전 중 기기가 켜져 있었는지)을 봅니다. CSV로 내보낼 수 있습니다.</div>
+</a>
+
+<a class="card" href="/daily">
+  <div class="t">일일 배터리 추세</div>
+  <div class="d">상시 기록으로 하루 한 번 만드는 스냅샷: 공칭 용량·SOH·셀 편차·내부저항·온도·주행·충전량의
+    7/30/90일 추세와 날짜별 상세. 기록 없는 날과 일부만 기록된 날은 따로 표시합니다.</div>
 </a>
 
 <a class="card" href="/diag">
@@ -4224,6 +4252,182 @@ load();setInterval(tickNow,5000);
 </script></body></html>
 """
 
+PAGE_DAILY = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>일일 배터리 추세</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--ok:#4CC38A;--hot:#F5B942;--bad:#E5484D;--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--ok:#1B7F53;--hot:#9A6210;--bad:#C2292E}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);
+padding:18px;padding-bottom:calc(18px + env(safe-area-inset-bottom));max-width:900px}
+a.back{color:var(--dim);font-family:var(--m);font-size:11px;text-decoration:none}
+h1{font-size:17px;margin:8px 0 3px}
+.sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:12px}
+.grp{background:var(--card);border:1px solid var(--line);border-radius:11px;margin-bottom:11px;overflow:hidden}
+.gt{font-size:12px;color:var(--mut);padding:10px 13px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
+.bar{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:11px}
+button,select{font:inherit;font-size:12.5px;padding:6px 11px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--tx);cursor:pointer}
+button.on{background:var(--radar);border-color:var(--radar);color:#04131C}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:1px;background:var(--line)}
+.tile{background:var(--card);padding:11px 13px}.tile .k{font-size:11.5px;color:var(--mut)}
+.tile .v{font-family:var(--m);font-size:21px;margin-top:2px;font-variant-numeric:tabular-nums}.tile .v small{font-size:11px;color:var(--mut);margin-left:3px}
+.tile .n{font-family:var(--m);font-size:10.5px;color:var(--dim);margin-top:3px;line-height:1.55}
+.up{color:var(--hot)}.dn{color:var(--radar)}
+.chart svg{display:block;width:100%;height:auto}
+.legend{font-size:10.5px;color:var(--dim);padding:0 13px 9px;font-family:var(--m)}
+table{width:100%;border-collapse:collapse;font-family:var(--m);font-size:11.5px}
+td,th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}
+td:first-child,th:first-child{padding-left:13px}th{color:var(--mut);font-weight:normal}
+td.r,th.r{text-align:right}tr[data-d]{cursor:pointer}tr.sel td{background:color-mix(in srgb,var(--radar) 10%,transparent)}
+.sc{overflow-x:auto}
+.pill{font-family:var(--m);font-size:10.5px;padding:2px 7px;border-radius:99px;border:1px solid var(--line);color:var(--mut)}
+.pill.OK{border-color:var(--ok);color:var(--ok)}.pill.PARTIAL{border-style:dashed;color:var(--mut)}.pill.NO_DATA{color:var(--dim);border-color:transparent}
+.pill.warn{border-color:var(--hot);color:var(--hot)}.pill.bad{border-color:var(--bad);color:var(--bad)}.pill.low{border-style:dotted;color:var(--dim)}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1px;background:var(--line)}
+.kv>div{background:var(--card);padding:9px 13px}.kv .k{font-size:11px;color:var(--mut)}.kv .v{font-family:var(--m);font-size:12.5px;margin-top:2px;line-height:1.5}
+.kv .v small{color:var(--dim);font-size:10.5px}
+.h3{font-size:12.5px;padding:10px 13px 6px;border-top:1px solid var(--line);color:var(--tx)}
+.hint{font-size:12px;color:var(--mut);line-height:1.6;padding:11px 13px}
+.na{color:var(--dim)}
+details summary{cursor:pointer;font-size:12px;color:var(--mut);padding:9px 13px;border-top:1px solid var(--line)}
+@media(max-width:560px){body{padding:16px}.tiles{grid-template-columns:1fr 1fr}.tile .v{font-size:18px}}
+</style></head><body>
+<a class="back" href="/">← 메뉴</a>
+<h1>일일 배터리 추세</h1><div class="sub" id="sub">불러오는 중…</div>
+<div class="bar"><span id="ranges"></span><select id="pack" aria-label="배터리 팩"></select><button id="rebuild">다시 집계</button></div>
+
+<div class="grp"><div class="gt"><span>추세 요약</span><span id="tsub"></span></div><div class="tiles" id="tiles"></div></div>
+<div class="grp"><div class="gt"><span>추세 그래프</span><span>● 측정 · ○ 신뢰도 낮음 · ┆ 기록 없음</span></div><div id="charts"></div></div>
+<div class="grp"><div class="gt"><span>날짜별 스냅샷</span><span>상태: <span class="pill OK">완전</span> <span class="pill PARTIAL">일부</span> <span class="pill NO_DATA">없음</span> · 경고는 따로</span></div>
+  <div class="sc"><table><thead><tr><th>날짜</th><th>상태</th><th>경고</th><th class="r">공칭 kWh</th><th class="r">SOH %</th><th class="r">셀 편차 mV</th>
+  <th class="r">내부저항 mΩ</th><th class="r">주행 mi</th><th class="r">충전 kWh</th></tr></thead><tbody id="days"></tbody></table></div>
+  <div id="detail"></div></div>
+<div class="grp"><div class="hint">
+  하루는 차량 현지 시간(<span id="tzname"></span>) 기준입니다. 상시 기록의 원본 CAN 로그를 시간 단위로 다시 해독해 만들고, 원본이 바뀌면 그날만 다시 집계합니다(같은 날 파일 하나를 덮어쓰므로 중복이 생기지 않음).
+  <b>스냅샷</b>은 그날 마지막 기록 순간의 값(각 값의 수신 시각과 함께, 기준보다 오래된 값은 빠짐), <b>하루 집계</b>는 그날 전체의 최저·최고·중앙값입니다.
+  전날 값으로 빈 날을 채우지 않습니다. 셀 편차는 전류 ±5 A 이하에서 96셀이 4초 안에 다 읽힌 경우만, 내부저항은 SOC 10%·온도 5 °C 구간별로만 비교합니다.
+  "일부"는 하루가 진행 중이거나, 차가 깨어 있던 시간의 80% 미만이 기록됐거나, 완전한지 확인할 차량 전원 기록이 없는 날입니다. 상태와 신뢰도는 경고(주의·나쁨)와 따로 표시합니다.
+</div></div>
+<script>
+const $=i=>document.getElementById(i);
+const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const f=(v,d=1)=>v==null?'–':Number(v).toFixed(d);
+const sgn=(v,d=2)=>v==null?'–':(v>0?'+':'')+Number(v).toFixed(d);
+const tm=t=>t?new Date(t*1000).toLocaleString('ko-KR',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'–';
+const dur=s=>s==null?'–':s<90?Math.round(s)+'초':s<5400?Math.round(s/60)+'분':(s/3600).toFixed(1)+'시간';
+const ST={OK:'완전',PARTIAL:'일부',NO_DATA:'없음'};
+const MODE={drive:'주행',charge:'충전',park:'주차'};
+const at=a=>!a?'':[a.mode?MODE[a.mode]:null,a.soc!=null?'SOC '+f(a.soc,0)+'%':null,a.temp!=null?f(a.temp,1)+' °C':null,a.i!=null?f(a.i,0)+' A':null,a.mph!=null&&a.mode==='drive'?f(a.mph,0)+' mph':null].filter(x=>x).join(' · ');
+const METRICS=[['nominalFullPack','공칭 완충 용량','kWh',2,'ok'],['soh','SOH (신품 대비)','%',1,'ok'],['cellDeltaMv','셀 편차 (휴지·동시 측정)','mV',1,'low'],
+  ['rMohm','내부저항 (같은 조건)','mΩ',1,'r'],['tempMax','모듈 최고 온도','°C',1,''],['miles','일일 주행거리','mi',1,''],['chargedKwh','일일 충전량 (팩 유입)','kWh',2,'']];
+let IDX=null,RANGE=30,PACK='',SEL=null;
+async function load(){
+  try{IDX=await (await fetch('/api/daily'+(PACK?'?pack='+encodeURIComponent(PACK):''))).json();}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';return;}
+  $('tzname').textContent=IDX.tz||'';
+  const sel=$('pack');if(!sel.options.length||sel.dataset.n!=IDX.packs.length){sel.dataset.n=IDX.packs.length;
+    sel.innerHTML=IDX.packs.map(p=>`<option value="${esc(p.packId)}">${esc(p.packId)} (${p.from}~${p.to})</option>`).join('')||'<option value="">팩 미확인</option>';
+    if(!PACK&&IDX.packs.length){PACK=IDX.packs[IDX.packs.length-1].packId;sel.value=PACK;return load();}}
+  const n=IDX.days.length,c={};IDX.days.forEach(d=>c[d.status]=(c[d.status]||0)+1);
+  $('sub').textContent=`${n}일 · 완전 ${c.OK||0} · 일부 ${c.PARTIAL||0} · 없음 ${c.NO_DATA||0} · 집계 ${tm(IDX.generatedAt)}${IDX.building?' · 집계 중…':''}`;
+  render();
+}
+function inRange(){const d=IDX.days.filter(x=>!PACK||x.packId===PACK||x.status==='NO_DATA');if(RANGE===0)return d;return d.slice(-RANGE);}
+function render(){
+  $('ranges').innerHTML=[[7,'7일'],[30,'30일'],[90,'90일'],[0,'전체']].map(([v,l])=>`<button data-r="${v}" class="${RANGE===v?'on':''}">${l}</button>`).join(' ');
+  document.querySelectorAll('#ranges button').forEach(b=>b.onclick=()=>{RANGE=+b.dataset.r;render();});
+  const T=IDX.trend||{};
+  $('tsub').textContent=T.rMohm&&T.rMohm.bin?`내부저항 기준 조건: SOC ${T.rMohm.bin.split('|')[0]}~${+T.rMohm.bin.split('|')[0]+10}% · ${T.rMohm.bin.split('|')[1]}~${+T.rMohm.bin.split('|')[1]+5} °C`:'';
+  $('tiles').innerHTML=METRICS.map(([k,l,u,d])=>{const m=T[k]||{};
+    const ch=m.dayChange==null?'전날 값 없음':'전날 대비 '+sgn(m.dayChange,d);
+    const sl=m.slope30==null?(m.slopeWhy||'경향 계산 불가'):'경향 '+sgn(m.slope30,d)+' '+u+'/30일';
+    return `<div class="tile"><div class="k">${l}</div><div class="v">${m.last==null?'–':f(m.last,d)}<small>${u}</small></div>
+      <div class="n">${m.lastDate?m.lastDate.slice(5)+' 기준':'측정 없음'} · ${ch}<br>7일 중앙 ${f(m.median7,d)} · 30일 중앙 ${f(m.median30,d)}<br>${sl}</div></div>`;}).join('');
+  const D=inRange();
+  $('charts').innerHTML=METRICS.map(([k,l,u,d,kind])=>`<div class="h3">${l} <span class="na">${u}</span></div>`+chart(D,k,kind,d)).join('');
+  $('days').innerHTML=D.slice().reverse().map(x=>{const w=(x.warnings||[]).length;
+    const v=(val,d,low)=>val!=null?f(val,d):low!=null?`<span class="na" title="판정 기준 미달">(${f(low,d)})</span>`:'<span class="na">–</span>';
+    return `<tr data-d="${x.date}" class="${SEL===x.date?'sel':''}"><td>${x.date.slice(5)}</td><td><span class="pill ${x.status}" title="${esc((x.statusWhy||[]).join(' · '))}">${ST[x.status]}</span></td>
+    <td>${w?`<span class="pill warn" title="${esc(x.warnings.join(' · '))}">${w}</span>`:''}${x.unverified?` <span class="pill low" title="미검증 데이터">미검증 ${x.unverified}</span>`:''}</td>
+    <td class="r">${v(x.nominalFullPack,2)}</td><td class="r">${v(x.soh,1)}</td><td class="r">${v(x.cellDeltaMv,1,x.cellDeltaLow)}</td>
+    <td class="r">${x.rMohm==null?'<span class="na">–</span>':`<span class="${x.rConf==='high'?'':'na'}" title="SOC ${x.rBin?.split('|')[0]}% · ${x.rBin?.split('|')[1]} °C 구간 · 신뢰도 ${x.rConf}">${f(x.rMohm,1)}</span>`}</td>
+    <td class="r">${x.miles==null?'<span class="na">–</span>':f(x.miles,1)+(x.milesSource==='sessions'?'<span class="na">*</span>':'')}</td><td class="r">${v(x.chargedKwh,2)}</td></tr>`;}).join('')
+    ||'<tr><td colspan="9" class="na">아직 스냅샷이 없습니다</td></tr>';
+  document.querySelectorAll('#days tr[data-d]').forEach(r=>r.onclick=()=>openDay(r.dataset.d));
+}
+function chart(D,k,kind,dg){
+  if(!D.length)return '<div class="hint">기록 없음</div>';
+  const W=900,h=130,P=[48,14,10,20],n=D.length,X=i=>P[0]+(n===1?0.5:i/(n-1))*(W-P[0]-P[1]);
+  const val=x=>{if(k==='rMohm'){const b=(x.rBins||{})[(IDX.trend.rMohm||{}).bin];return b?{v:b[0],low:b[1]==='low'}:null;}
+    if(k==='cellDeltaMv'){return x.cellDeltaMv!=null?{v:x.cellDeltaMv}:x.cellDeltaLow!=null?{v:x.cellDeltaLow,low:true}:null;}
+    return x[k]!=null?{v:x[k],low:x.status==='PARTIAL'&&(k==='miles'||k==='chargedKwh')}:null;};
+  const pts=D.map((x,i)=>({i,x,p:val(x)}));const ys=pts.filter(p=>p.p).map(p=>p.p.v);
+  if(!ys.length)return '<div class="hint">이 기간에 측정 없음</div>';
+  let lo=Math.min(...ys),hi=Math.max(...ys);if(k==='miles'||k==='chargedKwh')lo=0;if(hi-lo<1e-6){hi+=Math.abs(hi)*0.01+0.5;lo-=Math.abs(lo)*0.01+0.5;}
+  const Y=y=>P[2]+(1-(y-lo)/(hi-lo))*(h-P[2]-P[3]);
+  let out='',path='',pen=false;
+  pts.forEach(({i,x,p})=>{if(!p){pen=false;if(x.status==='NO_DATA')out+=`<line x1="${X(i)}" x2="${X(i)}" y1="${P[2]}" y2="${h-P[3]}" stroke="var(--line)" stroke-dasharray="2 3"/>`;return;}
+    path+=(pen?'L':'M')+X(i).toFixed(1)+' '+Y(p.v).toFixed(1);pen=true;
+    out+=`<circle cx="${X(i).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="3" fill="${p.low?'var(--card)':'var(--radar)'}" stroke="${p.low?'var(--dim)':'var(--radar)'}"><title>${x.date} · ${f(p.v,dg)}${p.low?' (신뢰도 낮음)':''}</title></circle>`;});
+  out=`<path d="${path}" fill="none" stroke="var(--radar)" stroke-width="1.4" opacity=".7"/>`+out;
+  out+=`<text x="${P[0]-6}" y="${P[2]+8}" text-anchor="end" font-size="10" fill="var(--dim)">${f(hi,dg)}</text><text x="${P[0]-6}" y="${h-P[3]}" text-anchor="end" font-size="10" fill="var(--dim)">${f(lo,dg)}</text>`;
+  out+=`<text x="${P[0]}" y="${h-5}" font-size="10" fill="var(--dim)">${D[0].date.slice(5)}</text><text x="${W-P[1]}" y="${h-5}" font-size="10" fill="var(--dim)" text-anchor="end">${D[n-1].date.slice(5)}</text>`;
+  return `<div class="chart"><svg viewBox="0 0 ${W} ${h}" font-family="ui-monospace,Menlo,monospace">${out}</svg></div>`;
+}
+const kv=(k,v)=>`<div><div class="k">${k}</div><div class="v">${v}</div></div>`;
+const ext=(e,u,d=1)=>!e?'<span class="na">기록 없음</span>':`${f(e.min.v,d)} ~ ${f(e.max.v,d)} ${u}<br><small>최저 ${tm(e.min.t)} ${esc(at(e.min.at))}<br>최고 ${tm(e.max.t)} ${esc(at(e.max.at))}</small>`;
+async function openDay(d){
+  SEL=d;render();const el=$('detail');el.innerHTML='<div class="hint">불러오는 중…</div>';
+  const s=await (await fetch('/api/daily/day/'+d)).json();
+  if(!s||!s.date){el.innerHTML='<div class="hint">스냅샷 없음</div>';return;}
+  let h=`<div class="gt" style="border-top:1px solid var(--line)"><span>${s.date} · <span class="pill ${s.status}">${ST[s.status]}</span> · ${esc(s.packId||'팩 미확인')}</span><span>${esc((s.sources||[]).join(', '))}</span></div>`;
+  if(s.statusWhy&&s.statusWhy.length)h+=`<div class="hint">${esc(s.statusWhy.join(' · '))}</div>`;
+  const C=s.coverage||{};
+  h+='<div class="kv">'+kv('기록',`${C.recordedMin??0}분${C.awakeMin!=null?' / 차가 깨어 있던 '+C.awakeMin+'분':''}<br><small>${tm(C.firstT)} ~ ${tm(C.lastT)} · ${C.frames??0}프레임 · 중복 줄 ${C.duplicateLines??0} 제거</small>`)+kv('팩',`${esc(s.packId||'–')}<br><small>${esc(s.packWhy||'')}</small>`)+'</div>';
+  const D=s.day;
+  if(!D){el.innerHTML=h+'<div class="hint">이날은 수신 기록이 없습니다.</div>';return;}
+  const S=s.snapshot||{};
+  h+=`<div class="h3">스냅샷 · ${tm(S.t)} (그날 마지막 기록 순간)</div><div class="sc"><table><tbody>`+Object.entries(S.values||{}).sort().map(([k,x])=>`<tr><td>${esc(k)}</td><td class="r">${esc(typeof x.v==='number'?+x.v.toFixed(3):x.v)}</td><td class="r na">${f(x.ageS,1)}초 전</td></tr>`).join('')+'</tbody></table></div>';
+  if((S.missing||[]).length)h+=`<details><summary>스냅샷 순간에 오래돼서 뺀 값 ${S.missing.length}개 (전 값으로 채우지 않음)</summary><div class="hint">${S.missing.map(x=>`${esc(x.key)} (${dur(x.ageS)} 전)`).join(' · ')}</div></details>`;
+  const cb=D.cellBalance||{},soh=D.soh,nfp=D.nominalFullPack;
+  h+='<div class="h3">하루 집계 · 배터리</div><div class="kv">'
+    +kv('공칭 완충 용량',nfp?`${f(nfp.min,2)} ~ ${f(nfp.max,2)} kWh<br><small>마지막 ${f(nfp.last,2)} · ${nfp.n}회</small>`:'<span class="na">기록 없음</span>')
+    +kv('SOH',soh?`${f(soh.value,1)}% <small>(${esc(soh.basis)}, 신품 ${soh.ref} kWh)</small>`:'<span class="na">신품 용량 미설정 또는 기록 없음</span>')
+    +kv('SOC (계기판)',ext(D.soc,'%'))
+    +kv('셀 편차 (휴지·동시 측정)',cb.n?`중앙 ${f(cb.medianMv,1)} mV · ${f(cb.minMv,1)} ~ ${f(cb.maxMv,1)} · ${cb.n}회${cb.judged?'':' <span class="pill low">판정 안 함</span>'}<br><small>SOC ${cb.soc?f(cb.soc[0],0)+'~'+f(cb.soc[1],0)+'%':'–'} · ${cb.temp?f(cb.temp[0])+'~'+f(cb.temp[1])+' °C':'–'}${cb.why?' · '+esc(cb.why):''}</small>`:`<span class="na">${esc(cb.why||'')}</span>`)
+    +kv('반복 최저 셀',cb.lowest&&cb.lowest.length?cb.lowest.map(x=>`#${x.cell} ${x.count}회`).join(' · ')+`<br><small>${cb.n}번 중 최다 ${Math.round(cb.lowestShare*100)}% · 셀 번호는 0x6F2 순서</small>`:'<span class="na">–</span>')
+    +kv('모듈 온도 편차',ext(D.moduleSpread,'°C'))+kv('모듈 최고 온도',ext(D.temps.moduleTempMax,'°C'))+kv('모듈 최저 온도',ext(D.temps.moduleTempMin,'°C'))+'</div>';
+  const R=D.resistance||{};
+  h+=`<div class="h3">내부저항 · SOC/온도 구간별 (구간끼리 비교하지 않음)</div><div class="sc"><table><thead><tr><th>SOC · 온도</th><th class="r">mΩ</th><th class="r">사분위</th><th class="r">쌍</th><th class="r">ΔI / ΔV</th><th>신뢰도</th></tr></thead><tbody>`
+    +((R.bins||[]).map(b=>`<tr><td>${b.soc[0]}~${b.soc[1]}% · ${b.temp[0]}~${b.temp[1]} °C</td><td class="r">${f(b.mOhm,1)}</td><td class="r">${b.iqr[0]}~${b.iqr[1]}</td><td class="r">${b.n}</td><td class="r">${f(b.dI,0)} A / ${f(b.dV,2)} V</td><td><span class="pill ${b.conf==='low'?'low':''}">${{high:'높음',medium:'보통',low:'낮음'}[b.conf]}</span>${b.why.length?' <span class="na">'+esc(b.why.join(', '))+'</span>':''}</td></tr>`).join('')
+    ||'<tr><td colspan="6" class="na">측정 없음 (10초 안에 60 A 이상 바뀌는 순간 필요)</td></tr>')+'</tbody></table></div>';
+  const E=D.energy||{},cnt=E.counters||{};
+  const cv=(k,l)=>cnt[k]?`${l} ${f(cnt[k].diff,k==='batteryOdometerMi'?1:2)}${cnt[k].coversSessions?'':' <span class="pill low" title="첫·끝 수신이 세션을 다 감싸지 못함">구간 일부</span>'}<br><small>${tm(cnt[k].from)} ~ ${tm(cnt[k].to)} · ${f(cnt[k].first,1)} → ${f(cnt[k].last,1)}</small>`:'';
+  h+='<div class="h3">에너지 · 주행</div><div class="kv">'+kv('누적 충전 차이 (kWh)',cv('kwhChargeTotal','')||'<span class="na">–</span>')+kv('누적 방전 차이 (kWh)',cv('kwhDischargeTotal','')||'<span class="na">–</span>')
+    +kv('배터리 주행거리 차이 (mi)',cv('batteryOdometerMi','')||'<span class="na">–</span>')+kv('주행 세션',`${E.drives||0}회 · ${f(E.driveSessionsMi,1)} mi`)+kv('충전 세션 유입',`${f(E.chargeSessionsKwh,2)} kWh`)+'</div>';
+  const L=D.limits||{},V=D.lowVoltage||{};
+  h+='<div class="h3">BMS 한계 · 12V (측정 조건 포함)</div><div class="kv">'+kv('BMS 방전 한계',ext(L.maxDischargePower,'kW',0))+kv('BMS 회생 한계',ext(L.maxRegenPower,'kW',0))
+    +kv('충전·회생 허용 전류 (0x202)',ext(L.bmsMaxChargeA,'A',0))+kv('방전 허용 전류 (0x202)',ext(L.bmsMaxDischargeA,'A',0))+kv('충전 전력',ext(L.chargeKw,'kW',2))+kv('주행 팩 출력',ext(L.driveKw,'kW',0))
+    +kv('DC-DC 출력 전압',ext(V.dcdcOutputVoltage,'V',2))+kv('DC-DC 전류',ext(V.dcdcOutputCurrent,'A',0))+kv('12V (뒤 인버터)',ext(V.rearInverter12V,'V',1))+'</div>';
+  h+='<div class="h3">충전 세션</div><div class="sc"><table><thead><tr><th>시작</th><th class="r">시간</th><th class="r">유입 kWh</th><th class="r">최대 kW</th><th class="r">SOC</th><th>종료 원인</th></tr></thead><tbody>'
+    +((D.charges||[]).map(c=>`<tr><td>${tm(c.start)}</td><td class="r">${dur(c.durationS)}</td><td class="r">${f(c.kwhIn,2)}</td><td class="r">${f(c.kwMax,2)}</td><td class="r">${f(c.socStart,1)}→${f(c.socEnd,1)}%</td><td title="${esc((c.endWhy||[]).join(' · '))}">${esc(c.endLabel)}</td></tr>`).join('')||'<tr><td colspan="6" class="na">없음</td></tr>')+'</tbody></table></div>';
+  const F=(D.reception||{}).freshness||{},K=(D.reception||{}).keys||{},I=(D.reception||{}).ids||{};
+  h+=`<details><summary>신호별 신선도 · 수신 (${Object.keys(F).length}개 추적 · CAN ID ${Object.keys(I).length}개)</summary><div class="sc"><table><thead><tr><th>신호</th><th class="r">로거 표본 중 신선</th><th class="r">갱신</th><th class="r">최대 간격</th></tr></thead><tbody>`
+    +Object.entries(F).map(([k,x])=>`<tr><td>${esc(k)}</td><td class="r ${x.share!=null&&x.share<0.5?'na':''}">${x.share==null?'–':Math.round(x.share*100)+'%'}</td><td class="r">${K[k]?K[k].n:0}</td><td class="r">${K[k]?dur(K[k].maxGapS):'–'}</td></tr>`).join('')
+    +Object.entries(I).map(([k,x])=>`<tr><td>0x${esc(k)} 폴링</td><td class="r">${x.rate==null?'–':Math.round(x.rate*100)+'% 수신'}</td><td class="r">${x.polls}회</td><td class="r">연속 누락 ${x.maxMiss}</td></tr>`).join('')+'</tbody></table></div></details>';
+  const U=D.unverified||[],A=D.anomalies||[],Dc=D.decodes||[];
+  h+='<div class="h3">해독 검증 · 미검증 데이터</div><div class="hint">'+(Dc.map(x=>`${esc(x.label)}: ${esc(x.statusText)} (${x.n}회, 벗어남 ${x.miss})`).join('<br>')||'해독 검증 없음 (raw 기록 아님)')
+    +(U.length?'<br><span class="na">미검증: '+U.map(x=>`${esc(x.label)} (${esc(x.why)})`).join(' · ')+'</span>':'')+'</div>';
+  h+='<div class="h3">이상 이벤트</div><div class="hint">'+(A.length?A.map(a=>`<span class="pill warn">${esc(a.label)}</span> ${a.t?tm(a.t):''} ${esc(a.value??'')}`).join('<br>'):'없음')+'</div>';
+  el.innerHTML=h;
+}
+$('pack').onchange=()=>{PACK=$('pack').value;load();};
+$('rebuild').onclick=async()=>{$('rebuild').disabled=true;$('sub').textContent='다시 집계하는 중…';try{await fetch('/api/daily/rebuild',{method:'POST'});}finally{$('rebuild').disabled=false;load();}};
+load();setInterval(load,300000);
+</script></body></html>
+"""
+
 PAGE_CHECKS = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>점검 · 이상 징후</title><style>
@@ -4350,6 +4554,8 @@ def main():
   Handler.shadow = shadow_replay.ShadowReplay(lambda: bool(Handler.state.get().get('engaged')))
   Handler.shadow_scan = shadow_replay.ShadowScan(lambda: bool(Handler.state.get().get('engaged')))
   Handler.models = ModelManager(Handler.params)
+  Handler.daily = daily.Runner()
+  Handler.daily.start()
 
   srv = ThreadingHTTPServer(('0.0.0.0', args.port), Handler)
   print(f"serving on http://0.0.0.0:{args.port}  (commit {GIT_COMMIT})")

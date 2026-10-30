@@ -645,7 +645,7 @@ def rx_state() -> dict:
 # discharge limit only above 20% and 10 C, cell spread only from a synchronised sweep, ...).
 CHECK_DAYS = 14
 STATS_CACHE = os.path.join(tdiag.LOG_DIR, 'vlog-stats-cache.json')
-STATS_VERSION = 3           # bump when file_stats derives something new: cached hours are decoded again
+STATS_VERSION = 4           # bump when file_stats derives something new: cached hours are decoded again
 BMS_FAULT = (7, 8)
 MIN_N = 3                   # fewer samples than this and a check is "표본 부족", never 정상
 # Pack resistance: dV/dI between two 0x102 readings at most R_WINDOW_S apart whose current differs by
@@ -759,25 +759,8 @@ def file_stats(path: str) -> dict:
         put('acVoltsCharge', V[k], wall)
     if 'pilotHigh' in changed and V.get('pilot') == 2:
       put('pilotHighCharge', V['pilotHigh'], wall)
-    if i == 0x332 and 'brickMaxV' in changed:
-      cs = car.cell_set(mono)
-      at = [a for a in car.cells_v_at if a is not None]
-      if cs and mono - max(at) <= 10 and abs(V.get('packCurrent') if V.get('packCurrent') is not None else 99) < 5 \
-         and V.get('bmsState') != 1:
-        vrf('332v:max', (V['brickMaxV'] - max(cs)) * 1000, wall)
-        if 'brickMinV' in changed:
-          vrf('332v:min', (V['brickMinV'] - min(cs)) * 1000, wall)
-    if i == 0x332 and 'bmsTempMax' in changed and car.stamp.get('moduleTempMax') is not None \
-       and mono - car.stamp['moduleTempMax'] <= 30:
-      vrf('332t:max', V['bmsTempMax'] - V['moduleTempMax'], wall)
-      if 'bmsTempMin' in changed:
-        vrf('332t:min', V['bmsTempMin'] - V['moduleTempMin'], wall)
-    if i == 0x202 and V.get('bmsState') == 1 and V.get('packVoltage') and car.stamp.get('maxRegenPower') is not None \
-       and mono - car.stamp['maxRegenPower'] <= 3:
-      if 'bmsMaxChargeA' in changed and V['maxRegenPower'] > 10:
-        vrf('202c', V['bmsMaxChargeA'] * V['packVoltage'] / 1000 / V['maxRegenPower'], wall)
-      if 'bmsMaxDischargeA' in changed and V['maxDischargePower'] > 20:
-        vrf('202d', V['bmsMaxDischargeA'] * V['packVoltage'] / 1000 / V['maxDischargePower'], wall)
+    for name, err in verify_frame(i, changed, V, car, mono):
+      vrf(name, err, wall)
     for x in bad_sigs:
       if x.key in changed and V[x.key] in x.bad:
         r = st.setdefault('bad:' + x.key, [V[x.key], V[x.key], 0, wall, wall])
@@ -789,6 +772,32 @@ def file_stats(path: str) -> dict:
     if rec['conf'] in ('high', 'medium'):
       st['packResistance'] = [rec['mOhm'], rec['mOhm'], 1, rec['t'], rec['t']]
   return st
+
+
+def verify_frame(i: int, changed, V: dict, car, mono: float) -> list:
+  """The VERIFY comparisons one frame allows: [(name, error or ratio)]. Shared by the check table and
+  the daily snapshots so both hold the decodes to the same conditions."""
+  out: list = []
+  if i == 0x332 and 'brickMaxV' in changed:
+    cs = car.cell_set(mono)
+    at = [a for a in car.cells_v_at if a is not None]
+    if cs and mono - max(at) <= 10 and abs(V.get('packCurrent') if V.get('packCurrent') is not None else 99) < 5 \
+       and V.get('bmsState') != 1:
+      out.append(('332v:max', (V['brickMaxV'] - max(cs)) * 1000))
+      if 'brickMinV' in changed:
+        out.append(('332v:min', (V['brickMinV'] - min(cs)) * 1000))
+  if i == 0x332 and 'bmsTempMax' in changed and car.stamp.get('moduleTempMax') is not None \
+     and mono - car.stamp['moduleTempMax'] <= 30:
+    out.append(('332t:max', V['bmsTempMax'] - V['moduleTempMax']))
+    if 'bmsTempMin' in changed:
+      out.append(('332t:min', V['bmsTempMin'] - V['moduleTempMin']))
+  if i == 0x202 and V.get('bmsState') == 1 and V.get('packVoltage') and car.stamp.get('maxRegenPower') is not None \
+     and mono - car.stamp['maxRegenPower'] <= 3:
+    if 'bmsMaxChargeA' in changed and V['maxRegenPower'] > 10:
+      out.append(('202c', V['bmsMaxChargeA'] * V['packVoltage'] / 1000 / V['maxRegenPower']))
+    if 'bmsMaxDischargeA' in changed and V['maxDischargePower'] > 20:
+      out.append(('202d', V['bmsMaxDischargeA'] * V['packVoltage'] / 1000 / V['maxDischargePower']))
+  return out
 
 
 def _r_record(rs: list) -> dict | None:
@@ -927,7 +936,7 @@ CHECKS = [
   ('열관리', 'compCooling', '컴프레서 냉각 요구', '', 0, None, None, ''),
   ('누적', 'batteryOdometerMi', '배터리 주행거리', 'mi', 0, None, None, '이 팩 기준 (차 계기판 아님)'),
   ('누적', 'kwhDischargeTotal', '누적 방전', 'kWh', 0, None, None, ''),
-  ('누적', 'kwhChargeTotal', '누적 충전 (회생 포함)', 'kWh', 0, None, None, ''),
+  ('누적', 'kwhChargeTotal', '누적 충전 (회생 포함, 0x3D2 바이트 0-3)', 'kWh', 0, None, None, ''),
   ('누적', 'cycles', '등가 완충 사이클', '회', 0, None, None, '누적 방전 ÷ 신품 용량'),
   ('후보 (미검증)', 'tpms1', '타이어 공기압? 1', 'psi', 1, (32, 45), None, '32~45 psi'),
   ('후보 (미검증)', 'tpms2', '타이어 공기압? 2', 'psi', 1, (32, 45), None, '32~45 psi'),

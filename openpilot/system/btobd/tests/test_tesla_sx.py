@@ -135,8 +135,8 @@ def test_0x210_dcdc():
 
 def test_0x3d2_lifetime_and_0x562_odometer():
   r = t.lifetime_energy(b('25 AE 86 00 07 DC 8F 00'))
-  assert r['kwhChargeTotal'] == pytest.approx(9427.975)
-  assert r['kwhDischargeTotal'] == pytest.approx(8826.405)
+  assert r['kwhChargeTotal'] == pytest.approx(8826.405)       # bytes 0-3: rose with AC charging on 2026-10-30
+  assert r['kwhDischargeTotal'] == pytest.approx(9427.975)
   assert t.battery_odometer(b('3C 27 2C 01'))['batteryOdometerMi'] == pytest.approx(19670.844)
 
 
