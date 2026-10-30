@@ -31,15 +31,6 @@ _routes_busy = False
 _routes_next = 0.0
 
 
-def _cached(key: str, stamp, fn):
-  hit = _cache.get(key)
-  if hit and hit[0] == stamp:
-    return hit[1]
-  val = fn()
-  _cache[key] = (stamp, val)
-  return val
-
-
 def _mtime(path: str) -> float:
   try:
     return os.path.getmtime(path)
@@ -55,30 +46,63 @@ def _swag_stamp() -> tuple:
   return (len(names), max(names) if names else '')
 
 
-def replayed() -> dict:
+# The two re-analyses below only matter for the time before the always-on logger's own records begin,
+# so once that start is known their result never changes: it is kept on disk keyed by it. Before,
+# each server start re-read live.jsonl (16 MB, 2.2 s on the device) and 27 MB of swaglog (0.7 s), and
+# again whenever either grew -- live.jsonl grows the whole time the dongle is linked.
+DISK_CACHE = os.path.join(tdiag.LOG_DIR, 'vlog-history-cache.json')
+
+
+def _disk_cached(name: str, key, fn):
+  hit = _cache.get(name)
+  if hit and hit[0] == key:
+    return hit[1]
+  try:
+    with open(DISK_CACHE) as f:
+      disk = json.load(f)
+  except (OSError, ValueError):
+    disk = {}
+  if disk.get(name, {}).get('key') == key:
+    val = disk[name]['val']
+  else:
+    val = fn()
+    disk[name] = {'key': key, 'val': val}
+    try:
+      with open(DISK_CACHE + '.tmp', 'w') as f:
+        json.dump(disk, f, ensure_ascii=False)
+      os.replace(DISK_CACHE + '.tmp', DISK_CACHE)
+    except OSError:
+      pass
+  _cache[name] = (key, val)
+  return val
+
+
+def replayed(until: float = float('inf')) -> dict:
   """live.jsonl (+ its .1 rotation) through vlog's session logic, for drives/charges logged before
-  the always-on logger existed. Sessions the logger itself wrote later take precedence."""
+  the always-on logger existed (sessions ending before `until`, its first own session)."""
   paths = [os.path.join(tdiag.LOG_DIR, n) for n in (tdiag.LIVE_LOG + '.1', tdiag.LIVE_LOG)]
 
   def run():
-    out = {'sessions': [], 'events': [], 'rows': 0}
+    out = {'sessions': [], 'rows': 0}
     for p in paths:
-      r = vlog.replay_live(p)
-      out['sessions'] += r['sessions']
-      out['events'] += r['events']
+      r = vlog.replay_live(p, until)
+      out['sessions'] += [s for s in r['sessions'] if s['end'] < until]
       out['rows'] += r['rows']
     for s in out['sessions']:
       s['source'] = 'live.jsonl 재분석'
     return out
-  return _cached('replay', tuple(_mtime(p) for p in paths), run)
+  # with no logger sessions yet the cutoff is open and the file still matters as it grows
+  key = until if until != float('inf') else [_mtime(p) for p in paths]
+  return _disk_cached('replay', key, run)
 
 
 def power_rows() -> list:
   since = time.time() - POWER_DAYS * 86400
-  swag = _cached('swag', _swag_stamp(), lambda: vlog.power_from_swaglog(SWAGLOG_DIR))
   own = [r for r in vlog.read_jsonl(os.path.join(VLOG_DIR, 'power.jsonl')) if r.get('t', 0) >= since]
   first_own = own[0]['t'] if own else float('inf')
   # the logger's own 1-minute record wins where it exists; swaglog fills in before it
+  key = first_own if own else list(_swag_stamp())
+  swag = _disk_cached('swag', key, lambda: [r for r in vlog.power_from_swaglog(SWAGLOG_DIR) if r['t'] < first_own])
   return [r for r in swag if since <= r['t'] < first_own] + own
 
 
@@ -314,8 +338,8 @@ def overview() -> dict:
   own = vlog.read_jsonl(os.path.join(VLOG_DIR, 'sessions.jsonl'))
   for s in own:
     s['source'] = '상시 로거' + (' (raw 재구성)' if s.get('rebuilt') else '')
-  rep = replayed()
   first_own = min((s['start'] for s in own), default=float('inf'))
+  rep = replayed(first_own)
   sessions = [s for s in rep['sessions'] if s['end'] < first_own] + own
   # a session that straddled the boot-time clock being set runs backwards; it has no usable times
   sessions = [s for s in sessions if s.get('end', 0) >= s.get('start', 0)]

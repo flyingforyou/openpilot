@@ -518,7 +518,7 @@ class VehicleLog:
 
 
 # ---- re-analysis of what was logged before this existed --------------------------------------------
-def replay_live(path: str) -> dict:
+def replay_live(path: str, until: float = float('inf')) -> dict:
   """Run live.jsonl (btobdd's ~1 line per publish) through the same logger in memory.
 
   Old lines predate the 0x102 offset fix, so pack voltage/current are decoded again from the raw
@@ -543,6 +543,8 @@ def replay_live(path: str) -> dict:
       if r.get('event') != 'live':
         continue
       t = r['t']
+      if t >= until:
+        break
       if last_t is not None and t - last_t > 300:
         vl.close(last_t, 'log-gap')
       last_t = t

@@ -53,3 +53,14 @@ def test_charge_fragments_are_one_plug_in():
 def test_charge_is_not_merged_across_a_drive():
   drive = {'type': 'DRIVE', 'start': 110, 'end': 200}
   assert len(vlog_api.merge_charges([chg(0, 100), drive, chg(210, 300)])) == 3
+
+
+def test_history_is_computed_once_per_cutoff(tmp_path, monkeypatch):
+  monkeypatch.setattr(vlog_api, 'DISK_CACHE', str(tmp_path / 'c.json'))
+  monkeypatch.setattr(vlog_api, '_cache', {})
+  calls = []
+  assert vlog_api._disk_cached('x', 100.0, lambda: calls.append(1) or [1, 2]) == [1, 2]
+  vlog_api._cache.clear()                                   # a server restart: memory gone, disk kept
+  assert vlog_api._disk_cached('x', 100.0, lambda: calls.append(1) or [9]) == [1, 2]
+  assert vlog_api._disk_cached('x', 200.0, lambda: calls.append(1) or [3]) == [3]
+  assert len(calls) == 2
