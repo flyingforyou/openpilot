@@ -194,41 +194,42 @@ def drives(days: float = POWER_DAYS) -> list:
 def merge_drives(sessions: list, routes: list) -> list:
   """One row per drive: the route's real start/end/distance, with the dongle sessions that fall in
   it as parts. Energy is summed over the parts and labelled as covering only that share of the
-  drive; Wh/mi is only given when the parts cover most of it. Drives no dongle heard still get a row."""
+  drive; Wh/mi is only given when the parts cover most of it. Drives no dongle heard are left out."""
   rows, used = [], set()
   for r in routes:
     span = max(1.0, r['end'] - r['start'])
     parts = [s for s in sessions if s['type'] == 'DRIVE' and s['start'] < r['end'] + 60 and s['end'] > r['start'] - 60]
+    if not parts:
+      continue
     used.update(id(s) for s in parts)
     covered = sum(min(s['end'], r['end']) - max(s['start'], r['start']) for s in parts)
     row = {'type': 'DRIVE', 'start': r['start'], 'end': r['end'], 'durationS': round(span, 1), 'miles': r['miles'],
            'milesSource': 'openpilot', 'movingS': r['movingS'], 'route': r['route'], 'coverage': round(max(0.0, covered) / span, 3),
-           'source': 'openpilot + 동글' if parts else 'openpilot (동글 기록 없음)', 'parts': len(parts), 'flags': []}
-    if parts:
-      for k in ('kwhIn', 'kwhOut', 'gapS', 'samples'):
-        row[k] = round(sum(s.get(k) or 0 for s in parts), 3)
-      kws = [s for s in parts if s.get('kwMin') is not None]
-      row['kwMin'] = min((s['kwMin'] for s in kws), default=None)
-      row['kwMax'] = max((s['kwMax'] for s in kws), default=None)
-      row['avgKw'] = round(sum((s.get('avgKw') or 0) * s['durationS'] for s in parts) / max(1, sum(s['durationS'] for s in parts)), 2)
-      row['socStart'], row['socEnd'] = parts[0].get('socStart'), parts[-1].get('socEnd')
-      row['missingRate'] = None
-      part_mi = sum(s.get('miSpeed') or 0 for s in parts)
-      row['partMiles'] = round(part_mi, 2)
-      net = row['kwhOut'] - row['kwhIn']
-      if part_mi > 0.3:
-        wh = round(net * 1000 / part_mi, 1)
-        row['whPerMi' if row['coverage'] >= 0.8 else 'whPerMiPart'] = wh
-      row['regenKwh'] = row['kwhIn']
-      for k in ('tempMin', 'limitMinDischarge', 'limitMinRegen'):
-        vals = [s[k] for s in parts if s.get(k) is not None]
-        row[k] = min(vals) if vals else None
-      vals = [s['tempMax'] for s in parts if s.get('tempMax') is not None]
-      row['tempMax'] = max(vals) if vals else None
-      row['events'] = [e for s in parts for e in s.get('events') or []]
-      row['partList'] = [{'start': s['start'], 'end': s['end'], 'source': s.get('source')} for s in parts]
-      if row['coverage'] < 0.8:
-        row['flags'].append('partial')
+           'source': 'openpilot + 동글', 'parts': len(parts), 'flags': []}
+    for k in ('kwhIn', 'kwhOut', 'gapS', 'samples'):
+      row[k] = round(sum(s.get(k) or 0 for s in parts), 3)
+    kws = [s for s in parts if s.get('kwMin') is not None]
+    row['kwMin'] = min((s['kwMin'] for s in kws), default=None)
+    row['kwMax'] = max((s['kwMax'] for s in kws), default=None)
+    row['avgKw'] = round(sum((s.get('avgKw') or 0) * s['durationS'] for s in parts) / max(1, sum(s['durationS'] for s in parts)), 2)
+    row['socStart'], row['socEnd'] = parts[0].get('socStart'), parts[-1].get('socEnd')
+    row['missingRate'] = None
+    part_mi = sum(s.get('miSpeed') or 0 for s in parts)
+    row['partMiles'] = round(part_mi, 2)
+    net = row['kwhOut'] - row['kwhIn']
+    if part_mi > 0.3:
+      wh = round(net * 1000 / part_mi, 1)
+      row['whPerMi' if row['coverage'] >= 0.8 else 'whPerMiPart'] = wh
+    row['regenKwh'] = row['kwhIn']
+    for k in ('tempMin', 'limitMinDischarge', 'limitMinRegen'):
+      vals = [s[k] for s in parts if s.get(k) is not None]
+      row[k] = min(vals) if vals else None
+    vals = [s['tempMax'] for s in parts if s.get('tempMax') is not None]
+    row['tempMax'] = max(vals) if vals else None
+    row['events'] = [e for s in parts for e in s.get('events') or []]
+    row['partList'] = [{'start': s['start'], 'end': s['end'], 'source': s.get('source')} for s in parts]
+    if row['coverage'] < 0.8:
+      row['flags'].append('partial')
     rows.append(row)
   rest = [s for s in sessions if id(s) not in used]
   return rows + rest

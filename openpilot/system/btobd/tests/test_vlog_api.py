@@ -25,9 +25,8 @@ def test_fragments_become_one_partial_drive():
   assert 'partial' in d['flags']
 
 
-def test_drive_without_dongle_still_listed():
-  rows = vlog_api.merge_drives([], [{'route': 'r2', 'start': 0.0, 'end': 600.0, 'miles': 5.0, 'movingS': 500}])
-  assert rows[0]['source'] == 'openpilot (동글 기록 없음)' and rows[0]['coverage'] == 0 and 'kwhOut' not in rows[0]
+def test_drive_without_dongle_is_not_listed():
+  assert vlog_api.merge_drives([], [{'route': 'r2', 'start': 0.0, 'end': 600.0, 'miles': 5.0, 'movingS': 500}]) == []
 
 
 def test_fully_covered_drive_gets_wh_per_mile():

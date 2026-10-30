@@ -52,6 +52,8 @@ ROTATE_N = 4
 DISCOVERY = [0x202, 0x332, 0x3F8, 0x388, 0x246, 0x528, 0x467, 0x252, 0x3F2, 0x51F, 0x21C, 0x37A, 0x33A, 0x39A]
 RETRY_S = 15.0
 DWELL = 0.15
+# ~1 Hz messages: 0.15 s caught 0x382 about 30 times an hour while charging. Wait for one frame.
+SLOW_IDS = {0x302: 1.1, 0x382: 1.1, 0x3D2: 1.1}
 CELL_DWELL = 1.2
 CELL_EVERY = 6        # cycles between brick-voltage sweeps
 RAW_KEEP = 40
@@ -260,8 +262,10 @@ class Daemon:
     start, nframes, heard = time.monotonic(), 0, set()
     for msg_id in ids:
       cell = msg_id == 0x6F2
-      frames = self.elm.monitor(msg_id, (CELL_DWELL if mode == 'DRIVE' else CELL_DWELL_REST) if cell else DWELL,
-                                max_frames=96 if cell else 4)
+      if cell:
+        frames = self.elm.monitor(msg_id, CELL_DWELL if mode == 'DRIVE' else CELL_DWELL_REST, max_frames=96)
+      else:
+        frames = self.elm.monitor(msg_id, SLOW_IDS.get(msg_id, DWELL), max_frames=1 if msg_id in SLOW_IDS else 4)
       now, wall = time.monotonic(), time.time()
       window = f'{self.cycle}:{msg_id:03X}'
       for fid, data in frames:

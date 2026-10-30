@@ -49,7 +49,7 @@ def test_mode_candidates(v, want):
 
 def test_charge_energy_is_integrated_and_signed():
   vl = vlog.VehicleLog('', write=False)
-  rows = [{'gear': 'P', 'bmsState': 3, 'pilot': 2, 'packVoltage': 400.0, 'packCurrent': 25.0, 'socUI': 50 + i / 360}
+  rows = [{'gear': 'P', 'bmsState': 3, 'pilot': 2, 'packVoltage': 400.0, 'packCurrent': 25.0, 'socDisplay': 50 + i / 360}
           for i in range(3600)]
   t = run(vl, rows)
   vl.close(t)
@@ -296,8 +296,17 @@ def test_rebuild_from_raw_recovers_a_real_charge(tmp_path):
   assert rows[0]['type'] == 'DRIVE' and 'rebuilt' not in rows[0]          # outside the window: kept
   ch = [s for s in rows if s['type'] == 'AC_CHARGE']
   assert len(ch) == 1 and ch[0]['rebuilt'] == 'raw'
-  assert ch[0]['socStart'] == pytest.approx(54.1, abs=0.2) and 5.0 < ch[0]['avgKw'] < 6.5
+  assert ch[0]['socStart'] == pytest.approx(50.0, abs=0.3)   # cluster SOC; socUI read 54.1 and 5.0 < ch[0]['avgKw'] < 6.5
   assert ch[0]['kwhIn'] > 0.5 and ch[0]['gapS'] < 60
   series = vlog.read_jsonl(str(d / 'series-20261030.jsonl'))
   assert sum('packVoltage' in r for r in series) > 30
   assert any(n.startswith('sessions.jsonl.bak-') for n in os.listdir(d))
+
+
+def test_session_soc_is_the_cluster_figure():
+  # 0x302 alone gives socDisplay once 0x382 has supplied full/buffer: 54.1% socUI -> 50.0% on the dash
+  car = TeslaSXState()
+  car.values.update(nominalFullPackEnergy=73.0, energyBuffer=6.0)
+  car.feed(0x302, bytes([0x00, (541 & 0x3F) << 2, 541 >> 6]), 1.0)
+  assert car.values['socUI'] == 54.1 and car.values['socDisplay'] == pytest.approx(50.0, abs=0.05)
+  assert car.stamp['socDisplay'] == 1.0

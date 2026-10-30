@@ -3966,8 +3966,7 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
 <div class="grp"><div class="gt"><span>지금</span><span class="tag" id="mode">–</span></div><div class="big" id="now"></div></div>
 
 <div class="grp">
-  <div class="gt"><span>충전 중 기기는 켜져 있나 · 전원 이력</span><span class="na" id="pwfrom" style="font-family:var(--m);font-size:10.5px"></span></div>
-  <div class="ans" id="answer"></div>
+  <div class="gt"><span>전원 이력</span><span class="na" id="pwfrom" style="font-family:var(--m);font-size:10.5px"></span></div>
   <div class="lanes" id="lanes"></div>
   <div class="axis"><span></span><div><span>0시</span><span>6</span><span>12</span><span>18</span><span>24</span></div></div>
   <div class="legend">
@@ -3979,9 +3978,9 @@ a.dl{color:var(--radar);text-decoration:none;font-family:var(--m);font-size:11px
 
 <div class="grp">
   <div class="gt"><span>세션</span><span><a class="dl" href="/api/vlog/csv/sessions">CSV</a></span></div>
-  <div class="sc"><table><thead><tr><th>시작</th><th>종류</th><th class="r">시간</th><th class="r">SOC</th><th class="r">팩 유입</th><th class="r">팩 유출</th>
+  <div class="sc"><table><thead><tr><th>시작</th><th>종류</th><th class="r">시간</th><th class="r">SOC (계기판)</th><th class="r">팩 유입</th><th class="r">팩 유출</th>
     <th class="r">평균 kW</th><th class="r">최대 kW</th><th class="r">거리</th><th class="r">Wh/mi</th><th class="r">동글 기록</th><th>출처</th></tr></thead><tbody id="sess"></tbody></table></div>
-  <div class="hint" style="border-top:1px solid var(--line)">주행의 시간·거리는 openpilot 주행 로그(속도 적분)에서 가져온 전체 값이고, 에너지·SOC·kW는 그중 동글이 연결돼 있던 구간("동글 기록" %)만의 값입니다.
+  <div class="hint" style="border-top:1px solid var(--line)">SOC는 계기판 기준(버퍼 제외)입니다. 동글 기록이 없는 주행은 표시하지 않습니다. 주행의 시간·거리는 openpilot 주행 로그(속도 적분)에서 가져온 전체 값이고, 에너지·SOC·kW는 그중 동글이 연결돼 있던 구간("동글 기록" %)만의 값입니다.
     기록 비율이 80% 미만이면 Wh/mi는 기록된 구간만으로 계산한 참고값(회색)입니다.</div>
   <div id="detail" hidden></div>
 </div>
@@ -4036,21 +4035,12 @@ function renderNow(d){
     +tile('수신',q.fps==null?'–':q.fps,'프레임/s',q.ids!=null?`ID ${q.ids}개 · 순회 ${q.cycleS}s · BUFFER FULL ${q.bufferFull||0}`:'')
     +tile('마지막 수신',s.lastFrame?dt(s.lastFrame):'–','',s.lastFrame?Math.round(d.now-s.lastFrame)+'초 전':'')
     +tile('팩',v.packVoltage==null?'–':f(v.packVoltage,1)+' V','',v.packCurrent==null?'':`${f(v.packCurrent,1)} A · ${f(v.packPower,1)} kW`)
-    +tile('SOC',f(v.socUI,1),'%',v.bmsState!=null?'BMS '+(BMS[v.bmsState]||v.bmsState):'');
+    +tile('SOC (계기판)',f(v.socDisplay,1),'%',v.bmsState!=null?'BMS '+(BMS[v.bmsState]||v.bmsState):'');
   $('sub').textContent=`업데이트 ${dt(d.now)} · 세션 ${d.sessions.length} · 건강 스냅샷 ${d.health.length} · 예전 live.jsonl ${d.replayRows}줄 재분석`;
 }
 function renderPower(d){
   const segs=d.power||[];
   $('pwfrom').textContent=d.powerFrom?dt(d.powerFrom)+'부터':'';
-  const cc=d.chargeCheck,aw=cc.awakeLong,cs=cc.chargeSessions;
-  const allUp=aw.every(a=>a.deviceUp);
-  $('answer').innerHTML=!aw.length&&!cs.length?'아직 판단할 기록이 없습니다.':
-    `<b class="${allUp?'ok':'bad'}">${allUp?'안 꺼집니다.':'꺼진 적이 있습니다.'}</b> `+
-    `30분 이상 차가 깨어 있던(충전 포함) 구간 ${aw.length}번 중 ${aw.filter(a=>a.deviceUp).length}번 기기가 켜져 있었고`+
-    (cs.length?`, 동글로 기록된 충전 ${cs.length}번은 모두 기기가 켜진 상태였습니다`:'')+'. '+
-    `이 차는 주차·잠든 상태에서도 하네스 전원(12.4~12.9V)을 유지해서 기기가 계속 켜져 있습니다. `+
-    `다만 지금까지는 페이지를 열어 둘 때만 동글이 연결돼 충전 중 배터리 값은 거의 기록되지 않았고, 이제는 차가 깨어 있으면 자동으로 기록합니다.`+
-    (cc.deviceOff.length?` 기록이 끊긴 구간(기기 꺼짐) ${cc.deviceOff.length}번: `+cc.deviceOff.slice(-4).map(o=>dt(o.start)+'~'+dt(o.end)).join(', '):'');
   const charges=(d.sessions||[]).filter(s=>s.type.includes('CHARGE'));
   if(!segs.length){$('lanes').innerHTML='<div class="hint">전원 기록이 없습니다</div>';return;}
   const first=new Date(segs[0].start*1000);first.setHours(0,0,0,0);
@@ -4100,7 +4090,7 @@ async function openSession(s){
   let html=`<div class="gt" style="border-top:1px solid var(--line)"><span>${MODE[s.type]||s.type} · ${dt(s.start)} ~ ${dt(s.end)}</span>
     <span><a class="dl" href="/api/vlog/csv/series/${Math.floor(s.start)}-${Math.ceil(s.end)}">이 구간 CSV</a></span></div>`;
   html+=chart(rows,[{k:'kw',n:'팩 전력 kW (+ 팩으로)',c:'var(--radar)',side:'L',zero:true,d:s.type==='DRIVE'?0:1},
-    {k:'socUI',n:'SOC %',c:'var(--ok)',side:'R',d:1}]);
+    {k:'socDisplay',n:'SOC % (계기판)',c:'var(--ok)',side:'R',d:1}]);
   if(s.type.includes('CHARGE'))html+=chart(rows,[{k:'packCurrent',n:'팩 전류 A',c:'var(--radar)',side:'L',d:1},
     {k:'acVolts1',n:'AC 입력 V',c:'var(--hot)',side:'R',d:0}],130);
   if(s.type==='DRIVE')html+=chart(rows,[{k:'vehicleSpeedMph',n:'속도 mph',c:'var(--hot)',side:'L'},{k:'maxDischargePower',n:'BMS 방전 한계 kW',c:'var(--mut)',side:'R'}],130);

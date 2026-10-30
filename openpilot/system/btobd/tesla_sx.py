@@ -251,6 +251,11 @@ class TeslaSXState:
       decoded = bms_hv(data, offset=self.current_offset)
     else:
       decoded = dec(data)
+      full, buf = self.values.get('nominalFullPackEnergy'), self.values.get('energyBuffer')
+      if msg_id == 0x302 and full and buf is not None and full > buf:
+        # 0x382 carries socDisplay directly but is 1 Hz and often missed; socUI x full equals 0x382's
+        # nominal remaining to the 0.1 kWh, and full/buffer barely move, so derive it from 0x302 too
+        decoded['socDisplay'] = max(0.0, (decoded['socUI'] / 100 * full - buf) / (full - buf) * 100)
     for k, v in decoded.items():
       self.values[k] = round(v, 3) if isinstance(v, float) else v
       self.stamp[k] = t

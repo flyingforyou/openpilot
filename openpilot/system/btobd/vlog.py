@@ -37,6 +37,9 @@ FAST_KEYS = frozenset(('packVoltage', 'packCurrent', 'packPower', 'vehicleSpeedM
                        'frontMechPower', 'rearTorqueMeasured', 'frontTorqueMeasured', 'rearMotorRpm',
                        'maxDischargePower', 'maxRegenPower'))
 CELL_KEYS = frozenset(('cellMin', 'cellMax', 'cellAvg', 'cellDelta', 'cellCount', 'cellSpanS', 'cellSync'))
+# SOC everywhere in the log is what the cluster shows (buffer removed), not the BMS's socUI: the
+# dash read 45% at socUI 49% (tesla_sx.bms_energy).
+SOC_KEY = 'socDisplay'
 CHARGE_JOIN_S = 600.0  # charge sessions this close together are one plug-in (link drops, restarts)
 CLOCK_JUMP_S = 60.0    # wall time moving this much more or less than monotonic = the clock was set
 MAX_GAP_S = 15.0       # energy is not integrated across a gap longer than this
@@ -139,7 +142,7 @@ class ModeMachine:
 
 class Session:
   def __init__(self, kind: str, t: float, v: dict):
-    self.d = {'type': kind, 'start': t, 'end': t, 'socStart': v.get('socUI'), 'socEnd': v.get('socUI'),
+    self.d = {'type': kind, 'start': t, 'end': t, 'socStart': v.get(SOC_KEY), 'socEnd': v.get(SOC_KEY),
               'odoStart': v.get('batteryOdometerMi'), 'odoEnd': v.get('batteryOdometerMi'),
               'kwhIn': 0.0, 'kwhOut': 0.0, 'kwMax': None, 'kwMin': None, 'kwSum': 0.0, 'kwN': 0,
               'samples': 0, 'staleSamples': 0, 'gapS': 0.0, 'coveredS': 0.0, 'miSpeed': 0.0,
@@ -156,10 +159,10 @@ class Session:
     d.setdefault('firstT', t)
     d['samples'] += 1
     d['staleSamples'] += stale
-    if v.get('socUI') is not None:
-      d['socStart'] = d['socStart'] if d['socStart'] is not None else v['socUI']
-      d['socEnd'] = v['socUI']
-      s = int(v['socUI'])
+    if v.get(SOC_KEY) is not None:
+      d['socStart'] = d['socStart'] if d['socStart'] is not None else v[SOC_KEY]
+      d['socEnd'] = v[SOC_KEY]
+      s = int(v[SOC_KEY])
       d['socFirstAt'].setdefault(str(s), t)
     if v.get('batteryOdometerMi') is not None:
       d['odoStart'] = d['odoStart'] if d['odoStart'] is not None else v['batteryOdometerMi']
@@ -191,10 +194,10 @@ class Session:
       if 0 < dt <= MAX_GAP_S:
         d['miSpeed'] += spd * dt / 3600.0
       self._last_spd_t = t
-    if v.get('socUI') is not None:
-      self._last_soc = v['socUI']
+    if v.get(SOC_KEY) is not None:
+      self._last_soc = v[SOC_KEY]
       if kw is not None and d['type'] in CHARGE_MODES:
-        c = d['curve'].setdefault(str(int(v['socUI'])), [0.0, 0])
+        c = d['curve'].setdefault(str(int(v[SOC_KEY])), [0.0, 0])
         c[0] += kw
         c[1] += 1
     for k, lo in (('moduleTempMin', 'tempMin'), ('moduleTempMax', 'tempMax')):
@@ -481,14 +484,14 @@ class VehicleLog:
       self.rest_since = None
       return
     self.rest_since = self.rest_since or t
-    soc = v.get('socUI')
+    soc = v.get(SOC_KEY)
     due = t - self.last_health >= HEALTH_EVERY_S or (
       soc is not None and self.last_health_soc is not None and abs(soc - self.last_health_soc) >= 5)
     if t - self.rest_since < REST_HOLD_S or not due or cells is None:
       return
     vsum = sum(cells)
     low = min(range(96), key=lambda i: cells[i])
-    snap = {'t': round(t, 2), 'soc': soc, 'socDisplay': v.get('socDisplay'), 'packVoltage': v.get('packVoltage'),
+    snap = {'t': round(t, 2), 'soc': soc, 'socUI': v.get('socUI'), 'packVoltage': v.get('packVoltage'),
             'packCurrent': cur, 'cellsSumV': round(vsum, 2), 'cells': cells, 'temps': temps,
             'cellMin': min(cells), 'cellMax': max(cells), 'deltaMv': round((max(cells) - min(cells)) * 1000, 1),
             'lowIndex': low + 1, 'nominalFullPackEnergy': v.get('nominalFullPackEnergy'),
