@@ -4352,7 +4352,7 @@ function render(){
     <td>${w?`<span class="pill warn" title="${esc(x.warnings.join(' · '))}">${w}</span>`:''}${x.unverified?` <span class="pill low" title="미검증 데이터">미검증 ${x.unverified}</span>`:''}</td>
     <td class="r">${v(x.nominalFullPack,2)}</td><td class="r">${v(x.soh,1)}</td><td class="r">${v(x.cellDeltaMv,1,x.cellDeltaLow)}</td>
     <td class="r">${x.rMohm==null?'<span class="na">–</span>':`<span class="${x.rConf==='high'?'':'na'}" title="SOC ${x.rBin?.split('|')[0]}% · ${x.rBin?.split('|')[1]} °C 구간 · 신뢰도 ${x.rConf}">${f(x.rMohm,1)}</span>`}</td>
-    <td class="r">${x.miles==null?'<span class="na">–</span>':f(x.miles,1)+(x.milesSource==='sessions'?'<span class="na">*</span>':'')}</td><td class="r">${v(x.chargedKwh,2)}</td></tr>`;}).join('')
+    <td class="r">${x.miles==null?'<span class="na">–</span>':`<span class="${x.status==='OK'?'':'na'}" title="${x.status==='OK'?'':'기록된 구간만 · '}${x.milesSource==='sessions'?'주행 세션 합':'배터리 주행거리 차이'}">${f(x.miles,1)}${x.milesSource==='sessions'?'*':''}</span>`}</td><td class="r">${v(x.chargedKwh,2)}</td></tr>`;}).join('')
     ||'<tr><td colspan="9" class="na">아직 스냅샷이 없습니다</td></tr>';
   document.querySelectorAll('#days tr[data-d]').forEach(r=>r.onclick=()=>openDay(r.dataset.d));
 }
@@ -4361,7 +4361,8 @@ function chart(D,k,kind,dg){
   const W=900,h=130,P=[48,14,10,20],n=D.length,X=i=>P[0]+(n===1?0.5:i/(n-1))*(W-P[0]-P[1]);
   const val=x=>{if(k==='rMohm'){const b=(x.rBins||{})[(IDX.trend.rMohm||{}).bin];return b?{v:b[0],low:b[1]==='low'}:null;}
     if(k==='cellDeltaMv'){return x.cellDeltaMv!=null?{v:x.cellDeltaMv}:x.cellDeltaLow!=null?{v:x.cellDeltaLow,low:true}:null;}
-    return x[k]!=null?{v:x[k],low:x.status==='PARTIAL'&&(k==='miles'||k==='chargedKwh')}:null;};
+    // a partial day's distance/charge covers only what was recorded: shown hollow, not as the day's total
+    return x[k]!=null?{v:x[k],low:x.status!=='OK'&&(k==='miles'||k==='chargedKwh')}:null;};
   const pts=D.map((x,i)=>({i,x,p:val(x)}));const ys=pts.filter(p=>p.p).map(p=>p.p.v);
   if(!ys.length)return '<div class="hint">이 기간에 측정 없음</div>';
   let lo=Math.min(...ys),hi=Math.max(...ys);if(k==='miles'||k==='chargedKwh')lo=0;if(hi-lo<1e-6){hi+=Math.abs(hi)*0.01+0.5;lo-=Math.abs(lo)*0.01+0.5;}
