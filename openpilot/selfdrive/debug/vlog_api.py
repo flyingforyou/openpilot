@@ -5,6 +5,7 @@ Read-only over the files; nothing here talks to the daemon except reading its tm
 """
 from __future__ import annotations
 
+import collections
 import csv
 import gzip
 import io
@@ -554,7 +555,14 @@ def last_state() -> dict | None:
 # discharge limit only above 20% and 10 C, cell spread only from a synchronised sweep, ...).
 CHECK_DAYS = 14
 STATS_CACHE = os.path.join(tdiag.LOG_DIR, 'vlog-stats-cache.json')
+STATS_VERSION = 2           # bump when file_stats derives something new: cached hours are decoded again
 BMS_FAULT = (7, 8)
+# Pack resistance: dV/dI between two 0x102 readings at most R_WINDOW_S apart whose current differs by
+# R_MIN_STEP_A. A single pair is noisy (58-87 mOhm on 2026-10-30), so one median per hour file is kept.
+R_WINDOW_S = 10.0
+R_MIN_STEP_A = 60.0
+R_MIN_PAIRS = 15
+DCDC_EFF_MIN_W = 500        # input power is in 16 W steps: below this the ratio is +-3% noise
 
 
 def _param_file(key: str) -> str:
@@ -589,6 +597,8 @@ def file_stats(path: str) -> dict:
     if v > r[1]:
       r[1], r[4] = v, t
 
+  win: collections.deque = collections.deque()
+  rs: list = []
   for wall, mono, i, d in _raw_frames([path]):
     before = dict(car.stamp)
     car.feed(i, d, mono)
@@ -606,6 +616,19 @@ def file_stats(path: str) -> dict:
         put('chargeKw', kw, wall)
       elif V.get('gear') in ('D', 'R', 'N'):
         put('driveKw', kw, wall)
+      win.append((wall, V['packVoltage'], V['packCurrent']))
+      while win[0][0] < wall - R_WINDOW_S:
+        win.popleft()
+      for _, v0, i0 in win:
+        if abs(V['packCurrent'] - i0) > R_MIN_STEP_A:
+          rs.append(((V['packVoltage'] - v0) / (V['packCurrent'] - i0) * 1000, wall))
+          break
+    if 'dcdcInputPower' in changed and V['dcdcInputPower'] >= DCDC_EFF_MIN_W and V.get('dcdcOutputPower') is not None:
+      put('dcdcEfficiency', V['dcdcOutputPower'] / V['dcdcInputPower'] * 100, wall)
+    if 'pilotLow' in changed and V.get('pilot') == 2:
+      put('pilotLowCharge', V['pilotLow'], wall)
+    if 'rangeIdealMi' in changed and (V.get('socUI') or 0) > 30:
+      put('rangeIdealFull', V['rangeIdealMi'] / V['socUI'] * 100, wall)
     if 'moduleTempMax' in changed and V.get('moduleTempMin') is not None:
       put('moduleSpread', V['moduleTempMax'] - V['moduleTempMin'], wall)
     if 'cellDelta' in changed and V.get('cellSync') and V.get('bmsState') in (3, 4):
@@ -622,6 +645,10 @@ def file_stats(path: str) -> dict:
         r = st.setdefault('bad:' + x.key, [V[x.key], V[x.key], 0, wall, wall])
         r[2] += 1
         r[4] = wall
+  if len(rs) >= R_MIN_PAIRS:
+    rs.sort()
+    r, t = rs[len(rs) // 2]
+    st['packResistance'] = [r, r, 1, t, t]
   return st
 
 
@@ -639,8 +666,8 @@ def _stats(days: float) -> dict:
     p = os.path.join(VLOG_DIR, f'raw-{n}.jsonl.gz')
     mt = _mtime(p)
     hit = disk.get(n)
-    if not hit or hit['mtime'] != mt:
-      hit = disk[n] = {'mtime': mt, 'stats': file_stats(p)}
+    if not hit or hit['mtime'] != mt or hit.get('v') != STATS_VERSION:
+      hit = disk[n] = {'mtime': mt, 'v': STATS_VERSION, 'stats': file_stats(p)}
       dirty = True
     for k, (lo, hi, cnt, tlo, thi) in hit['stats'].items():
       a = agg.get(k)
@@ -681,10 +708,15 @@ CHECKS = [
   ('배터리', 'degradation', '열화 (신품 기준 대비)', '%', 1, (None, 10), (None, 20), '10% 미만 좋음 · 20% 이상 나쁨'),
   ('배터리', 'dischargeLimitOk', 'BMS 방전 한계 (SOC>20%·>10 °C)', 'kW', 0, (150, None), (80, None), '150 kW 이상'),
   ('배터리', 'maxRegenPower', 'BMS 회생 한계', 'kW', 0, None, None, '고SOC·저온에서 낮아짐'),
+  ('배터리', 'packResistance', '팩 내부저항 (시간별 중앙값)', 'mΩ', 0, None, None, '10초 내 60 A 이상 변화의 ΔV/ΔI · 온도 따라 변함, 추세 비교용'),
+  ('배터리', 'socUI', 'SOC (BMS 실제)', '%', 1, None, None, '계기판보다 높음 (바닥 버퍼 포함)'),
+  ('배터리', 'energyBuffer', '바닥 버퍼 (벽돌 방지)', 'kWh', 1, None, None, ''),
+  ('배터리', 'rangeIdealFull', '완충 환산 이상 주행거리', 'mi', 0, None, None, '이상 주행거리 ÷ SOC(BMS) · SOC 30% 초과에서만'),
   ('12V', 'dcdcOutputVoltage', 'DC-DC 출력 전압', 'V', 2, (13.0, 15.0), (12.5, 15.5), '13.0~15.0 V'),
   ('12V', 'dcdcOutputCurrent', 'DC-DC 전류', 'A', 0, (None, 150), None, '150 A 이하'),
   ('12V', 'rearInverter12V', '12V (뒤 인버터 측)', 'V', 1, (12.5, None), (12.0, None), '12.5 V 이상'),
   ('12V', 'frontInverter12V', '12V (앞 인버터 측)', 'V', 1, (12.5, None), (12.0, None), '12.5 V 이상'),
+  ('12V', 'dcdcEfficiency', 'DC-DC 효율 (입력 500 W 이상)', '%', 0, (80, None), (70, None), '80% 이상'),
   ('12V', 'dcdcInletTemp', 'DC-DC 냉각수 입구 온도', '°C', 0, None, None, ''),
   ('구동', 'inverterTemp', '인버터 온도', '°C', 0, (None, 75), (None, 90), '75 °C 이하 (대략)'),
   ('구동', 'motorTemp', '모터 온도', '°C', 0, (None, 120), (None, 150), '120 °C 이하 (대략)'),
@@ -692,15 +724,28 @@ CHECKS = [
   ('구동', 'frontMechPower', '앞 모터 출력', 'kW', 0, None, None, ''),
   ('구동', 'rearStatorCurrent', '뒤 고정자 전류', 'A', 0, None, None, ''),
   ('구동', 'frontStatorCurrent', '앞 고정자 전류', 'A', 0, None, None, ''),
+  ('구동', 'rearDrivePowerMax', '뒤 구동 허용 최대 출력', 'kW', 0, None, None, '인버터가 그 순간 허용하는 값'),
+  ('구동', 'frontDrivePowerMax', '앞 구동 허용 최대 출력', 'kW', 0, None, None, '인버터가 그 순간 허용하는 값'),
+  ('구동', 'rearRegenPowerMax', '뒤 회생 허용 최대', 'kW', 0, None, None, ''),
   ('구동', 'vehicleSpeedMph', '속도', 'mph', 0, None, None, ''),
   ('충전', 'chargeKw', '충전 전력 (팩 기준)', 'kW', 1, None, None, ''),
   ('충전', 'acVoltsCharge', 'AC 입력 전압 (충전 중)', 'V', 0, (190, 264), (180, 270), '190~264 V'),
   ('충전', 'pilotHighCharge', '파일럿 전압 (충전 중)', 'V', 2, (5.0, 7.0), None, 'J1772 충전 중 6 V'),
+  ('충전', 'pilotLowCharge', '파일럿 음전압 (충전 중)', 'V', 2, (None, -11.0), (None, -10.0), 'J1772 −12 V · 높으면 충전기/배선 의심'),
   ('열관리', 'refrigPressure', '냉매 압력', 'bar', 1, None, None, ''),
   ('열관리', 'suctionPressure', '냉매 흡입 압력', 'bar', 1, None, None, ''),
   ('열관리', 'dischargeTemp', '냉매 토출 온도', '°C', 0, None, None, ''),
   ('열관리', 'heaterTemp', '히터 온도', '°C', 1, None, None, ''),
   ('열관리', 'pump1', '배터리 펌프', '%', 0, None, None, ''),
+  ('열관리', 'pump2', '펌프 2', '%', 0, None, None, ''),
+  ('열관리', 'ptPump', '구동계 펌프', '%', 0, None, None, ''),
+  ('열관리', 'suctionTemp', '냉매 흡입 온도', '°C', 1, None, None, ''),
+  ('열관리', 'radBypass', '라디에이터 바이패스 밸브', '%', 0, None, None, ''),
+  ('열관리', 'compCooling', '컴프레서 냉각 요구', '', 0, None, None, ''),
+  ('누적', 'batteryOdometerMi', '배터리 주행거리', 'mi', 0, None, None, '이 팩 기준 (차 계기판 아님)'),
+  ('누적', 'kwhDischargeTotal', '누적 방전', 'kWh', 0, None, None, ''),
+  ('누적', 'kwhChargeTotal', '누적 충전 (회생 포함)', 'kWh', 0, None, None, ''),
+  ('누적', 'cycles', '등가 완충 사이클', '회', 0, None, None, '누적 방전 ÷ 신품 용량'),
   ('후보 (미검증)', 'tpms1', '타이어 공기압? 1', 'psi', 1, (32, 45), None, '32~45 psi'),
   ('후보 (미검증)', 'tpms2', '타이어 공기압? 2', 'psi', 1, (32, 45), None, '32~45 psi'),
   ('후보 (미검증)', 'tpms3', '타이어 공기압? 3', 'psi', 1, (32, 45), None, '32~45 psi'),
@@ -737,6 +782,9 @@ def checks(days: float = CHECK_DAYS) -> dict:
   if ref > 0 and 'nominalFullPackEnergy' in agg:
     lo, hi, n, tlo, thi = agg['nominalFullPackEnergy']
     agg['degradation'] = [(1 - hi / ref) * 100, (1 - lo / ref) * 100, n, thi, tlo]
+  if ref > 0 and 'kwhDischargeTotal' in agg:
+    lo, hi, n, tlo, thi = agg['kwhDischargeTotal']
+    agg['cycles'] = [lo / ref, hi / ref, n, tlo, thi]
 
   rows = []
   for group, key, label, unit, dg, warn, bad, refs in CHECKS:

@@ -120,6 +120,8 @@ def test_every_check_has_min_max_and_a_verdict(tmp_path, monkeypatch):
   assert rows['acVoltsCharge']['min'] >= 200 and rows['acVoltsCharge']['level'] == 'ok'
   assert rows['degradation']['level'] == 'warn' and rows['degradation']['max'] == pytest.approx(14.9, abs=0.1)
   assert rows['motorTemp']['level'] == 'na'                       # parked and charging: no drive frames
+  assert -12.2 < rows['pilotLowCharge']['min'] <= rows['pilotLowCharge']['max'] < -11.0 and rows['pilotLowCharge']['level'] == 'ok'
+  assert 200 < rows['rangeIdealFull']['min'] < 230 and rows['cycles']['max'] == pytest.approx(rows['kwhDischargeTotal']['max'] / 85.8, abs=1)
   assert [e['level'] for e in c['events']] == ['info', 'warn'] and c['faults'] == []
   assert vlog_api.checks()['rows'] == c['rows']                   # second call from the stats cache
 
@@ -135,6 +137,20 @@ def test_out_of_range_values_are_flagged(tmp_path, monkeypatch):
   assert rows['dcdcOutputVoltage']['level'] == 'warn' and rows['moduleSpread']['level'] == 'warn'
   assert c['faults'][0]['label'] == 'BMS 상태' and c['faults'][0]['n'] == 2
   assert c['count']['bad'] == 2
+
+
+def test_pack_resistance_is_dv_over_di(tmp_path, monkeypatch):
+  # 0x102: voltage 0.01 V, current 0.1 A signed 15-bit, a 75 mOhm pack stepping between 0 and -200 A
+  def frame(v, a):
+    raw = round(a * 10) & 0x7FFF
+    return bytes([round(v * 100) & 0xFF, round(v * 100) >> 8, raw & 0xFF, raw >> 8, 0, 0, 0xFC, 0x1F])
+  frames = []
+  for k in range(60):
+    a = -200.0 if k % 4 < 2 else 0.0
+    frames.append((1000.0 + k, 1000.0 + k, 0x102, frame(380.0 + a * 0.075, a)))
+  monkeypatch.setattr(vlog_api, '_raw_frames', lambda paths: iter(frames))
+  r = vlog_api.file_stats('x')['packResistance']
+  assert r[0] == pytest.approx(75, abs=1)
 
 
 def test_last_state_decodes_the_last_minutes(tmp_path, monkeypatch):
