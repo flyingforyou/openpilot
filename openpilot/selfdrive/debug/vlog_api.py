@@ -998,7 +998,7 @@ def checks(days: float = CHECK_DAYS) -> dict:
       level, why = 'unverified', '신호 의미 미검증: 판정하지 않음'
     elif need and need['status'] != 'confirmed':
       level, why = 'unverified', f"해독 검증 {need['statusText']}: 판정하지 않음"
-    elif key != 'degradation' and key not in ('cycles',) and n < MIN_N and level in ('ok', 'info'):
+    elif n < MIN_N and level == 'ok':           # a reference row (참고) is not a verdict, nothing to withhold
       level, why = 'few', f'표본 {n}개: 판정하지 않음'
     rows.append({**row, 'min': round(lo, dg), 'max': round(hi, dg), 'n': n, 'tMin': tlo, 'tMax': thi, 'level': level,
                  'tWorst': worst, 'why': why})
