@@ -4145,7 +4145,7 @@ function renderSessions(d){
   $('sess').innerHTML=d.sessions.map((s,i)=>`<tr data-i="${i}"${selS===s.start?' class="sel"':''}><td>${dt(s.start)}</td><td><span class="tag ${s.type}">${MODE[s.type]||s.type}</span>${s.endCause?`<br><span class="${ENDC[s.endCause][1]}" style="font-size:10.5px">${ENDC[s.endCause][0]}</span>`:''}</td>
     <td class="r">${dur(s.durationS)}</td><td class="r">${s.socStart==null?'–':f(s.socStart)+'→'+f(s.socEnd)}%</td>
     <td class="r">${f(s.kwhIn,2)}</td><td class="r">${f(s.kwhOut,2)}</td><td class="r">${f(s.avgKw)}</td>
-    <td class="r">${s.type==='DRIVE'?f(s.kwMin):f(s.kwMax)}</td><td class="r">${s.miles==null?'–':f(s.miles)+' mi'}</td>
+    <td class="r">${s.type==='DRIVE'?f(s.kwMin):f(s.kwMax)}</td><td class="r">${s.miles==null?'–':f(s.miles)+' mi'}${s.avgMph!=null?`<br><span class="na" style="font-size:10.5px">${f(s.avgMph,0)} mph</span>`:''}</td>
     <td class="r">${s.whPerMi!=null?f(s.whPerMi,0):s.whPerMiPart!=null?`<span class="na">${f(s.whPerMiPart,0)}</span>`:'–'}</td>
     <td class="r ${cov(s)<0.8?'warn':''}">${s.coverage!=null?Math.round(s.coverage*100)+'%'+(s.parts>1?` (${s.parts}구간)`:''):s.missingRate==null?'–':Math.round((1-s.missingRate)*100)+'%'}</td><td class="na">${esc(s.source||'')}</td></tr>`).join('')
     ||'<tr><td colspan="12" class="na">아직 세션이 없습니다</td></tr>';
@@ -4192,9 +4192,14 @@ async function openSession(s){
     {k:'acVolts1',n:'AC 입력 V',c:'var(--hot)',side:'R',d:0}],130);
   if(s.type==='DRIVE')html+=chart(rows,[{k:'vehicleSpeedMph',n:'속도 mph',c:'var(--hot)',side:'L'},{k:'maxDischargePower',n:'BMS 방전 한계 kW',c:'var(--mut)',side:'R'}],130);
   else html+=chart(rows,[{k:'moduleTempMax',n:'모듈 최고 °C',c:'var(--hot)',side:'L',d:1},{k:'packVoltage',n:'팩 전압 V',c:'var(--mut)',side:'R',d:0}],130);
-  html+='<div class="kv">'+kv('팩 유입 / 유출',`${f(s.kwhIn,2)} / ${f(s.kwhOut,2)} kWh`)+kv('평균 / 범위',`${f(s.avgKw)} kW (${f(s.kwMin)} ~ ${f(s.kwMax)})`)
+  html+='<div class="kv">'+kv('팩 유입 / 유출',`${f(s.kwhIn,2)} / ${f(s.kwhOut,2)} kWh`)
+    +(s.bmsKwhIn!=null?kv('BMS 누적 기준 유입 / 유출',`${f(s.bmsKwhIn,2)} / ${f(s.bmsKwhOut,2)} kWh <span class="na">(순: 적분 ${f(s.kwhIn-s.kwhOut,2)} · BMS ${f(s.bmsKwhIn-s.bmsKwhOut,2)})</span>`):'')
+    +(s.socEnergyRatio!=null?kv('SOC 변화 ↔ 에너지',`SOC ${f(s.socEnd-s.socStart,1)}% = ${f(s.socKwh,2)} kWh · 실제 ${f(s.socEnergyRatio*100,0)}%`
+      +((s.flags||[]).includes('soc-energy-mismatch')?' <span class="warn">SOC가 에너지와 다르게 움직임'+(s.bmsKwhIn!=null&&Math.abs((s.kwhIn-s.kwhOut)-(s.bmsKwhIn-s.bmsKwhOut))<=0.05*Math.abs(s.bmsKwhIn-s.bmsKwhOut)?' (적분이 BMS 누적과 일치: BMS의 SOC 추정이 바뀐 것)':'')+'</span>':'')):'')+kv('평균 / 범위',`${f(s.avgKw)} kW (${f(s.kwMin)} ~ ${f(s.kwMax)})`)
     +(s.type==='DRIVE'?kv('거리',`${s.miles==null?'–':f(s.miles,2)+' mi'} (${{openpilot:'openpilot 주행 로그',odometer:'배터리 주행거리',speed:'속도 적분'}[s.milesSource]||'–'})`)
-      +kv('효율',s.whPerMi!=null?f(s.whPerMi,0)+' Wh/mi':s.whPerMiPart!=null?`${f(s.whPerMiPart,0)} Wh/mi (기록된 ${f(s.partMiles,2)} mi만)`:'–')
+      +kv('평균 속도',s.avgMph==null?'–':`${f(s.avgMph,1)} mph (정차 포함)`+(s.movingMph!=null?` · ${f(s.movingMph,1)} mph (이동 중)`:''))
+      +kv('효율',(s.whPerMi!=null?f(s.whPerMi,0)+' Wh/mi':s.whPerMiPart!=null?`${f(s.whPerMiPart,0)} Wh/mi (기록된 ${f(s.partMiles,2)} mi만, 참고값)`:'–')
+        +((s.flags||[]).includes('distance-from-route')?' <span class="na">(속도 수신이 드물어 거리는 openpilot 기준)</span>':''))
       +kv('동글 기록',s.coverage!=null?`${Math.round(s.coverage*100)}% · ${s.parts||0}구간`+(s.partList?' ('+s.partList.map(p=>dt(p.start).slice(-5)+'~'+dt(p.end).slice(-5)).join(', ')+')':''):'–')
       +(s.movingS!=null?kv('움직인 시간',dur(s.movingS)):'')+kv('회생 (기록 구간)',`${f(s.regenKwh,2)} kWh`):'')
     +(s.min10to80!=null?kv('10→80% (실측)',s.min10to80+'분'):'')+(s.min20to80!=null?kv('20→80% (실측)',s.min20to80+'분'):'')
@@ -4302,7 +4307,7 @@ details summary{cursor:pointer;font-size:12px;color:var(--mut);padding:9px 13px;
 <div class="grp"><div class="gt"><span>추세 그래프</span><span>● 측정 · ○ 신뢰도 낮음 · ┆ 기록 없음</span></div><div id="charts"></div></div>
 <div class="grp"><div class="gt"><span>날짜별 스냅샷</span><span>상태: <span class="pill OK">완전</span> <span class="pill PARTIAL">일부</span> <span class="pill NO_DATA">없음</span> · 경고는 따로</span></div>
   <div class="sc"><table><thead><tr><th>날짜</th><th>상태</th><th>경고</th><th class="r">공칭 kWh</th><th class="r">SOH %</th><th class="r">셀 편차 mV</th>
-  <th class="r">내부저항 mΩ</th><th class="r">주행 mi</th><th class="r">충전 kWh</th></tr></thead><tbody id="days"></tbody></table></div>
+  <th class="r">내부저항 mΩ</th><th class="r">주행 mi</th><th class="r">평균 mph · Wh/mi</th><th class="r">충전 kWh</th></tr></thead><tbody id="days"></tbody></table></div>
   <div id="detail"></div></div>
 <div class="grp"><div class="hint">
   하루는 차량 현지 시간(<span id="tzname"></span>) 기준입니다. 상시 기록의 원본 CAN 로그를 시간 단위로 다시 해독해 만들고, 원본이 바뀌면 그날만 다시 집계합니다(같은 날 파일 하나를 덮어쓰므로 중복이 생기지 않음).
@@ -4321,7 +4326,7 @@ const ST={OK:'완전',PARTIAL:'일부',NO_DATA:'없음'};
 const MODE={drive:'주행',charge:'충전',park:'주차'};
 const at=a=>!a?'':[a.mode?MODE[a.mode]:null,a.soc!=null?'SOC '+f(a.soc,0)+'%':null,a.temp!=null?f(a.temp,1)+' °C':null,a.i!=null?f(a.i,0)+' A':null,a.mph!=null&&a.mode==='drive'?f(a.mph,0)+' mph':null].filter(x=>x).join(' · ');
 const METRICS=[['nominalFullPack','공칭 완충 용량','kWh',2,'ok'],['soh','SOH (신품 대비)','%',1,'ok'],['cellDeltaMv','셀 편차 (휴지·동시 측정)','mV',1,'low'],
-  ['rMohm','내부저항 (같은 조건)','mΩ',1,'r'],['tempMax','모듈 최고 온도','°C',1,''],['miles','일일 주행거리','mi',1,''],['chargedKwh','일일 충전량 (팩 유입)','kWh',2,'']];
+  ['rMohm','내부저항 (같은 조건)','mΩ',1,'r'],['tempMax','모듈 최고 온도','°C',1,''],['miles','일일 주행거리','mi',1,''],['chargedKwh','일일 충전량 (팩 유입)','kWh',2,''],['whPerMi','일일 전비 (거리 가중)','Wh/mi',0,'']];
 let IDX=null,RANGE=30,PACK='',SEL=null;
 async function load(){
   try{IDX=await (await fetch('/api/daily'+(PACK?'?pack='+encodeURIComponent(PACK):''))).json();}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';return;}
@@ -4352,7 +4357,9 @@ function render(){
     <td>${w?`<span class="pill warn" title="${esc(x.warnings.join(' · '))}">${w}</span>`:''}${x.unverified?` <span class="pill low" title="미검증 데이터">미검증 ${x.unverified}</span>`:''}</td>
     <td class="r">${v(x.nominalFullPack,2)}</td><td class="r">${v(x.soh,1)}</td><td class="r">${v(x.cellDeltaMv,1,x.cellDeltaLow)}</td>
     <td class="r">${x.rMohm==null?'<span class="na">–</span>':`<span class="${x.rConf==='high'?'':'na'}" title="SOC ${x.rBin?.split('|')[0]}% · ${x.rBin?.split('|')[1]} °C 구간 · 신뢰도 ${x.rConf}">${f(x.rMohm,1)}</span>`}</td>
-    <td class="r">${x.miles==null?'<span class="na">–</span>':`<span class="${x.status==='OK'?'':'na'}" title="${x.status==='OK'?'':'기록된 구간만 · '}${x.milesSource==='sessions'?'주행 세션 합':'배터리 주행거리 차이'}">${f(x.miles,1)}${x.milesSource==='sessions'?'*':''}</span>`}</td><td class="r">${v(x.chargedKwh,2)}</td></tr>`;}).join('')
+    <td class="r">${x.miles==null?'<span class="na">–</span>':`<span class="${x.status==='OK'?'':'na'}" title="${x.status==='OK'?'':'기록된 구간만 · '}${x.milesSource==='sessions'?'주행 세션 합':'배터리 주행거리 차이'}">${f(x.miles,1)}${x.milesSource==='sessions'?'*':''}</span>`}${x.drives?`<br><span class="na" style="font-size:10.5px">${x.drives}회</span>`:''}</td>
+    <td class="r" title="여러 주행: 속도는 총거리÷총시간, Wh/mi는 거리 가중 (전력이 대부분 기록된 주행만)">${x.avgMph==null?'–':f(x.avgMph,0)} · ${x.whPerMi==null?'–':f(x.whPerMi,0)}</td>
+    <td class="r">${v(x.chargedKwh,2)}${x.chargeKinds&&(x.chargeKinds.DC||x.chargeKinds.AC)?`<br><span class="na" style="font-size:10.5px">${x.chargeKinds.DC?'DC '+x.chargeKinds.DC:''}${x.chargeKinds.DC&&x.chargeKinds.AC?' · ':''}${x.chargeKinds.AC?'AC '+x.chargeKinds.AC:''}${x.chargeKwMax!=null?' · 최대 '+f(x.chargeKwMax,0)+' kW':''}</span>`:''}</td></tr>`;}).join('')
     ||'<tr><td colspan="9" class="na">아직 스냅샷이 없습니다</td></tr>';
   document.querySelectorAll('#days tr[data-d]').forEach(r=>r.onclick=()=>openDay(r.dataset.d));
 }

@@ -207,3 +207,32 @@ def test_last_state_decodes_the_last_minutes(tmp_path, monkeypatch):
   s = vlog_api.last_state()
   assert 360 < s['values']['packVoltage'] < 380 and s['values']['bmsState'] == 3
   assert s['age']['packVoltage'] < 15 and sum(c is not None for c in s['cellsV']) == 96
+
+
+def test_a_session_is_counted_in_one_drive_only():
+  # 11/1: route 0000022f ended 20:06:30 and 00000230 began 20:07:18. With a 60 s margin both routes
+  # took both dongle sessions, and the same 4.4 mi / 2.9 kWh showed up twice.
+  r1 = {'route': '0000022f', 'start': 1793562929.0, 'end': 1793563590.0, 'miles': 4.4, 'movingS': 514}
+  r2 = {'route': '00000230', 'start': 1793563638.0, 'end': 1793563663.0, 'miles': 0.01, 'movingS': 11}
+  a = frag(1793562943.0, 1793563621.0, 4.39, 2.902, 0.786)
+  b = frag(1793563644.0, 1793563696.0, 0.0, 0.01, 0.106)
+  rows = vlog_api.merge_drives([a, b], [r1, r2])
+  drives = [x for x in rows if x.get('route')]
+  assert [x['route'] for x in drives] == ['0000022f', '00000230']
+  assert drives[0]['parts'] == 1 and drives[1]['parts'] == 1
+  assert sum(x['kwhOut'] for x in drives) == pytest.approx(2.912)
+  assert drives[0]['kwhOut'] == 2.902 and drives[1]['kwhIn'] == 0.106
+
+
+def test_drive_speed_is_route_distance_over_route_time():
+  route = {'route': 'r4', 'start': 0.0, 'end': 2580.0, 'miles': 46.5, 'movingS': 2400}
+  d = vlog_api.merge_drives([frag(0, 2580, 46.5, 16.3, 0.55)], [route])[0]
+  assert d['avgMph'] == pytest.approx(46.5 / 2580 * 3600, abs=0.1)
+  assert d['movingMph'] == pytest.approx(46.5 / 2400 * 3600, abs=0.1)
+
+
+def test_wh_per_mile_takes_the_route_distance_when_speed_was_not_heard():
+  # 10/31 13:56: power heard over the whole drive, speed only now and then (3.46 of 10.95 mi)
+  route = {'route': '0000022a', 'start': 0.0, 'end': 727.0, 'miles': 10.95, 'movingS': 720}
+  d = vlog_api.merge_drives([frag(0, 727, 3.46, 4.39, 0.39)], [route])[0]
+  assert d['whPerMi'] == pytest.approx(4000 / 10.95, rel=1e-3) and 'distance-from-route' in d['flags']

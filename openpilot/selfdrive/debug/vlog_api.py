@@ -219,11 +219,23 @@ def drives(days: float = POWER_DAYS) -> list:
 def merge_drives(sessions: list, routes: list) -> list:
   """One row per drive: the route's real start/end/distance, with the dongle sessions that fall in
   it as parts. Energy is summed over the parts and labelled as covering only that share of the
-  drive; Wh/mi is only given when the parts cover most of it. Drives no dongle heard are left out."""
+  drive; Wh/mi is only given when the parts cover most of it. Drives no dongle heard are left out.
+
+  Each session goes to one route only: the one it overlaps most (or, within 60 s, the nearest). With
+  the 60 s margin applied per route, two routes 48 s apart on 2026-11-01 both took the same two
+  sessions and the same 4.4 mi / 2.9 kWh drive was listed twice."""
+  def overlap(s, r):
+    return min(s['end'], r['end']) - max(s['start'], r['start'])
+  owner: dict = {}
+  for s in sessions:
+    if s['type'] == 'DRIVE' and routes:
+      best = max(routes, key=lambda r: overlap(s, r))
+      if overlap(s, best) > -60:
+        owner[id(s)] = best['route']
   rows, used = [], set()
   for r in routes:
     span = max(1.0, r['end'] - r['start'])
-    parts = [s for s in sessions if s['type'] == 'DRIVE' and s['start'] < r['end'] + 60 and s['end'] > r['start'] - 60]
+    parts = [s for s in sessions if owner.get(id(s)) == r['route']]
     if not parts:
       continue
     used.update(id(s) for s in parts)
@@ -231,6 +243,11 @@ def merge_drives(sessions: list, routes: list) -> list:
     row = {'type': 'DRIVE', 'start': r['start'], 'end': r['end'], 'durationS': round(span, 1), 'miles': r['miles'],
            'milesSource': 'openpilot', 'movingS': r['movingS'], 'route': r['route'], 'coverage': round(max(0.0, covered) / span, 3),
            'source': 'openpilot + 동글', 'parts': len(parts), 'flags': []}
+    # both from the route: its distance over its time, with stops (avgMph) and while moving (movingMph)
+    if r['miles']:
+      row['avgMph'] = round(r['miles'] / span * 3600, 1)
+      if r.get('movingS'):
+        row['movingMph'] = round(r['miles'] / r['movingS'] * 3600, 1)
     for k in ('kwhIn', 'kwhOut', 'gapS', 'samples'):
       row[k] = round(sum(s.get(k) or 0 for s in parts), 3)
     kws = [s for s in parts if s.get('kwMin') is not None]
@@ -242,10 +259,28 @@ def merge_drives(sessions: list, routes: list) -> list:
     part_mi = sum(s.get('miSpeed') or 0 for s in parts)
     row['partMiles'] = round(part_mi, 2)
     net = row['kwhOut'] - row['kwhIn']
-    if part_mi > 0.3:
-      wh = round(net * 1000 / part_mi, 1)
+    dist = part_mi
+    exp_mi = r['miles'] * row['coverage']      # the route's distance over the share the parts cover
+    if exp_mi > 0.3 and part_mi < 0.8 * exp_mi:
+      # speed (0x116) heard too rarely to integrate while the power was: on 2026-10-31 13:56 it was
+      # polled as if still charging and gave 3.5 of 10.9 mi, i.e. 1155 Wh/mi. The route's own distance.
+      dist = exp_mi
+      row['flags'].append('distance-from-route')
+    if dist > 0.3:
+      wh = round(net * 1000 / dist, 1)
       row['whPerMi' if row['coverage'] >= 0.8 else 'whPerMiPart'] = wh
     row['regenKwh'] = row['kwhIn']
+    if all('bmsKwhIn' in s for s in parts):
+      row['bmsKwhIn'] = round(sum(s['bmsKwhIn'] for s in parts), 3)
+      row['bmsKwhOut'] = round(sum(s['bmsKwhOut'] for s in parts), 3)
+    usable = next((s['usableKwh'] for s in reversed(parts) if s.get('usableKwh')), None)
+    if usable and row['socStart'] is not None and row['socEnd'] is not None and \
+       abs(row['socEnd'] - row['socStart']) >= vlog.SOC_CHECK_MIN_PCT:
+      row['socKwh'] = round((row['socEnd'] - row['socStart']) / 100 * usable, 2)
+      bnet = row['bmsKwhIn'] - row['bmsKwhOut'] if 'bmsKwhIn' in row else -net
+      row['socEnergyRatio'] = round(bnet / row['socKwh'], 3)
+      if abs(row['socEnergyRatio'] - 1) > vlog.SOC_CHECK_TOL:
+        row['flags'].append('soc-energy-mismatch')
     for k in ('tempMin', 'limitMinDischarge', 'limitMinRegen'):
       vals = [s[k] for s in parts if s.get(k) is not None]
       row[k] = min(vals) if vals else None

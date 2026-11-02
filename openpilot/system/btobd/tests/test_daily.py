@@ -183,3 +183,23 @@ def test_partial_days_do_not_feed_the_distance_trend():
   rows = [{'date': '2026-11-01', 'status': 'OK', 'miles': 30.0}, {'date': '2026-11-02', 'status': 'PARTIAL', 'miles': 2.0}]
   t = daily.trend(rows)
   assert t['miles']['last'] == 30.0 and t['miles']['n'] == 1 and t['miles']['note']
+
+
+def test_day_drive_summary_is_distance_weighted():
+  tz = daily.zone()
+  t0, _ = daily.day_bounds(DAY, tz)
+  part = {'source': 'raw', 'frames': 10, 'dupes': 0, 'first': t0 + 60, 'last': t0 + 600, 'minutes': [int(t0 // 60) + 1],
+          'keys': {}, 'ext': {}, 'firstVals': {}, 'lastVals': {}, 'rest': [], 'restCells': None, 'pairs': [], 'vrf': {},
+          'faults': {}, 'fresh': {}, 'cand': {}, 'snapT': t0 + 600}
+  dr = lambda st, dur, mi, out, miss=0.0: {'type': 'DRIVE', 'start': t0 + st, 'end': t0 + st + dur, 'durationS': dur, 'miles': mi,
+                                          'kwhIn': 0.0, 'kwhOut': out, 'missingRate': miss}
+  ch = lambda st, kind, kw: {'type': kind, 'start': t0 + st, 'end': t0 + st + 600, 'durationS': 600, 'kwhIn': 10.0, 'kwMax': kw}
+  sessions = [dr(1000, 3600, 60.0, 18.0), dr(9000, 1800, 10.0, 5.0), dr(20000, 600, 5.0, 0.1, miss=0.9),
+              ch(30000, 'DC_CHARGE', 146.1), ch(40000, 'AC_CHARGE', 6.0)]
+  ctx = {'sessions': sessions, 'events': [], 'rx': [], 'packNewKwh': 0.0, 'today': '2099-01-01', 'power': []}
+  en = daily.build_day(DAY, [part], tz, ctx)['day']['energy']
+  d = en['driveSummary']
+  assert d['n'] == 3 and d['judged'] == 2                        # the 90%-missing drive is left out of the ratios
+  assert d['whPerMi'] == pytest.approx(23000 / 70, abs=0.1)        # not the mean of 300 and 500
+  assert d['avgMph'] == pytest.approx(70 / 1.5, abs=0.1)
+  assert en['chargeKinds'] == {'AC': 1, 'DC': 1, 'unknown': 0} and en['chargeKwMax'] == 146.1

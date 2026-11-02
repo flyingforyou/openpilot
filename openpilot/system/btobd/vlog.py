@@ -64,6 +64,7 @@ THRESHOLDS = {
   'moduleHotC': 45.0,
   'cellDeltaMv': 40.0,        # synchronised, resting brick spread
   'confirmN': 3,              # consecutive samples before an event fires
+  'repeatS': 120.0,           # the same event again within this is the same occurrence, not logged twice
 }
 
 SERIES_KEYS = ('packVoltage', 'packCurrent', 'packPower', 'socUI', 'socDisplay', 'nominalEnergyRemaining',
@@ -89,10 +90,11 @@ def fresh(values: dict, age: dict, fast_s: float = FRESH_S) -> dict:
 class ModeMachine:
   """DRIVE / AC_CHARGE / DC_CHARGE / CHARGE_UNKNOWN / PARKED from signals that agree, with hold.
 
-  Charging: BMS state CHARGER/FASTCHARGE, or (gear not D/R and >3 A into the pack). DC when the BMS
-  says FASTCHARGE or the fast-charge contactor is closed or the pilot says fast charge; AC when the
-  BMS says CHARGER with a line-charge pilot; otherwise CHARGE_UNKNOWN. Driving: gear D/R/N, or
-  openpilot onroad, or moving >3 mph -- speed alone only when the gear is not being heard.
+  Charging: BMS state CHARGER/FASTCHARGE, or (gear not D/R and >3 A into the pack) when the BMS state
+  is not heard and the plug is not out. DC when the BMS says FASTCHARGE or the fast-charge contactor
+  is closed or the pilot says fast charge; AC when the BMS says CHARGER with a line-charge pilot;
+  otherwise CHARGE_UNKNOWN. Driving: gear D/R/N, or openpilot onroad, or moving >3 mph -- speed alone
+  only when the gear is not being heard.
   """
 
   def __init__(self):
@@ -106,7 +108,11 @@ class ModeMachine:
     gear, spd, cur = v.get('gear'), v.get('vehicleSpeedMph'), v.get('packCurrent')
     bms, fc, pilot = v.get('bmsState'), v.get('fcContactor'), v.get('pilot')
     moving_gear = gear in ('D', 'R', 'N')
-    charging = bms in BMS_CHARGING or (not moving_gear and cur is not None and cur > 3.0)
+    # current into the pack stands for charging only when nothing better is heard: regen reads the same
+    # with the gear frame stale, and on 2026-10-31 it kept a DC charge open 11 min into the drive after
+    # it, with the BMS saying not charging and the plug out the whole time
+    by_current = bms is None and v.get('proximity') != 1 and cur is not None and cur > 3.0
+    charging = bms in BMS_CHARGING or (not moving_gear and by_current)
     if charging and not moving_gear:
       if bms == 4 or fc == 1 or pilot == 3:
         return 'DC_CHARGE'
@@ -139,6 +145,45 @@ class ModeMachine:
     self.mode, self.since, self._cand = c, self._cand_since, None
     return True
 
+  @property
+  def holding(self) -> str | None:
+    """The different mode being held, if any: what is sampled now belongs to whichever one wins."""
+    return self._cand
+
+
+# Energy three ways: the logger's integral (one V x I sample per poll cycle), the BMS's own lifetime
+# counters (0x3D2), and what the SOC change stands for. The integral's net matched the counters to
+# 0.97-1.03 over every drive of 2026-10-31/11-01, but its gross in/out run 0.4-0.8 kWh under them: a
+# ~4 s sample nets out regen and discharge within the interval. SOC is the BMS's estimate, not a
+# meter: on 11/1 09:24 (cold, 25% after 15 h asleep) it fell 10.3% = 6.8 kWh for 4.95 kWh delivered,
+# which the counters confirmed.
+COUNTER_KEYS = ('kwhChargeTotal', 'kwhDischargeTotal', 'nominalFullPackEnergy', 'energyBuffer')
+COUNTER_MIN_S = 0.8          # counters must span this share of the session to stand for it
+SOC_CHECK_MIN_PCT = 5.0      # SOC is in 0.1% steps and moves late: shorter sessions say nothing
+SOC_CHECK_TOL = 0.15
+
+
+def energy_check(d: dict) -> dict:
+  out: dict = {}
+  c = d.get('counters') or {}
+  span = d['end'] - d['start']
+  ch, dis = c.get('kwhChargeTotal'), c.get('kwhDischargeTotal')
+  if ch and dis and span > 0 and min(ch[3], dis[3]) - max(ch[1], dis[1]) >= COUNTER_MIN_S * span:
+    out['bmsKwhIn'], out['bmsKwhOut'] = round(ch[2] - ch[0], 3), round(dis[2] - dis[0], 3)
+  full, buf = c.get('nominalFullPackEnergy'), c.get('energyBuffer')
+  if full and buf and full[2] > buf[2]:
+    out['usableKwh'] = round(full[2] - buf[2], 2)
+  if d.get('socStart') is not None and d.get('socEnd') is not None and 'usableKwh' in out:
+    dsoc = d['socEnd'] - d['socStart']
+    if abs(dsoc) >= SOC_CHECK_MIN_PCT:
+      soc_kwh = dsoc / 100 * out['usableKwh']           # the cluster's percent is of full minus buffer
+      net = out['bmsKwhIn'] - out['bmsKwhOut'] if 'bmsKwhIn' in out else d['kwhIn'] - d['kwhOut']
+      out['socKwh'] = round(soc_kwh, 2)
+      out['socEnergyRatio'] = round(net / soc_kwh, 3)
+      if abs(out['socEnergyRatio'] - 1) > SOC_CHECK_TOL:
+        d['flags'].append('soc-energy-mismatch')
+  return out
+
 
 class Session:
   def __init__(self, kind: str, t: float, v: dict):
@@ -148,7 +193,7 @@ class Session:
               'samples': 0, 'staleSamples': 0, 'gapS': 0.0, 'coveredS': 0.0, 'miSpeed': 0.0,
               'tempMin': None, 'tempMax': None, 'tempStart': None, 'tempEnd': None, 'cellDeltaSyncMax': None,
               'events': [], 'flags': [], 'socFirstAt': {}, 'socBinS': {}, 'socPctS': {}, 'curve': {},
-              'limitMinDischarge': None, 'limitMinRegen': None}
+              'limitMinDischarge': None, 'limitMinRegen': None, 'counters': {}}
     self._last_kw_t: float | None = None
     self._last_kw: float | None = None
     self._last_spd_t: float | None = None
@@ -218,6 +263,10 @@ class Session:
     for k, lo in (('maxDischargePower', 'limitMinDischarge'), ('maxRegenPower', 'limitMinRegen')):
       if v.get(k) is not None:
         d[lo] = v[k] if d[lo] is None else min(d[lo], v[k])
+    for k in COUNTER_KEYS:
+      if v.get(k) is not None:
+        c = d['counters'].setdefault(k, [v[k], t, v[k], t])     # first value, its time, last value, its time
+        c[2], c[3] = v[k], t
 
   def finish(self, reason: str = '') -> dict:
     d = dict(self.d)
@@ -246,6 +295,8 @@ class Session:
     if d['type'] == 'DRIVE' and miles:
       d['whPerMi'] = round((d['kwhOut'] - d['kwhIn']) * 1000 / miles, 1)
       d['regenKwh'] = d['kwhIn']
+      if span > 0:
+        d['avgMph'] = round(miles / span * 3600, 1)     # stops included
     if d['type'] in CHARGE_MODES:
       first = {int(k): v for k, v in d['socFirstAt'].items()}
       for a, b in ((10, 80), (20, 80)):
@@ -258,6 +309,8 @@ class Session:
       d.pop('socPctS')
     d.pop('socFirstAt')
     d.pop('kwSum')
+    d.update(energy_check(d))
+    d.pop('counters', None)
     if reason:
       d['flags'].append(reason)
     if d['missingRate'] and d['missingRate'] > 0.2:
@@ -278,10 +331,11 @@ END_AFTER_S = 120.0
 TAPER_S = 30.0        # power below 90% of the peak for this long before stopping = it tapered off (BMS ending)
 
 
-def charge_end(samples: list, peak_kw: float | None, kind: str) -> dict:
-  """samples: {'t', 'kw', 'prox', 'pilot', 'ac', 'faults', 'soc'} around the end of one charge."""
+def charge_end(samples: list, peak_kw: float | None, kind: str, until: float = float('inf')) -> dict:
+  """samples: {'t', 'kw', 'prox', 'pilot', 'ac', 'faults', 'soc'} around the end of one charge; until
+  is the session's end (later samples are evidence of what happened, never charging: regen is >1 kW)."""
   # charging = over 1 kW, the same line Events uses; a DC session tapering to 10 kW is still charging
-  charging = [s for s in samples if s['kw'] is not None and s['kw'] >= 1.0]
+  charging = [s for s in samples if s['kw'] is not None and s['kw'] >= 1.0 and s['t'] <= until]
   if not charging:
     return {'endCause': 'unknown', 'endWhy': ['충전 전력이 기록되지 않음']}
   t_stop = charging[-1]['t']
@@ -333,6 +387,7 @@ class Events:
     self.peak_lim: deque = deque()       # (t, discharge, regen)
     self.was_charging_at: float | None = None
     self.low_since: float | None = None
+    self.last_fired: dict = {}
 
   def _hit(self, name: str, cond: bool) -> bool:
     n = self.count.get(name, 0) + 1 if cond else 0
@@ -348,9 +403,15 @@ class Events:
     fired = []
     kw = v['packVoltage'] * v['packCurrent'] / 1000 if 'packVoltage' in v and 'packCurrent' in v else None
     th = self.th
+    # the charge itself still on: the BMS charging, or (BMS not heard) the plug in. A stop or drop
+    # after that is the session's end, which charge_end explains; on 2026-10-31 every drive sample
+    # after the unplug read as 'charge stopped' (-8..-77 kW) and 'power drop'
+    on = v.get('bmsState') in BMS_CHARGING or (v.get('bmsState') is None and v.get('proximity') in (2, 3))
     if mode in CHARGE_MODES and kw is not None:
       if kw > 1.0:
         self.was_charging_at, self.low_since = t, None
+      elif not on:
+        self.was_charging_at = self.low_since = None
       elif self.was_charging_at is not None and kw < th['chargeStopKw']:
         self.low_since = self.low_since or t
         if t - self.low_since >= th['chargeStopS']:
@@ -360,7 +421,7 @@ class Events:
       while self.peak_kw and t - self.peak_kw[0][0] > 30:
         self.peak_kw.popleft()
       peak = max(k for _, k in self.peak_kw)
-      if self._hit('CHARGE_POWER_DROP', peak > 1.0 and kw > 0.3 and kw < peak * (1 - th['chargeDropFrac'])):
+      if self._hit('CHARGE_POWER_DROP', on and peak > 1.0 and kw > 0.3 and kw < peak * (1 - th['chargeDropFrac'])):
         fired.append(('CHARGE_POWER_DROP', round(kw, 2), round(peak, 2)))
     if 'maxDischargePower' in v and 'maxRegenPower' in v:
       self.peak_lim.append((t, v['maxDischargePower'], v['maxRegenPower']))
@@ -381,6 +442,9 @@ class Events:
                  and v['cellDelta'] * 1000 > th['cellDeltaMv']):
       fired.append(('CELL_DELTA_HIGH', round(v['cellDelta'] * 1000, 1), th['cellDeltaMv']))
     for name, value, ref in fired:
+      if t - self.last_fired.get(name, -float('inf')) < th['repeatS']:
+        continue
+      self.last_fired[name] = t
       self.pending.append({'t': round(t, 2), 'type': name, 'mode': mode, 'value': value, 'threshold': ref,
                            'context': sample, 'before': list(self.ring), 'after': []})
     done = []
@@ -412,6 +476,8 @@ class VehicleLog:
     self.last_health_soc: float | None = None
     self.raw_buf: list = []
     self.raw_flush = 0.0
+    self.held: list = []                  # (t, v, stale) sampled while another mode is being held
+    self.held_for: str | None = None
     self.recent: deque = deque()          # light samples for charge_end
     from openpilot.system.btobd.tesla_pt import LIVE_SIGS
     self._fault_sigs = [(s.key, s.bad, s.label) for s in LIVE_SIGS if s.bad]
@@ -525,12 +591,22 @@ class VehicleLog:
     if self.modes.update(t, v, onroad):
       if self.session:
         self._append('sessions.jsonl', self._finish())
-      self.session = Session(self.modes.mode, self.modes.since, v)
+      self.session = Session(self.modes.mode, self.modes.since, self.held[0][1] if self.held else v)
       self._save_open()
     elif self.session and self.modes.mode in CHARGE_MODES and self.session.d['type'] != self.modes.mode:
       self.session.d['type'] = self.modes.mode      # CHARGE_UNKNOWN refined to AC/DC
-    if self.session:
-      self.session.add(t, v, stale)
+    # The new session is dated from when its mode began, so what was sampled during the hold is its
+    # own: added to the old one as well, the two overlapped by the hold (up to 30 s) and the old one
+    # kept that stretch's energy.
+    if self.modes.holding:
+      if self.held_for != self.modes.holding:
+        self._flush_held()        # a candidate that gave way to another never began: its samples stay
+      self.held_for = self.modes.holding
+      self.held.append((t, v, stale))
+    else:
+      self._flush_held()
+      if self.session:
+        self.session.add(t, v, stale)
     for e in self.events.update(t, self.modes.mode, v):
       if self.session:
         self.session.d['events'].append({'t': e['t'], 'type': e['type']})
@@ -582,13 +658,20 @@ class VehicleLog:
     self._append('health.jsonl', snap)
     self.last_health, self.last_health_soc = t, soc
 
+  def _flush_held(self) -> None:
+    if self.session:
+      for h in self.held:
+        self.session.add(*h)
+    self.held = []
+
   def _finish(self, reason: str = '') -> dict:
     d = self.session.finish(reason)
     if d['type'] in CHARGE_MODES:
-      d.update(charge_end([s for s in self.recent if s['t'] >= d['start']], d.get('kwMax'), d['type']))
+      d.update(charge_end([s for s in self.recent if s['t'] >= d['start']], d.get('kwMax'), d['type'], until=d['end']))
     return d
 
   def close(self, t: float, reason: str = 'stopped') -> None:
+    self._flush_held()      # a mode that never won: its samples stay with the session they came in
     if self.session:
       self.session.d['end'] = max(self.session.d['end'], t if t else 0)
       self._append('sessions.jsonl', self._finish(reason))
@@ -647,13 +730,25 @@ def replay_live(path: str, until: float = float('inf')) -> dict:
 REPLAY_FAST_S = 15.0   # raw logged before 2026-10-30 read power once per 8-12 s cycle
 
 
-def replay_raw(paths: list, t0: float = 0.0, t1: float = float('inf'), fast_s: float = REPLAY_FAST_S) -> dict:
+def route_spans(cache_path: str) -> list:
+  """(start, end) wall times of openpilot's routes, from vlog_api's routes cache: when it was onroad."""
+  try:
+    with open(cache_path) as f:
+      cache = json.load(f)
+  except (OSError, ValueError):
+    return []
+  return sorted((r['start'], r['end']) for r in cache.values() if r.get('start') and r.get('end'))
+
+
+def replay_raw(paths: list, t0: float = 0.0, t1: float = float('inf'), fast_s: float = REPLAY_FAST_S,
+               onroad: list | None = None) -> dict:
   """Rebuild sessions, series, events and health from raw-*.jsonl.gz, decoding every frame again.
 
   One logger update per 0x102 window, at that window's time, with each value's age measured from
-  the monotonic time its frame was heard -- the same thing btobdd does live, minus the onroad flag
-  (DRIVE is then told by gear and speed). Raw from before the poll-order fix had power read once
-  per 8-12 s cycle, so it replays with fast_s=15 s rather than 5 s."""
+  the monotonic time its frame was heard -- the same thing btobdd does live. onroad is openpilot's
+  route spans (route_spans); without them DRIVE is told by gear and speed alone. Raw from before the
+  poll-order fix had power read once per 8-12 s cycle, so it replays with fast_s=15 s rather than 5 s."""
+  spans = sorted(onroad or [])
   from openpilot.system.btobd import tesla_pt
   from openpilot.system.btobd.tesla_sx import TeslaSXState
   vl = VehicleLog('', write=False, keep_series=True, fast_s=fast_s)
@@ -677,7 +772,9 @@ def replay_raw(paths: list, t0: float = 0.0, t1: float = float('inf'), fast_s: f
         continue
       if prev and window != prev[2] and prev[2].endswith(':102'):
         snap = car.snapshot(prev[1])
-        vl.update(prev[0], snap['values'], snap['age'], cells=car.cell_set(prev[1]), temps=snap.get('cellsT'), mono=prev[1])
+        on = any(a <= prev[0] <= b for a, b in spans)
+        vl.update(prev[0], snap['values'], snap['age'], onroad=on, cells=car.cell_set(prev[1]), temps=snap.get('cellsT'),
+                  mono=prev[1])
       if prev and mono < prev[1] - 1:
         car = TeslaSXState()   # monotonic went backwards: the device rebooted
       car.feed(msg_id, payload, mono)
@@ -689,9 +786,12 @@ def replay_raw(paths: list, t0: float = 0.0, t1: float = float('inf'), fast_s: f
   return vl.out
 
 
-def rebuild(directory: str, t0: float, t1: float) -> dict:
+def rebuild(directory: str, t0: float, t1: float, onroad: list | None = None) -> dict:
   """Replace what the logger wrote between t0 and t1 (sessions starting there, and series, events,
-  health rows timed there) with a replay of the raw frames. The old files are kept as *.bak."""
+  health rows timed there) with a replay of the raw frames. The old files are kept as *.bak.
+  onroad: openpilot's route spans; by default from the routes cache beside the vlog directory."""
+  if onroad is None:
+    onroad = route_spans(os.path.join(os.path.dirname(os.path.abspath(directory)), 'routes-cache.json'))
   hours = []
   for n in sorted(os.listdir(directory)):
     if n.startswith('raw-') and n.endswith('.jsonl.gz'):
@@ -701,7 +801,7 @@ def rebuild(directory: str, t0: float, t1: float) -> dict:
         continue
       if t0 - 3600 < h <= t1:
         hours.append(os.path.join(directory, n))
-  out = replay_raw(hours, t0, t1)
+  out = replay_raw(hours, t0, t1, onroad=onroad)
   for s in out['sessions']:
     s['rebuilt'] = 'raw'
   stamp = time.strftime('%Y%m%d%H%M%S')

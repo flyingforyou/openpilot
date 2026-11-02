@@ -56,8 +56,8 @@ def test_charge_energy_is_integrated_and_signed():
   vl.close(t)
   s = vl.out['sessions'][-1]
   assert s['type'] == 'AC_CHARGE'
-  # 10 kW for the hour minus the 20 s hold before the session opened
-  assert s['kwhIn'] == pytest.approx(10 * (3600 - 21) / 3600, rel=1e-3)
+  # 10 kW for the hour; the 20 s hold before the switch is the charge's own (dated from its start)
+  assert s['kwhIn'] == pytest.approx(10 * 3599 / 3600, rel=1e-3)
   assert s['kwhOut'] == 0 and s['avgKw'] == pytest.approx(10.0)
   assert s['curve']['55'] == pytest.approx(10.0)
 
@@ -70,8 +70,8 @@ def test_gap_is_not_integrated():
   vl.close(t)
   s = vl.out['sessions'][-1]
   assert s['gapS'] == pytest.approx(121, abs=1)
-  # integrated from the switch at +20 s to +59 s, then +180 s to +239 s: 39 + 59 s at 10 kW
-  assert s['kwhIn'] == pytest.approx(10 * 98 / 3600, rel=1e-3)
+  # integrated from the first sample (the hold is the session's) to +59 s, then +180 s to +239 s: 59 + 59 s at 10 kW
+  assert s['kwhIn'] == pytest.approx(10 * 118 / 3600, rel=1e-3)
 
 
 def test_stale_values_are_not_samples():
@@ -247,7 +247,7 @@ def test_one_plug_in_is_one_charge_session():
   vl.close(t + 600)
   s = vl.out['sessions']
   assert [x['type'] for x in s] == ['AC_CHARGE']     # opened as unknown, renamed, never split
-  assert s[0]['kwhIn'] == pytest.approx(5.55 * 580 / 3600, rel=1e-2)
+  assert s[0]['kwhIn'] == pytest.approx(5.55 * 599 / 3600, rel=1e-2)
 
 
 def test_gap_does_not_grow_with_stale_power():
@@ -377,3 +377,112 @@ def test_charge_session_has_covered_seconds_per_percent():
   s = vl.out['sessions'][-1]
   inner = [v for k, v in s['socPctS'].items() if 50 < int(k) < 53]
   assert inner and all(v == pytest.approx(500, abs=10) for v in inner)
+
+
+# ---- 2026-10-31 / 11-01 DC charges: where a charge ends -----------------------------------------------
+DC_DRIVE_OFF = os.path.join(os.path.dirname(__file__), 'data', 'raw_dc_unplug_drive_20261031.jsonl.gz')
+DC_PARKED = os.path.join(os.path.dirname(__file__), 'data', 'raw_dc_unplug_parked_20261101.jsonl.gz')
+UNPLUG_1031 = 1793480197.0    # 20:56:37 UTC: bmsState 2, pilot 0, proximity 1 (power stopped 20:56:31)
+MOVING_1031 = 1793480232.0    # 20:57:12: gear D at 21 mph
+UNPLUG_1101 = 1793564681.0    # 20:24:41: the same three signals
+
+
+def _no_overlap(sessions):
+  return all(a['end'] <= b['start'] for a, b in zip(sessions, sessions[1:], strict=False))
+
+
+def test_unplug_then_drive_off_ends_the_charge():
+  # 10/31: unplugged at 20:56:37 and moving 35 s later. Regen (current into the pack while the gear
+  # frame was stale) read as "charging" and kept the DC session open until 21:08, eating 11 min of drive.
+  out = vlog.replay_raw([DC_DRIVE_OFF])
+  s = out['sessions']
+  ch = [x for x in s if x['type'] in vlog.CHARGE_MODES]
+  assert len(ch) == 1 and ch[0]['type'] == 'DC_CHARGE'
+  assert ch[0]['end'] < UNPLUG_1031 + 35 and ch[0]['endCause'] == 'unplugged'
+  assert ch[0]['kwhOut'] < 0.1                         # the drive's discharge is not in the charge
+  after = [x for x in s if x['start'] >= ch[0]['end']]
+  assert after and all(x['type'] in ('PARKED', 'DRIVE') for x in after)
+  assert any(x['type'] == 'DRIVE' for x in after)
+  assert _no_overlap(s)
+  assert not [e for e in out['events'] if e['type'] in ('CHARGE_STOPPED', 'CHARGE_POWER_DROP')]
+
+
+def test_unplug_then_drive_off_with_openpilot_onroad():
+  # live, openpilot was onroad from 20:56:45: that is a drive as soon as the BMS stops charging
+  out = vlog.replay_raw([DC_DRIVE_OFF], onroad=[(1793480205.0, 1793481000.0)])
+  s = out['sessions']
+  d = [x for x in s if x['type'] == 'DRIVE']
+  assert d and d[0]['start'] <= MOVING_1031
+  assert _no_overlap(s)
+
+
+def test_unplug_while_parked_is_unchanged():
+  # 11/1, the normal case: unplugged, 35 s parked, then away
+  out = vlog.replay_raw([DC_PARKED])
+  s = out['sessions']
+  ch = [x for x in s if x['type'] in vlog.CHARGE_MODES]
+  assert len(ch) == 1 and ch[0]['type'] == 'DC_CHARGE' and ch[0]['endCause'] == 'unplugged'
+  assert UNPLUG_1101 - 10 < ch[0]['end'] < UNPLUG_1101 + 35
+  assert [x['type'] for x in s if x['start'] >= ch[0]['end']][:2] == ['PARKED', 'DRIVE']
+  assert _no_overlap(s)
+  assert not [e for e in out['events'] if e['type'] == 'CHARGE_STOPPED']
+
+
+@pytest.mark.parametrize('v,onroad,want', [
+  ({'bmsState': 1, 'packCurrent': 32.0}, False, 'PARKED'),           # regen, gear stale, BMS says not charging
+  ({'proximity': 1, 'packCurrent': 32.0}, False, 'PARKED'),          # ... or the plug is out
+  ({'bmsState': 1, 'packCurrent': 32.0}, True, 'DRIVE'),
+  ({'bmsState': 4, 'packCurrent': 200.0}, True, 'DC_CHARGE'),        # onroad while still charging: charging
+])
+def test_mode_after_unplug(v, onroad, want):
+  assert vlog.ModeMachine.candidate(v, onroad) == want
+
+
+def test_hold_samples_belong_to_the_new_mode():
+  # a mode change is dated from when the new mode began; what was sampled during the hold is that
+  # mode's, so consecutive sessions neither overlap nor carry each other's energy
+  vl = vlog.VehicleLog('', write=False)
+  t = run(vl, [{'gear': 'P', 'bmsState': 4, 'packVoltage': 400.0, 'packCurrent': 100.0}] * 60)
+  t = run(vl, [{'gear': 'P', 'bmsState': 1, 'packVoltage': 400.0, 'packCurrent': -10.0}] * 60, t0=t)
+  vl.close(t)
+  ch, pk = vl.out['sessions']
+  assert ch['type'] == 'DC_CHARGE' and pk['type'] == 'PARKED'
+  assert ch['end'] <= pk['start'] and ch['kwhOut'] == 0
+  assert pk['kwhIn'] == 0 and pk['kwhOut'] == pytest.approx(4.0 * 58 / 3600, rel=0.05)
+
+
+def test_charge_stopped_needs_the_charge_to_be_on():
+  # unplugging is the session's end cause, not a 'charge stopped' event; a stop with the BMS still
+  # charging (power cut while plugged) is one
+  vl = vlog.VehicleLog('', write=False)
+  t = run(vl, [{'gear': 'P', 'bmsState': 4, 'proximity': 3, 'packVoltage': 400.0, 'packCurrent': 100.0}] * 60)
+  t = run(vl, [{'gear': 'P', 'bmsState': 1, 'proximity': 1, 'packVoltage': 400.0, 'packCurrent': -1.0}] * 60, t0=t)
+  assert not [e for e in vl.out['events'] if e['type'] == 'CHARGE_STOPPED']
+  vl = vlog.VehicleLog('', write=False)
+  t = run(vl, [{'gear': 'P', 'bmsState': 4, 'proximity': 3, 'packVoltage': 400.0, 'packCurrent': 100.0}] * 60)
+  t = run(vl, [{'gear': 'P', 'bmsState': 4, 'proximity': 3, 'packVoltage': 400.0, 'packCurrent': 0.0}] * 60, t0=t)
+  assert [e['type'] for e in vl.out['events']] == ['CHARGE_STOPPED']
+
+
+def test_repeated_event_is_not_logged_again_within_the_merge_window():
+  vl = vlog.VehicleLog('', write=False)
+  hot = {'gear': 'P', 'moduleTempMax': 46.0, 'packVoltage': 400.0, 'packCurrent': -1.0}
+  cool = {**hot, 'moduleTempMax': 40.0}
+  run(vl, ([hot] * 5 + [cool] * 5) * 6 + [cool] * 30)
+  assert len([e for e in vl.out['events'] if e['type'] == 'MODULE_HOT']) == 1
+
+
+def test_energy_three_ways():
+  # 11/1 09:24: integral and BMS counters agree (4.95 kWh net); SOC fell 10.3% = 6.8 kWh of 66.5 usable
+  vl = vlog.VehicleLog('', write=False)
+  rows = []
+  for i in range(1200):
+    rows.append({'gear': 'D', 'vehicleSpeedMph': 45.0, 'packVoltage': 360.0, 'packCurrent': -41.25,
+                 'socDisplay': 25.0 - 10.3 * i / 1199, 'kwhDischargeTotal': 1000.0 + 4.95 * i / 1199,
+                 'kwhChargeTotal': 500.0, 'nominalFullPackEnergy': 72.5, 'energyBuffer': 6.0})
+  vl.close(run(vl, rows))
+  s = vl.out['sessions'][-1]
+  assert s['bmsKwhOut'] == pytest.approx(4.95, abs=0.01) and s['bmsKwhIn'] == 0
+  assert s['kwhOut'] - s['kwhIn'] == pytest.approx(4.95, rel=0.01)
+  assert s['socKwh'] == pytest.approx(-6.85, abs=0.02) and s['socEnergyRatio'] == pytest.approx(0.72, abs=0.01)
+  assert 'soc-energy-mismatch' in s['flags'] and 'counters' not in s

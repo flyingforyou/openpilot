@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 from openpilot.selfdrive.debug import vlog_api
 from openpilot.system.btobd import tdiag, tesla_pt, vlog
 
-VERSION = 3
+VERSION = 4
 DAILY_DIR = os.path.join(tdiag.LOG_DIR, 'daily')
 DEFAULT_TZ = 'America/Los_Angeles'
 # The device boots on a stale clock (2026-07-28) until NTP/GPS sets it; frames stamped before this are
@@ -499,6 +499,19 @@ def build_day(d: str, parts: list, tz: ZoneInfo, ctx: dict) -> dict:
                      | {'endLabel': vlog.CHARGE_END.get(s.get('endCause'), '원인 기록 없음')})
   drives = [s for s in sessions if s['type'] == 'DRIVE']
   drive_mi = sum((s.get('miles') or 0) for s in drives)
+  # several drives together: Wh/mi weighted by distance (total net over total miles) and speed as total
+  # miles over total time, from drives with a distance and power heard over most of them (a gappy drive's
+  # energy covers only part of its distance)
+  judged = [s for s in drives if s.get('miles') and (s.get('missingRate') or 0) <= 1 - COMPLETE_SHARE]
+  j_mi = sum(s['miles'] for s in judged)
+  j_h = sum(s['durationS'] for s in judged) / 3600
+  drive_sum = {'n': len(drives), 'judged': len(judged), 'miles': round(j_mi, 2), 'hours': round(j_h, 3),
+               'avgMph': round(j_mi / j_h, 1) if j_h > 0 else None,
+               'whPerMi': round(sum(s['kwhOut'] - s['kwhIn'] for s in judged) * 1000 / j_mi, 1) if j_mi >= 1 else None,
+               'netOutKwh': round(sum((s.get('kwhOut') or 0) - (s.get('kwhIn') or 0) for s in drives), 3)}
+  kinds = {'AC': 0, 'DC': 0, 'unknown': 0}
+  for c in charges:
+    kinds[{'AC_CHARGE': 'AC', 'DC_CHARGE': 'DC'}.get(c['type'], 'unknown')] += 1
   # a counter difference only stands for the day when its first and last readings bracket every
   # session of that kind (0x562/0x3D2 rotate; on 2026-10-30 the odometer was first heard after the
   # morning drive and read 0 mi for a 15 mi day)
@@ -540,7 +553,8 @@ def build_day(d: str, parts: list, tz: ZoneInfo, ctx: dict) -> dict:
                   'resistance': _resistance(m['pairs']),
                   'energy': {'counters': cum, 'chargeSessionsKwh': round(sum(c['kwhIn'] or 0 for c in charges), 3),
                              'odometerMi': cum['batteryOdometerMi']['diff'] if cum.get('batteryOdometerMi', {}).get('coversSessions') else None,
-                             'driveSessionsMi': round(drive_mi, 2), 'drives': len(drives)},
+                             'driveSessionsMi': round(drive_mi, 2), 'drives': len(drives), 'driveSummary': drive_sum,
+                             'chargeKinds': kinds, 'chargeKwMax': max((c['kwMax'] for c in charges if c.get('kwMax') is not None), default=None)},
                   'limits': {k: _ext(m, k) for k in ('maxDischargePower', 'maxRegenPower', 'bmsMaxChargeA', 'bmsMaxDischargeA',
                                                        'bmsMaxChargeV', 'bmsMinDischargeV', 'chargeKw', 'driveKw')},
                   'lowVoltage': {k: _ext(m, k) for k in ('dcdcOutputVoltage', 'dcdcOutputCurrent', 'rearInverter12V', 'frontInverter12V')},
@@ -723,11 +737,15 @@ def index_row(s: dict) -> dict:
           'miles': miles, 'milesSource': 'odometer' if en.get('odometerMi') is not None else 'sessions' if miles else None,
           'chargedKwh': en.get('chargeSessionsKwh') if day.get('charges') else None,
           'charges': len(day.get('charges') or []), 'warnings': warn,
+          'drives': (en.get('driveSummary') or {}).get('n'), 'avgMph': (en.get('driveSummary') or {}).get('avgMph'),
+          'whPerMi': (en.get('driveSummary') or {}).get('whPerMi'), 'netOutKwh': (en.get('driveSummary') or {}).get('netOutKwh'),
+          'chargeKinds': en.get('chargeKinds'), 'chargeKwMax': en.get('chargeKwMax'),
+          'frames': (s.get('coverage') or {}).get('frames'), 'events': len(day.get('anomalies') or []),
           'unverified': len(day.get('unverified') or [])}
 
 
 # ---- trend ---------------------------------------------------------------------------------------------
-TREND_METRICS = ('nominalFullPack', 'soh', 'cellDeltaMv', 'rMohm', 'tempMax', 'miles', 'chargedKwh')
+TREND_METRICS = ('nominalFullPack', 'soh', 'cellDeltaMv', 'rMohm', 'tempMax', 'miles', 'chargedKwh', 'whPerMi')
 WHOLE_DAY_METRICS = ('miles', 'chargedKwh')   # a partial day's figure covers only what was recorded
 
 
