@@ -55,6 +55,13 @@ function launch {
           mv "${STAGING_ROOT}/finalized" $DIR
           cd $DIR
 
+          # updated's `git clean -xdff` leaves the finalized copy without the project venv, and
+          # rebuilding it at boot has no network yet -- on 2026-11-02 the device came up with an
+          # empty .venv, no capnp, and nothing running. The venv only depends on uv.lock, so keep it.
+          if [ -d /data/safe_staging/old_openpilot/.venv ] && [ ! -e "$DIR/.venv" ]; then
+            mv /data/safe_staging/old_openpilot/.venv "$DIR/.venv"
+          fi
+
           echo "Restarting launch script ${LAUNCHER_LOCATION}"
           unset AGNOS_VERSION
           exec "${LAUNCHER_LOCATION}"
@@ -88,8 +95,11 @@ function launch {
   # once to build it. Guarded on .venv being absent, so this costs nothing on every later boot,
   # and left non-fatal: if it fails the launch continues and fails visibly at manager rather than
   # here, where the screen is not up yet to show anything.
-  if [ -d /data ] && [ ! -x "$DIR/.venv/bin/python3" ] && [ -x "$DIR/scripts/setup-device.sh" ]; then
-    echo "no project venv -- running scripts/setup-device.sh"
+  # The same goes for a venv carried over from an update whose uv.lock has since changed.
+  VENV_LOCK="$DIR/.venv/.synced-uv.lock"
+  if [ -d /data ] && [ -x "$DIR/scripts/setup-device.sh" ] && \
+     { [ ! -x "$DIR/.venv/bin/python3" ] || { [ -f "$VENV_LOCK" ] && ! cmp -s "$VENV_LOCK" "$DIR/uv.lock"; }; }; then
+    echo "project venv missing or out of date -- running scripts/setup-device.sh"
     "$DIR/scripts/setup-device.sh" || echo "setup-device.sh failed; continuing"
     source "$DIR/launch_env.sh"   # pick up the venv it just made
   fi

@@ -38,8 +38,16 @@ export UV_PYTHON_PREFERENCE=managed
 # ignores. Clear it so the intent is unambiguous.
 unset VIRTUAL_ENV
 
+# The boot environment puts /usr/comma/shims first in PATH, and its uv runs the real one under
+# sudo -- the venv, uv.lock and egg-info came out root-owned, and the next sync as comma failed
+# with "Permission denied" on uv.lock. Call the binary itself so everything stays comma's.
+UV=uv
+[ -x /usr/bin/uv ] && UV=/usr/bin/uv
+
 echo "=== dependencies ==="
-uv sync --all-extras
+"$UV" sync --all-extras
+# launch_chffrplus.sh re-runs this when uv.lock no longer matches what the venv was synced from
+cp uv.lock .venv/.synced-uv.lock
 echo "  venv: $(readlink -f .venv/bin/python3)"
 
 echo ""
