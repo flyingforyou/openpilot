@@ -55,6 +55,10 @@ class CanDecoder:
     self._thread: threading.Thread | None = None
     self.touch()
 
+  @property
+  def running(self) -> bool:
+    return self._thread is not None and self._thread.is_alive()
+
   def touch(self) -> None:
     """A page is reading: keep (or start again) listening to the live bus."""
     self._used = time.monotonic()

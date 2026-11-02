@@ -109,6 +109,23 @@ class CanSource:
         return None
     return self.live
 
+  def peek(self) -> dict:
+    """For a status line: the DBC and what the decoder holds, without starting it. The home page
+    asked /api/can and /api/vehicle every second only to fill two pills, which kept the live decoder
+    (84% of a core on real CAN) running for as long as the page was open."""
+    with self.lock:
+      dec = self.replay or self.live
+    if dec is not None:
+      return {'dbc': dec.dbc_name, 'total': len(dec.msgs), 'decoding': dec is not self.live or dec.running}
+    raw = self.params.get("CarParams")
+    if raw is None:
+      return {'dbc': None, 'total': 0, 'decoding': False}
+    try:
+      names = dbcs_for_fingerprint(messaging.log_from_bytes(raw, car.CarParams).carFingerprint)
+    except Exception:
+      names = []
+    return {'dbc': names[0] if names else None, 'total': 0, 'decoding': False}
+
   # ---- replay ----
 
   def start_replay(self, route: str) -> str | None:

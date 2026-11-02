@@ -953,6 +953,9 @@ class Handler(BaseHTTPRequestHandler):
     if self.path.startswith('/api/routes'):
       return self._send(200, json.dumps({'routes': list_routes(), **self.can.state()}))
 
+    if self.path.startswith('/api/can/peek'):
+      return self._send(200, json.dumps({**self.can.peek(), **self.can.state()}))
+
     if self.path.startswith('/api/can'):
       dec = self.can.get()
       if dec is None:
@@ -2237,18 +2240,16 @@ async function tick(){
     l.textContent=L.status?`앞차 ${L.source} · ${L.dRel}m`:'앞차 없음';
     l.className='pill'+(L.status?' on':'');
   }catch(e){document.getElementById('sub').textContent='디바이스에 연결할 수 없습니다';}
+  // peek, not /api/can or /api/vehicle: those start decoding the whole bus (84% of a core), and
+  // these two pills are not worth that. The decoder runs only on the CAN viewer and vehicle pages.
   try{
-    const c=await(await fetch('/api/can')).json();
+    const c=await(await fetch('/api/can/peek')).json();
     const p=document.getElementById('p-can');
-    p.textContent=c.dbc?`${c.total} msg · ${c.dbc}`:(c.error||'DBC 없음');
-    p.className='pill'+(c.total?' on':'');
-  }catch(e){}
-  try{
-    const v=await(await fetch('/api/vehicle')).json();
-    const p=document.getElementById('p-veh');
-    const n=v.error?0:(v.total-v.missing);
-    p.textContent=v.error?'차량 미연결':`${n}/${v.total} 신호 수신`;
-    p.className='pill'+(n?' on':'');
+    p.textContent=c.dbc?(c.decoding?`${c.total} msg · ${c.dbc}`:c.dbc):'DBC 없음 (차량 미연결)';
+    p.className='pill'+(c.decoding&&c.total?' on':'');
+    const v=document.getElementById('p-veh');
+    v.textContent=c.dbc?'차량 연결됨':'차량 미연결';
+    v.className='pill'+(c.dbc?' on':'');
   }catch(e){}
 }
 async function once(){
