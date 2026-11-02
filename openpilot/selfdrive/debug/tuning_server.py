@@ -737,6 +737,32 @@ HIDDEN_KNOBS = {
 }
 
 STATE_SERVICES = ['carState', 'radarState', 'selfdriveState', 'longitudinalPlan', 'deviceState']
+# The page polls about once a second and InterventionLog samples at 20 Hz, so 20 Hz is all the state
+# loop needs. Waking on every message (carState alone is 100 Hz) cost 35-50% of a core for the whole
+# drive (procLog, routes 0000022b and 00000231) -- more than card or controlsd.
+STATE_HZ = 20
+
+
+class LatestState:
+  """The newest message of each service, read at a fixed rate from conflated sockets. SubMaster takes
+  one message per socket per update, so a loop slower than a topic would fall further behind it."""
+
+  def __init__(self, services: list):
+    self.sock = {s: messaging.sub_sock(s, conflate=True) for s in services}
+    self.data = {s: getattr(messaging.new_message(s), s) for s in services}
+    self.seen = dict.fromkeys(services, False)
+    self.updated = dict.fromkeys(services, False)
+
+  def update(self) -> None:
+    for s, sock in self.sock.items():
+      m = messaging.recv_one_or_none(sock)
+      self.updated[s] = m is not None
+      if m is not None:
+        self.data[s] = getattr(m, s)
+        self.seen[s] = True
+
+  def __getitem__(self, s: str):
+    return self.data[s]
 
 def _git_commit() -> str:
   """Which build is actually serving. Stale processes are hard to spot otherwise."""
@@ -777,10 +803,13 @@ class State:
   }
 
   def _run(self):
-    sm = messaging.SubMaster(STATE_SERVICES)
+    sm = LatestState(STATE_SERVICES)
     map_seen = {}
+    next_t = time.monotonic()
     while True:
-      sm.update(100)
+      next_t = max(next_t + 1.0 / STATE_HZ, time.monotonic() - 1.0)
+      time.sleep(max(0.0, next_t - time.monotonic()))
+      sm.update()
       now = time.monotonic()
       if sm.updated['carState'] and sm['carState'].navMap.valid:
         for name, alive in self.MAP_SIGNALS.items():
