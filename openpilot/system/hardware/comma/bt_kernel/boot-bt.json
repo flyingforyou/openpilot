@@ -1,0 +1,7 @@
+{
+  "agnos": "19.6",
+  "kernel": "commaai/agnos-kernel-sdm845@eccd146599f2e2f159d951092642689bede91632 + PR #106 (bluetooth.patch)",
+  "stock_boot_sha256": "b30f5eef65ec3878f3aa3dcaf2cc95c09e2c1e661cd3a38e94da37dee76f68bd",
+  "size": 47663104,
+  "sha256": "eb0cbc9b7de22409828b4e1354b1004bce6a51ae2c63cda673e92795098616b1"
+}
