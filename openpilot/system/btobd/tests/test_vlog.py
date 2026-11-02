@@ -486,3 +486,20 @@ def test_energy_three_ways():
   assert s['kwhOut'] - s['kwhIn'] == pytest.approx(4.95, rel=0.01)
   assert s['socKwh'] == pytest.approx(-6.85, abs=0.02) and s['socEnergyRatio'] == pytest.approx(0.72, abs=0.01)
   assert 'soc-energy-mismatch' in s['flags'] and 'counters' not in s
+
+
+def test_carstate_lines_in_raw_replay_as_gear_and_speed(tmp_path):
+  # live, gear/speed came from carState and 0x116 was not polled; the raw still has to rebuild a drive
+  vl = vlog.VehicleLog(str(tmp_path))
+  t, mono = 1_800_000_000.0, 1000.0
+  for i in range(60):
+    vl.frame(t + i * 4, mono + i * 4, 0x102, bytes.fromhex('24 8F 9E 00 98 00 FC 1F'.replace(' ', '')), f'{i}:102')
+    vl.motion(t + i * 4 + 0.1, mono + i * 4 + 0.05, {'gear': 'D', 'vehicleSpeedMph': 30.0})
+  vl.frame(t + 240, mono + 240, 0x102, bytes.fromhex('248F9E009800FC1F'), '60:102')
+  vl.flush_raw(t + 241)
+  raw = [str(p) for p in tmp_path.iterdir() if p.name.startswith('raw-')]
+  rows = [json.loads(ln) for ln in gzip.open(raw[0], 'rt')]
+  assert any(r[2] == 'CS' and r[3] == 'D:30.00' for r in rows)
+  out = vlog.replay_raw(raw)
+  d = [s for s in out['sessions'] if s['type'] == 'DRIVE']
+  assert len(d) == 1 and d[0]['miSpeed'] == pytest.approx(30 * 236 / 3600, rel=0.05)

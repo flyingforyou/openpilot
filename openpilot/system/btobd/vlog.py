@@ -550,6 +550,11 @@ class VehicleLog:
     if wall - self.raw_flush > 10 or len(self.raw_buf) > 2000:
       self.flush_raw(wall)
 
+  def motion(self, wall: float, mono: float, v: dict) -> None:
+    """carState's gear and speed for this cycle, as a raw line ('CS', 'D:26.90') that replay_raw
+    reads back; readers that parse IDs as hex skip it."""
+    self.raw_buf.append([round(wall, 3), round(mono, 3), MOTION_ID, f"{v.get('gear', '')}:{v['vehicleSpeedMph']:.2f}", 'cs'])
+
   def flush_raw(self, wall: float | None = None) -> None:
     if not self.raw_buf:
       return
@@ -728,6 +733,8 @@ def replay_live(path: str, until: float = float('inf')) -> dict:
 
 
 REPLAY_FAST_S = 15.0   # raw logged before 2026-10-30 read power once per 8-12 s cycle
+MOTION_ID = 'CS'       # raw lines carrying carState gear/speed (VehicleLog.motion)
+MOTION_MAX_S = 2.0     # one is written per cycle, after its 0x102: older than this is another cycle's
 
 
 def route_spans(cache_path: str) -> list:
@@ -755,6 +762,7 @@ def replay_raw(paths: list, t0: float = 0.0, t1: float = float('inf'), fast_s: f
   car = TeslaSXState()
   prev = None          # (wall, mono, window) of the previous frame
   last_wall = None
+  motion = None        # (mono, values) from the last carState line
   for p in sorted(paths):
     try:
       f = gzip.open(p, 'rt')
@@ -765,6 +773,11 @@ def replay_raw(paths: list, t0: float = 0.0, t1: float = float('inf'), fast_s: f
     for ln in lines:
       try:
         wall, mono, fid, data, window = json.loads(ln)
+        if fid == MOTION_ID:
+          gear, mph = data.split(':')
+          if t0 <= wall <= t1:
+            motion = (mono, {'vehicleSpeedMph': float(mph), **({'gear': gear} if gear else {})})
+          continue
         msg_id, payload = int(fid, 16), bytes.fromhex(data)
       except (ValueError, TypeError):
         continue
@@ -772,9 +785,12 @@ def replay_raw(paths: list, t0: float = 0.0, t1: float = float('inf'), fast_s: f
         continue
       if prev and window != prev[2] and prev[2].endswith(':102'):
         snap = car.snapshot(prev[1])
+        values, age = snap['values'], snap['age']
+        if motion and abs(prev[1] - motion[0]) <= MOTION_MAX_S:
+          values = {**values, **motion[1]}
+          age = {**age, **dict.fromkeys(motion[1], round(max(0.0, prev[1] - motion[0]), 2))}
         on = any(a <= prev[0] <= b for a, b in spans)
-        vl.update(prev[0], snap['values'], snap['age'], onroad=on, cells=car.cell_set(prev[1]), temps=snap.get('cellsT'),
-                  mono=prev[1])
+        vl.update(prev[0], values, age, onroad=on, cells=car.cell_set(prev[1]), temps=snap.get('cellsT'), mono=prev[1])
       if prev and mono < prev[1] - 1:
         car = TeslaSXState()   # monotonic went backwards: the device rebooted
       car.feed(msg_id, payload, mono)

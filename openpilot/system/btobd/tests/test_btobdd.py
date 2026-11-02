@@ -88,3 +88,38 @@ def test_rx_stats_on_real_capture_timing():
   assert sig['bmsState']['id'] == '212' and sig['cellMin']['id'] == '6F2'
   just = {x['key']: x['status'] for x in rx.summary(*at102, car.snapshot(at102[1])['age'], max_age)['signals']}
   assert just['packVoltage'] == 'fresh'
+
+
+def test_gear_and_speed_come_from_carstate_when_it_is_there():
+  for mode in ('DRIVE', 'PARKED', 'AC_CHARGE', None):
+    seen = set()
+    for cycle in range(40):
+      seen.update(btobdd.cycle_ids(mode, cycle, WATCH_IDS, tesla_pt.LIVE_IDS, motion=True))
+    assert 0x116 not in seen and 0x102 in seen
+  assert 0x116 in btobdd.cycle_ids('PARKED', 0, WATCH_IDS, tesla_pt.LIVE_IDS)     # no carState: from the dongle
+
+
+class _CS:
+  vEgo = 12.0
+  gearShifter = 'drive'
+
+
+class _SM:
+  def __init__(self, age):
+    import time
+    self.recv_time = {'carState': time.monotonic() - age}
+
+  def update(self, timeout):
+    pass
+
+  def __getitem__(self, k):
+    return _CS()
+
+
+def test_carstate_motion_and_its_age():
+  p = btobdd.CarPower.__new__(btobdd.CarPower)
+  p.sm = _SM(0.1)
+  v, a = p.motion()
+  assert v == {'vehicleSpeedMph': 26.84, 'gear': 'D'} and 0 <= a['gear'] < 0.5
+  p.sm = _SM(5.0)                                   # card stopped: nothing, rather than an old gear
+  assert p.motion() == ({}, {})

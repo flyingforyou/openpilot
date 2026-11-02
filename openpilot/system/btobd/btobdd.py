@@ -49,6 +49,13 @@ CORE_IDS = {
   None: [0x212, 0x77D, 0x116, 0x302, 0x102],
 }
 ROTATE_N = 4
+# Gear and speed come from openpilot's carState while card runs (onroad): the panda reads them off
+# the car's own bus at 100 Hz. The diagnostic port is a different bus -- of the 43 IDs polled here
+# only 0x20A/0x20B/0x20E/0x246/0x388/0x3F8/0x209 reach the panda, and its 0x302/0x382 are other
+# messages under the same numbers (rlog 00000231--5) -- so the battery and charge set stays on
+# Bluetooth and 0x116 is polled only when carState is not there.
+CARSTATE_FRESH_S = 1.0
+GEARS = {'park': 'P', 'drive': 'D', 'reverse': 'R', 'neutral': 'N'}
 # DISCOVERY is listened to one per cycle, raw only, so the candidates (0x3F8 TPMS?, ...) build up a
 # record without a decoder. 0x202/0x332 left it on 2026-10-30 once decoded (tesla_pt.BMS_LIMITS) and
 # rotate in every mode, driving included: their check against 0x232 needs driving frames.
@@ -113,9 +120,27 @@ class CarPower:
     self.awake_until = 0.0
     try:
       import openpilot.cereal.messaging as messaging
-      self.sm = messaging.SubMaster(['pandaStates', 'deviceState'])
+      self.sm = messaging.SubMaster(['pandaStates', 'deviceState', 'carState'])
     except Exception:
       pass
+
+  def motion(self) -> tuple[dict, dict]:
+    """Gear and vehicle speed from carState with their age, or ({}, {}) when card is not running."""
+    if self.sm is None:
+      return {}, {}
+    try:
+      self.sm.update(0)
+      age = time.monotonic() - self.sm.recv_time['carState']
+      if not self.sm.recv_time['carState'] or age > CARSTATE_FRESH_S:
+        return {}, {}
+      cs = self.sm['carState']
+      v = {'vehicleSpeedMph': round(cs.vEgo * 2.23694, 2)}
+      gear = GEARS.get(str(cs.gearShifter))
+      if gear:
+        v['gear'] = gear
+    except Exception:
+      return {}, {}
+    return v, dict.fromkeys(v, round(age, 2))
 
   def read(self) -> dict:
     if self.sm is None:
@@ -139,11 +164,15 @@ class CarPower:
     return out
 
 
-def cycle_ids(mode: str | None, cycle: int, watch: list, live: list) -> list:
-  """The IDs one poll cycle listens to, in order: cell sweep, discovery, rotation, then CORE."""
+def cycle_ids(mode: str | None, cycle: int, watch: list, live: list, motion: bool = False) -> list:
+  """The IDs one poll cycle listens to, in order: cell sweep, discovery, rotation, then CORE. With
+  motion (carState has gear and speed) 0x116 is left out altogether."""
   from openpilot.system.btobd.tesla_pt import BMS_LIMIT_IDS
   from openpilot.system.btobd.vlog import CHARGE_MODES
   core = CORE_IDS['CHARGE' if mode in CHARGE_MODES else mode if mode in CORE_IDS else None]
+  if motion:
+    core = [i for i in core if i != 0x116]
+    watch = [i for i in watch if i != 0x116]
   pool = [i for i in watch if i != 0x6F2] + BMS_LIMIT_IDS + ([] if mode == 'DRIVE' else list(live))
   pool = [i for i in dict.fromkeys(pool) if i not in core]
   ids = []
@@ -264,7 +293,7 @@ class Daemon:
   def poll_once(self) -> None:
     from openpilot.system.btobd import tesla_pt
     mode = self.vlog.modes.mode
-    ids = cycle_ids(mode, self.cycle, self.watch, tesla_pt.LIVE_IDS)
+    ids = cycle_ids(mode, self.cycle, self.watch, tesla_pt.LIVE_IDS, motion=bool(self.power.motion()[0]))
     self.cycle += 1
     start, nframes, heard, learnt = time.monotonic(), 0, set(), set()
     for msg_id in ids:
@@ -298,7 +327,12 @@ class Daemon:
     snap = self.car.snapshot(now)
     q = {'fps': round(nframes / dur, 1) if dur > 0 else None, 'ids': len(heard), 'cycleS': round(dur, 2),
          **self.elm.stats}
-    self.vlog.update(time.time(), snap['values'], snap['age'], onroad=_onroad(), cells=self.car.cell_set(now),
+    values, age = snap['values'], snap['age']
+    mv, ma = self.power.motion()
+    if mv:
+      values, age = {**values, **mv}, {**age, **ma}
+      self.vlog.motion(time.time(), now - ma['vehicleSpeedMph'], mv)      # into raw, so a rebuild has it too
+    self.vlog.update(time.time(), values, age, onroad=_onroad(), cells=self.car.cell_set(now),
                      temps=snap.get('cellsT'), quality=q, mono=now)
     wall = time.time()
     hour_lines = self.rx.roll_hour(wall)
