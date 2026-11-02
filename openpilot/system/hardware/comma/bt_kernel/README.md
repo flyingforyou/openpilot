@@ -34,7 +34,8 @@ PR 브랜치를 그대로 빌드하지 않는 이유: PR은 19.6보다 13커밋 
 - boot 헤더(로드 주소, 페이지 크기, 커맨드라인)가 기기 `boot_a`(stock 19.6)와 같음. 커널 크기만 +766 KB
   (46.9 → 47.7 MB, 블루투스 코드). boot 파티션 64 MB
 - `uname -r` 4.9.103 그대로 (기기에 커널 모듈은 없음 — `/lib/modules` 비어 있음)
-- **실기기 부팅은 아직 안 해 봄**
+- 실기기 (10.0.0.56, comma four, 2026-11-02): `install.py`로 slot `_a` → `_b`, 재부팅 후 `_b`로 부팅,
+  `/dev/btpower`·`hci0` 생김, manager·UI·pandad 정상, btobdd `bt: up`, `/diag` 200, Wi-Fi 정상
 
 ## 설치 (`install.py`)
 
