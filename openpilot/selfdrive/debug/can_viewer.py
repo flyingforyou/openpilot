@@ -61,10 +61,16 @@ class CanDecoder:
 
   def touch(self) -> None:
     """A page is reading: keep (or start again) listening to the live bus."""
-    self._used = time.monotonic()
-    if self._live and (self._thread is None or not self._thread.is_alive()):
-      self._thread = threading.Thread(target=self._run, daemon=True)
-      self._thread.start()
+    with self.lock:      # page requests come in on several threads: one decoder thread, not one each
+      self._used = time.monotonic()
+      if self._live and (self._thread is None or not self._thread.is_alive()):
+        if self._thread is not None:
+          # back after an idle stop: rates are counts over time heard, so the stopped stretch must not count
+          self.counts.clear()
+          for e in self.msgs.values():
+            e['_first'] = None
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
 
   def _lookup(self, address: int):
     for dbc, dv in self.dbcs:
@@ -120,6 +126,8 @@ class CanDecoder:
             entry['changed'][n] = now
 
         entry.update(hex=dat.hex(), signals=sigs, count=self.counts[key], last=now)
+        if entry['_first'] is None:
+          entry['_first'] = now
         span = now - entry['_first']
         entry['hz'] = round((self.counts[key] - 1) / span, 1) if self.counts[key] > 1 and span > 0 else 0.0
 

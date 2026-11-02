@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from openpilot.selfdrive.debug import daily, vlog_api
-from openpilot.system.btobd import tdiag
+from openpilot.system.btobd import tdiag, vlog
 
 RAW = Path(__file__).parent / 'data' / 'raw_charge_20261030.jsonl.gz'   # 12 min of AC charging, 10/30 07:4x PDT
 DAY = '2026-10-30'
@@ -177,6 +177,24 @@ def test_days_before_raw_come_from_live_jsonl_marked_as_such(tmp_path):
   snap = daily.build_day(d, [s], tz, ctx)
   assert snap['status'] == 'PARTIAL' and any('live.jsonl' in w for w in snap['statusWhy'])
   assert snap['day']['cellBalance']['n'] == 0 and snap['day']['resistance']['pairs'] == 0 and snap['day']['decodes'] == []
+
+
+def test_carstate_lines_give_gear_and_speed(tmp_path):
+  # while openpilot runs 0x116 is not polled: gear/speed exist in raw only as carState ('CS') lines
+  vl = vlog.VehicleLog(str(tmp_path))
+  t, mono = 1793400000.0, 1000.0
+  for i in range(10):
+    vl.frame(t + i * 4, mono + i * 4, 0x102, bytes.fromhex('248F9E009800FC1F'), f'{i}:102')
+    vl.motion(t + i * 4 + 0.1, mono + i * 4 - 0.3, {'gear': 'D', 'vehicleSpeedMph': 30.0})   # can predate the frame
+  vl.flush_raw(t + 41)
+  raw, = [str(p) for p in tmp_path.iterdir() if p.name.startswith('raw-')]
+  s, = daily.summarize_raw(raw, daily.zone()).values()
+  assert s['frames'] == 10                                        # carState lines are not CAN frames
+  assert s['keys']['gear']['n'] == 10 and s['keys']['vehicleSpeedMph']['n'] == 10
+  assert s['ext']['driveKw']['n'] == 9 and s['ext']['driveKw']['max'][2]['mode'] == 'drive'
+  assert s['ext']['driveKw']['max'][2]['mph'] == 30.0
+  st = vlog_api.file_stats(raw)
+  assert st['driveKw'][2] == 9 and st['vehicleSpeedMph'][2] == 10
 
 
 def test_partial_days_do_not_feed_the_distance_trend():

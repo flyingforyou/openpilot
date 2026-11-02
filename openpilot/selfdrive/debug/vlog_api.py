@@ -598,7 +598,7 @@ def _raw_frames(paths: list) -> list:
     for ln in lines:
       try:
         wall, mono, fid, data, _ = json.loads(ln)
-        out.append((wall, mono, int(fid, 16), bytes.fromhex(data)))
+        out.append((wall, mono, *vlog.raw_id(fid, data)))
       except (ValueError, TypeError):
         continue
   return out
@@ -620,7 +620,9 @@ def last_state() -> dict | None:
   frames = _raw_frames(paths)
   if not frames:
     return None
-  end_wall, end_mono = frames[-1][0], frames[-1][1]
+  # the last line is usually the cycle's carState line, stamped when carState arrived -- a little before
+  # or after the cycle's last frame -- so the end is the later of the two
+  end_wall, end_mono = frames[-1][0], max(f[1] for f in frames[-2:])
   car = TeslaSXState()
   for wall, mono, i, d in frames:
     if wall < end_wall - STATE_WINDOW_S or mono > end_mono:
@@ -680,7 +682,7 @@ def rx_state() -> dict:
 # discharge limit only above 20% and 10 C, cell spread only from a synchronised sweep, ...).
 CHECK_DAYS = 14
 STATS_CACHE = os.path.join(tdiag.LOG_DIR, 'vlog-stats-cache.json')
-STATS_VERSION = 4           # bump when file_stats derives something new: cached hours are decoded again
+STATS_VERSION = 5           # bump when file_stats derives something new: cached hours are decoded again
 BMS_FAULT = (7, 8)
 MIN_N = 3                   # fewer samples than this and a check is "표본 부족", never 정상
 # Pack resistance: dV/dI between two 0x102 readings at most R_WINDOW_S apart whose current differs by

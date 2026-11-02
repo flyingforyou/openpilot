@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 from openpilot.selfdrive.debug import vlog_api
 from openpilot.system.btobd import tdiag, tesla_pt, vlog
 
-VERSION = 4
+VERSION = 5
 DAILY_DIR = os.path.join(tdiag.LOG_DIR, 'daily')
 DEFAULT_TZ = 'America/Los_Angeles'
 # The device boots on a stale clock (2026-07-28) until NTP/GPS sets it; frames stamped before this are
@@ -156,7 +156,7 @@ def _read_raw(path: str):
         seen.add(ln)
         try:
           wall, mono, fid, data, _ = json.loads(ln)
-          out.append((wall, mono, int(fid, 16), bytes.fromhex(data)))
+          out.append((wall, mono, *vlog.raw_id(fid, data)))
         except (ValueError, TypeError):
           continue
     except (OSError, EOFError):
@@ -170,7 +170,7 @@ def _read_raw(path: str):
 
 def summarize_raw(path: str, tz: ZoneInfo) -> dict:
   """{local date: partial day summary} of one raw hour file."""
-  from openpilot.system.btobd.tesla_sx import TeslaSXState
+  from openpilot.system.btobd.tesla_sx import MOTION_MSG, TeslaSXState
   frames, dupes = _read_raw(path)
   # raw from before the poll-order fix (2026-10-30) heard 0x102 once per 8-12 s cycle; the logger replays
   # that with a 15 s limit on fast values (vlog.REPLAY_FAST_S), and so does this, decided per file
@@ -189,12 +189,13 @@ def summarize_raw(path: str, tz: ZoneInfo) -> dict:
   for wall, mono, i, d in frames:
     if wall < STALE_CLOCK_BEFORE:
       continue
-    if prev_mono is not None and mono < prev_mono - 1:
-      car = TeslaSXState()       # the device rebooted inside this hour
-      win = []
-    prev_mono = mono
     acc = accs.setdefault(local_date(wall, tz), _Acc())
-    acc.frame(wall)
+    if i != MOTION_MSG:          # carState lines are stamped when carState arrived, up to 1 s before the frame
+      if prev_mono is not None and mono < prev_mono - 1:
+        car = TeslaSXState()       # the device rebooted inside this hour
+        win = []
+      prev_mono = mono
+      acc.frame(wall)
     before = dict(car.stamp)
     car.feed(i, d, mono)
     if i in tesla_pt.LIVE_IDS:

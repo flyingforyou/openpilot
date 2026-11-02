@@ -737,6 +737,15 @@ MOTION_ID = 'CS'       # raw lines carrying carState gear/speed (VehicleLog.moti
 MOTION_MAX_S = 2.0     # one is written per cycle, after its 0x102: older than this is another cycle's
 
 
+def raw_id(fid: str, data: str) -> tuple[int, bytes]:
+  """A raw line's (id, payload) for TeslaSXState.feed: a hex CAN id, or a carState line under
+  tesla_sx.MOTION_MSG. While openpilot runs 0x116 is not polled and gear/speed exist only as these."""
+  if fid == MOTION_ID:
+    from openpilot.system.btobd.tesla_sx import MOTION_MSG
+    return MOTION_MSG, data.encode()
+  return int(fid, 16), bytes.fromhex(data)
+
+
 def route_spans(cache_path: str) -> list:
   """(start, end) wall times of openpilot's routes, from vlog_api's routes cache: when it was onroad."""
   try:
@@ -757,7 +766,7 @@ def replay_raw(paths: list, t0: float = 0.0, t1: float = float('inf'), fast_s: f
   poll-order fix had power read once per 8-12 s cycle, so it replays with fast_s=15 s rather than 5 s."""
   spans = sorted(onroad or [])
   from openpilot.system.btobd import tesla_pt
-  from openpilot.system.btobd.tesla_sx import TeslaSXState
+  from openpilot.system.btobd.tesla_sx import TeslaSXState, motion as cs_motion
   vl = VehicleLog('', write=False, keep_series=True, fast_s=fast_s)
   car = TeslaSXState()
   prev = None          # (wall, mono, window) of the previous frame
@@ -774,9 +783,8 @@ def replay_raw(paths: list, t0: float = 0.0, t1: float = float('inf'), fast_s: f
       try:
         wall, mono, fid, data, window = json.loads(ln)
         if fid == MOTION_ID:
-          gear, mph = data.split(':')
           if t0 <= wall <= t1:
-            motion = (mono, {'vehicleSpeedMph': float(mph), **({'gear': gear} if gear else {})})
+            motion = (mono, cs_motion(data.encode()))
           continue
         msg_id, payload = int(fid, 16), bytes.fromhex(data)
       except (ValueError, TypeError):

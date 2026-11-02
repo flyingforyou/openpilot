@@ -157,3 +157,30 @@ def test_live_decoder_runs_only_while_a_page_reads_it(monkeypatch):
   r = CanDecoder([], start=False)        # a recorded route is never live
   r.touch()
   assert r._thread is None
+
+
+def test_rate_after_an_idle_stop_counts_only_time_heard(monkeypatch):
+  import time
+  import openpilot.selfdrive.debug.can_viewer as cv
+
+  class FakeSM:
+    updated = {'can': False}
+
+    def __init__(self, services):
+      pass
+
+    def update(self, timeout):
+      time.sleep(0.01)
+
+  monkeypatch.setattr(cv.messaging, 'SubMaster', FakeSM)
+  monkeypatch.setattr(CanDecoder, 'IDLE_S', 0.1)
+  d = CanDecoder([], start=True)
+  for k in range(11):                    # 100 Hz for 0.1 s
+    d.ingest([FakeFrame(0, 0x123, bytes(8))], now=k * 0.01)
+  assert d.msgs[(0, 0x123)]['hz'] == pytest.approx(100, rel=0.01)
+  time.sleep(0.3)
+  assert not d.running
+  d.touch()                              # the page is back 10 minutes later: the gap is not part of the rate
+  for k in range(11):
+    d.ingest([FakeFrame(0, 0x123, bytes(8))], now=600 + k * 0.01)
+  assert d.msgs[(0, 0x123)]['hz'] == pytest.approx(100, rel=0.01)

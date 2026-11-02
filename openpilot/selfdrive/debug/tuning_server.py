@@ -2223,9 +2223,11 @@ border:1px solid var(--line);color:var(--mut)}
 </a>
 
 <script>
+let vehOn=false;
 async function tick(){
   try{
     const s=await(await fetch('/api/state')).json();
+    vehOn=!!(s.connected&&s.onroad);
     const stateTxt=s.connected?(s.onroad?'주행 중 · onroad':'정차 · offroad'):'openpilot 대기 중';
     // Which planner plannerd actually published, straight from longitudinalPlan. Shown up top
     // because it is the one thing about a drive you cannot recover afterwards by guessing.
@@ -2239,18 +2241,20 @@ async function tick(){
     const L=s.lead||{},l=document.getElementById('p-lead');
     l.textContent=L.status?`앞차 ${L.source} · ${L.dRel}m`:'앞차 없음';
     l.className='pill'+(L.status?' on':'');
-  }catch(e){document.getElementById('sub').textContent='디바이스에 연결할 수 없습니다';}
+  }catch(e){document.getElementById('sub').textContent='디바이스에 연결할 수 없습니다';vehOn=false;}
   // peek, not /api/can or /api/vehicle: those start decoding the whole bus (84% of a core), and
   // these two pills are not worth that. The decoder runs only on the CAN viewer and vehicle pages.
+  // The DBC comes from CarParams, which stays after the car is off: whether the car is on is ignition
+  // (deviceState.started) with carState heard, from /api/state above.
   try{
     const c=await(await fetch('/api/can/peek')).json();
     const p=document.getElementById('p-can');
-    p.textContent=c.dbc?(c.decoding?`${c.total} msg · ${c.dbc}`:c.dbc):'DBC 없음 (차량 미연결)';
+    p.textContent=c.dbc?(c.decoding?`${c.total} msg · ${c.dbc}`:c.dbc):'DBC 없음';
     p.className='pill'+(c.decoding&&c.total?' on':'');
-    const v=document.getElementById('p-veh');
-    v.textContent=c.dbc?'차량 연결됨':'차량 미연결';
-    v.className='pill'+(c.dbc?' on':'');
   }catch(e){}
+  const v=document.getElementById('p-veh');
+  v.textContent=vehOn?'차량 켜짐':'차량 꺼짐 / 미연결';
+  v.className='pill'+(vehOn?' on':'');
 }
 async function once(){
   try{

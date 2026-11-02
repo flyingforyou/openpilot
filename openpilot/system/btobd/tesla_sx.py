@@ -219,6 +219,14 @@ WATCH_IDS = sorted(DECODERS) + [CELL_ID]
 # at different pack currents: on 2026-10-29 that showed a 95-150 mV "spread" at -21..-128 A that was
 # brick IR drop between sweeps, not imbalance (the same pack read 5-8 mV charging at 15 A).
 CELL_SYNC_S = 4.0
+# openpilot's carState gear and speed, logged by btobdd as raw 'CS' lines ('D:26.90') while card runs:
+# 0x116 is not polled then, so raw readers feed these under this id instead (vlog.raw_id).
+MOTION_MSG = -1
+
+
+def motion(data: bytes) -> dict:
+  gear, mph = data.decode().split(':')
+  return {'vehicleSpeedMph': float(mph), **({'gear': gear} if gear else {})}
 
 
 class TeslaSXState:
@@ -246,6 +254,10 @@ class TeslaSXState:
         for k, v in enumerate(vals):
           self.cells_t[(idx - 24) * 4 + k] = round(_s(v, 14) * 0.0122, 1)
       self._summarise_cells(t)
+      return
+    if msg_id == MOTION_MSG:
+      for k, v in motion(data).items():
+        self.values[k], self.stamp[k] = v, t
       return
     dec = DECODERS.get(msg_id)
     if dec is None or len(data) < MIN_LEN.get(msg_id, 8):
