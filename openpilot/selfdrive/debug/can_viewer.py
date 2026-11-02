@@ -30,6 +30,10 @@ class CanDecoder:
 
   # A signal is "recently changed" for this long, so a change is still visible after glancing up
   CHANGE_HOLD_S = 3.0
+  # Decoding the live bus in Python is ~85% of a core (6300 frames/s, rlog 00000231--5), and the
+  # thread used to run from the first page request until the next restart. It runs only while a
+  # page keeps asking (touch), and stops this long after the last request.
+  IDLE_S = 30.0
 
   def __init__(self, dbc_names: list[str], start: bool = True):
     self.lock = threading.Lock()
@@ -46,8 +50,17 @@ class CanDecoder:
 
     self.counts: dict[tuple[int, int], int] = defaultdict(int)
     self.started = time.monotonic()
-    if start:
-      threading.Thread(target=self._run, daemon=True).start()
+    self._live = start
+    self._used = time.monotonic()
+    self._thread: threading.Thread | None = None
+    self.touch()
+
+  def touch(self) -> None:
+    """A page is reading: keep (or start again) listening to the live bus."""
+    self._used = time.monotonic()
+    if self._live and (self._thread is None or not self._thread.is_alive()):
+      self._thread = threading.Thread(target=self._run, daemon=True)
+      self._thread.start()
 
   def _lookup(self, address: int):
     for dbc, dv in self.dbcs:
@@ -108,7 +121,7 @@ class CanDecoder:
 
   def _run(self):
     sm = messaging.SubMaster(['can'])
-    while True:
+    while time.monotonic() - self._used < self.IDLE_S:
       sm.update(100)
       if sm.updated['can']:
         self.ingest(sm['can'])

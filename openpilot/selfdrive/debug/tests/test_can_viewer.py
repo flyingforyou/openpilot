@@ -131,3 +131,29 @@ def test_unseen_can_be_excluded():
 
   assert dec.snapshot(include_unseen=False, now=0.0)['total'] == 1
   assert dec.snapshot(changed_only=True, now=0.0)['total'] == 0, "catalog must not leak in here"
+
+
+def test_live_decoder_runs_only_while_a_page_reads_it(monkeypatch):
+  import time
+  import openpilot.selfdrive.debug.can_viewer as cv
+
+  class FakeSM:
+    updated = {'can': False}
+
+    def __init__(self, services):
+      pass
+
+    def update(self, timeout):
+      time.sleep(0.01)
+
+  monkeypatch.setattr(cv.messaging, 'SubMaster', FakeSM)
+  monkeypatch.setattr(CanDecoder, 'IDLE_S', 0.2)
+  d = CanDecoder([], start=True)
+  assert d._thread.is_alive()
+  time.sleep(0.5)                        # no request for longer than IDLE_S: the bus is left alone
+  assert not d._thread.is_alive()
+  d.touch()                              # the next request starts it again
+  assert d._thread.is_alive()
+  r = CanDecoder([], start=False)        # a recorded route is never live
+  r.touch()
+  assert r._thread is None

@@ -182,7 +182,10 @@ class CanSource:
     with self.lock:
       if self.replay is not None:
         return self.replay
-    return self._live_decoder()
+    dec = self._live_decoder()
+    if dec is not None:
+      dec.touch()
+    return dec
 
   def state(self) -> dict:
     with self.lock:
