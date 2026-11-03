@@ -221,3 +221,17 @@ def test_day_drive_summary_is_distance_weighted():
   assert d['whPerMi'] == pytest.approx(23000 / 70, abs=0.1)        # not the mean of 300 and 500
   assert d['avgMph'] == pytest.approx(70 / 1.5, abs=0.1)
   assert en['chargeKinds'] == {'AC': 1, 'DC': 1, 'unknown': 0} and en['chargeKwMax'] == 146.1
+
+
+def test_snapshot_outlives_its_source(store):
+  # raw is pruned oldest first and live.jsonl rotates: what was recorded stays recorded
+  v, out = store
+  build(store)
+  before = json.loads((out / f'{DAY}.json').read_text())
+  assert before['sourceFiles'] == ['raw-20261030-14.jsonl.gz']
+  (v / 'raw-20261030-14.jsonl.gz').unlink()
+  for force in (False, True):
+    r = build(store, force=force)
+    assert DAY not in r['built']
+    assert json.loads((out / f'{DAY}.json').read_text()) == before
+    assert [x['date'] for x in daily.index(str(out))['days']][0] == DAY

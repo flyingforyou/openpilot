@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 from openpilot.selfdrive.debug import vlog_api
 from openpilot.system.btobd import tdiag, tesla_pt, vlog
 
-VERSION = 5
+VERSION = 6
 DAILY_DIR = os.path.join(tdiag.LOG_DIR, 'daily')
 DEFAULT_TZ = 'America/Los_Angeles'
 # The device boots on a stale clock (2026-07-28) until NTP/GPS sets it; frames stamped before this are
@@ -581,11 +581,13 @@ def _read_json(path: str):
     return None
 
 
-def _hour_parts(vlog_dir: str, out_dir: str, tz: ZoneInfo) -> tuple[dict, float]:
-  """{date: [partial summaries]} over every raw file (cached per file) and live.jsonl before them."""
+def _hour_parts(vlog_dir: str, out_dir: str, tz: ZoneInfo) -> tuple[dict, float, dict]:
+  """{date: [partial summaries]} over every raw file (cached per file) and live.jsonl before them, the
+  first raw frame's time, and {date: [raw file names]} that went into each day."""
   hdir = os.path.join(out_dir, 'hours')
   os.makedirs(hdir, exist_ok=True)
   by_day: dict = {}
+  files: dict = {}
   first_raw = float('inf')
   try:
     names = sorted(n for n in os.listdir(vlog_dir) if n.startswith('raw-') and n.endswith('.jsonl.gz'))
@@ -605,6 +607,7 @@ def _hour_parts(vlog_dir: str, out_dir: str, tz: ZoneInfo) -> tuple[dict, float]
       _write_json(cp, hit)
     for d, s in hit['days'].items():
       by_day.setdefault(d, []).append(s)
+      files.setdefault(d, []).append(n)
       if s['first'] is not None:
         first_raw = min(first_raw, s['first'])
   live = os.path.join(tdiag.LOG_DIR, tdiag.LIVE_LOG)
@@ -622,7 +625,7 @@ def _hour_parts(vlog_dir: str, out_dir: str, tz: ZoneInfo) -> tuple[dict, float]
       _write_json(cp, hit)
     for d, ss in hit['days'].items():
       by_day.setdefault(d, []).extend(ss)
-  return by_day, first_raw
+  return by_day, first_raw, files
 
 
 def _sig(obj) -> str:
@@ -654,7 +657,7 @@ def ensure(vlog_dir: str | None = None, out_dir: str = DAILY_DIR, force: bool = 
   tz = zone()
   os.makedirs(out_dir, exist_ok=True)
   now = now or time.time()
-  by_day, first_raw = _hour_parts(vlog_dir, out_dir, tz)
+  by_day, first_raw, files = _hour_parts(vlog_dir, out_dir, tz)
   own = vlog.read_jsonl(os.path.join(vlog_dir, 'sessions.jsonl'))
   first_own = min((s['start'] for s in own), default=float('inf'))
   try:
@@ -671,10 +674,16 @@ def ensure(vlog_dir: str | None = None, out_dir: str = DAILY_DIR, force: bool = 
          'rx': vlog.read_jsonl(os.path.join(vlog_dir, 'rx.jsonl')),
          'power': vlog.read_jsonl(os.path.join(vlog_dir, 'power.jsonl')), 'packNewKwh': ref,
          'today': local_date(now, tz)}
-  if not by_day:
+  # A snapshot outlives its source: raw is pruned oldest first and live.jsonl rotates, and a day built
+  # again from what is left would be a worse record of it (on 2026-11-03 the rotation took 10/27-28
+  # out of the index). Kept as written are days with a snapshot and no source left, and days a raw
+  # file they were built from is gone from; force does not change that.
+  stored = sorted(n[:-5] for n in os.listdir(out_dir) if len(n) == 15 and n.endswith('.json') and n[:4].isdigit())
+  present = {n for ns in files.values() for n in ns}
+  if not by_day and not stored:
     _write_json(os.path.join(out_dir, 'index.json'), {'tz': str(tz.key), 'days': [], 'packs': []})
     return {'built': [], 'days': 0}
-  first = min(by_day)
+  first = min([*by_day, *stored])
   d0 = date.fromisoformat(first)
   d1 = date.fromisoformat(ctx['today'])
   built, rows, prev = [], [], None
@@ -692,14 +701,16 @@ def ensure(vlog_dir: str | None = None, out_dir: str = DAILY_DIR, force: bool = 
            'prevPack': prev.get('packId') if prev else None}
     sig = _sig(src)
     path = os.path.join(out_dir, f'{ds}.json')
-    old = None if force else _read_json(path)
-    if old and old.get('sig') == sig:
+    old = _read_json(path) if ds in stored else None
+    gone = old is not None and old.get('status') != 'NO_DATA' and (
+      not parts or bool(set(old.get('sourceFiles') or []) - present))
+    if gone or (old and not force and old.get('sig') == sig):
       snap = old
     else:
       snap = build_day(ds, parts, tz, ctx)
       pid, why = assign_pack(prev, snap)
       snap['packId'], snap['packWhy'] = pid, why
-      snap['sig'] = sig
+      snap['sig'], snap['sourceFiles'] = sig, sorted(set(files.get(ds, [])))
       _write_json(path, snap)
       built.append(ds)
     cnt = (snap.get('day') or {}).get('energy', {}).get('counters', {}) if snap.get('day') else {}
