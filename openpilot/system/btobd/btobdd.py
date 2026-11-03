@@ -193,13 +193,15 @@ class CarPower:
 def cycle_ids(mode: str | None, cycle: int, watch: list, live: list, motion: bool = False) -> list:
   """The IDs one poll cycle listens to, in order: cell sweep, discovery, rotation, then CORE. With
   motion (carState has gear and speed) 0x116 is left out altogether."""
-  from openpilot.system.btobd.tesla_pt import BMS_LIMIT_IDS
+  from openpilot.system.btobd.tesla_pt import BMS_LIMIT_IDS, HEATER_IDS
   from openpilot.system.btobd.vlog import CHARGE_MODES
   core = CORE_IDS['CHARGE' if mode in CHARGE_MODES else mode if mode in CORE_IDS else None]
   if motion:
     core = [i for i in core if i != 0x116]
     watch = [i for i in watch if i != 0x116]
-  pool = [i for i in watch if i != 0x6F2] + BMS_LIMIT_IDS + ([] if mode == 'DRIVE' else list(live))
+  # driving keeps the cycle short (power is read every cycle), but the battery heater and pumps rotate in:
+  # without them a drive's non-motor load could not be told apart from battery heating (2026-11-03)
+  pool = [i for i in watch if i != 0x6F2] + BMS_LIMIT_IDS + (HEATER_IDS if mode == 'DRIVE' else list(live))
   pool = [i for i in dict.fromkeys(pool) if i not in core]
   ids = []
   if cycle % CELL_EVERY == 0 or (mode != 'DRIVE' and cycle % 2 == 0):

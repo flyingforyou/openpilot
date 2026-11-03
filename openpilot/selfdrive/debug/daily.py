@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 from openpilot.selfdrive.debug import vlog_api
 from openpilot.system.btobd import tdiag, tesla_pt, vlog
 
-VERSION = 7
+VERSION = 8
 DAILY_DIR = os.path.join(tdiag.LOG_DIR, 'daily')
 DEFAULT_TZ = 'America/Los_Angeles'
 # The device boots on a stale clock (2026-07-28) until NTP/GPS sets it; frames stamped before this are
@@ -480,12 +480,18 @@ def drive_list(drives: list, routes: list) -> list:
       continue
     hrs = x['durationS'] / 3600 if x.get('durationS') else None
     r = {k: x.get(k) for k in ('start', 'end', 'durationS', 'miles', 'milesSource', 'movingMph', 'whPerMi', 'whPerMiPart',
-                               'coverage', 'elevNetM', 'climbM', 'otherKw', 'tempStart', 'tempMin', 'tempMax', 'route', 'flags')}
+                               'coverage', 'elevNetM', 'climbM', 'otherKw', 'stopAuxKw', 'stopAuxS', 'heaterOnS', 'tempStart',
+                               'tempMin', 'tempMax', 'route', 'flags')}
     r['avgMph'] = x.get('avgMph') or (round(mi / hrs, 1) if hrs else None)
     if x.get('mechKwh') is not None:
       r['split'] = {'mech': round(x['mechKwh'] * 1000 / mi), 'duLoss': round(x['duLossKwh'] * 1000 / mi),
                     'dcdc': round(x['dcdcKwh'] * 1000 / mi),
                     'other': round(x['otherKw'] * 1000 / r['avgMph']) if x.get('otherKw') is not None and r['avgMph'] else None}
+      o = r['split']['other']
+      if o is not None and x.get('stopAuxKw') is not None:
+        # the standing-still load (climate, battery heat, pumps) runs the whole drive; the rest is motor loss
+        hv = max(0, min(o, round(x['stopAuxKw'] * 1000 / r['avgMph'])))
+        r['split']['climate'], r['split']['loss'] = hv, o - hv
     if x.get('elevNetM') is not None:
       r['climbWhPerMi'] = round(PACK_MASS_KG * 9.81 * x['elevNetM'] / 3600 / mi)     # Wh per mile, + uphill
     rows.append(r)

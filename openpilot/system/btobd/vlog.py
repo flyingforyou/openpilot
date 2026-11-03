@@ -200,6 +200,19 @@ def energy_check(d: dict) -> dict:
 SPLIT_MIN_SHARE = 0.8      # motor power heard over this share of the covered time, or no split
 
 
+# Standing still with both motors at no torque, what the pack gives beyond the 12 V side is the cabin
+# heat/AC, battery heating and pumps alone: no motor loss in it. 0.05-2.4 kW over 10/29-11/03, 2.2-2.4 on
+# the cold mornings and under 0.5 on warm afternoons. A drive's 'other' kW above that is motor loss.
+# (No CAN field the panda sees tracked it: the climate controller is on a bus that is not tapped.)
+STOP_AUX_MIN_S = 60.0
+STILL_TORQUE_NM = 5.0
+
+
+def is_still(v: dict) -> bool:
+  spd, r, f = v.get('vehicleSpeedMph'), v.get('rearTorqueMeasured'), v.get('frontTorqueMeasured')
+  return spd is not None and abs(spd) < 0.3 and r is not None and f is not None and abs(r) + abs(f) < STILL_TORQUE_NM
+
+
 def split_kw(v: dict) -> tuple[float, float, float] | None:
   r, f = v.get('rearMechPower'), v.get('frontMechPower')
   if r is None or f is None:
@@ -225,7 +238,8 @@ class Session:
               'tempMin': None, 'tempMax': None, 'tempStart': None, 'tempEnd': None, 'cellDeltaSyncMax': None,
               'events': [], 'flags': [], 'socFirstAt': {}, 'socBinS': {}, 'socPctS': {}, 'curve': {},
               'limitMinDischarge': None, 'limitMinRegen': None, 'counters': {},
-              'split': [0.0, 0.0, 0.0, 0.0, 0.0]}   # pack out, motor output, drive-unit loss, DC-DC kWh; seconds
+              'split': [0.0, 0.0, 0.0, 0.0, 0.0],   # pack out, motor output, drive-unit loss, DC-DC kWh; seconds
+              'stopAux': [0.0, 0.0], 'heaterOnS': 0.0}  # standing still with no motor torque: kWh, seconds
     self._last_kw_t: float | None = None
     self._last_kw: float | None = None
     self._last_spd_t: float | None = None
@@ -267,6 +281,11 @@ class Session:
           for k, x in enumerate((-kw, *sp)):
             d['split'][k] += x * dt / 3600.0
           d['split'][4] += dt
+          if is_still(v):
+            d['stopAux'][0] += (-kw - sp[2]) * dt / 3600.0
+            d['stopAux'][1] += dt
+        if v.get('heaterState') not in (None, 0):
+          d['heaterOnS'] += dt
         if self._last_soc is not None:
           b = str(int(self._last_soc // 10 * 10))
           d['socBinS'][b] = d['socBinS'].get(b, 0.0) + dt
@@ -349,6 +368,11 @@ class Session:
     d.update(energy_check(d))
     d.pop('counters', None)
     d.update(energy_split(d.pop('split', None), d['coveredS'], d['type']))
+    st = d.pop('stopAux', None)
+    if d['type'] == 'DRIVE' and st and st[1] >= STOP_AUX_MIN_S:
+      d['stopAuxKw'], d['stopAuxS'] = round(st[0] / (st[1] / 3600.0), 2), round(st[1])
+    if not d['heaterOnS']:
+      d.pop('heaterOnS')
     if reason:
       d['flags'].append(reason)
     if d['missingRate'] and d['missingRate'] > 0.2:

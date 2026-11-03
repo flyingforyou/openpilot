@@ -101,6 +101,7 @@ BMS_LIMITS = [
   Sig('bmsTempMin', '모듈 최저 온도 (BMS 0x332)', 0x332, 56, 8, 0.5, -40, '°C', mux=(12, 4, 8), min_len=8),
 ]
 BMS_LIMIT_IDS = sorted({s.msg for s in BMS_LIMITS})
+HEATER_IDS = [0x26A, 0x32A]   # battery heater state, pumps and heater output: rotated while driving too
 
 # Seen on 2026-10-27 with plausible scales but no second source yet.
 CANDIDATES = [

@@ -153,3 +153,10 @@ def test_latest_msgs_keeps_the_newest_and_its_time(monkeypatch):
   assert lm['carState'] == 'a' and time.monotonic() - t < 1
   lm.update()                                        # nothing new: the old message keeps its own time
   assert lm['carState'] == 'a' and lm.recv_time['carState'] == t
+
+
+def test_battery_heater_and_pumps_are_heard_while_driving():
+  seen: set = set()
+  for cycle in range(40):
+    seen.update(btobdd.cycle_ids('DRIVE', cycle, WATCH_IDS, tesla_pt.LIVE_IDS))
+  assert set(tesla_pt.HEATER_IDS) <= seen

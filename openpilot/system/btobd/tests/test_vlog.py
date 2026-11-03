@@ -543,3 +543,14 @@ def test_a_pending_mode_does_not_carry_across_a_gap():
   t = 10 * 3600.0
   assert not m.update(t, {'gear': 'D', 'packCurrent': -50.0}, onroad=True)    # held again, from now
   assert m.update(t + 4, {'gear': 'D', 'packCurrent': -50.0}, onroad=True) and m.since == t
+
+
+def test_standing_still_load_is_measured_only_with_no_motor_torque():
+  s = vlog.Session('DRIVE', 0.0, {})
+  base = {'packVoltage': 400.0, 'rearMechPower': 0.0, 'frontMechPower': 0.0, 'dcdcInputPower': 400.0, 'vehicleSpeedMph': 0.0}
+  for k in range(0, 120, 4):        # stopped, motors idle: 2.4 kW for the cabin + 0.4 kW for 12 V
+    s.add(float(k), {**base, 'packCurrent': -7.0, 'rearTorqueMeasured': 0.0, 'frontTorqueMeasured': 0.0}, 0)
+  for k in range(120, 240, 4):      # stopped holding on a hill: motor current, no mechanical power
+    s.add(float(k), {**base, 'packCurrent': -20.0, 'rearTorqueMeasured': 300.0, 'frontTorqueMeasured': 0.0}, 0)
+  d = s.finish()
+  assert d['stopAuxKw'] == pytest.approx(2.4, abs=0.05) and 110 <= d['stopAuxS'] <= 120

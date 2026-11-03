@@ -4236,6 +4236,7 @@ async function openSession(s){
         +((s.flags||[]).includes('distance-from-route')?' <span class="na">(속도 수신이 드물어 거리는 openpilot 기준)</span>':''))
       +(s.mechKwh!=null&&s.miles?kv('전비 구성',`모터 ${f(s.mechKwh*1000/s.miles,0)} · 구동 손실 ${f(s.duLossKwh*1000/s.miles,0)} · DC-DC ${f(s.dcdcKwh*1000/s.miles,0)} Wh/mi · 기타 ${f(s.otherKw,1)} kW`
         +(s.avgMph?` (= ${f(s.otherKw*1000/s.avgMph,0)} Wh/mi)`:'')):'')
+      +(s.stopAuxKw!=null?kv('정차 중 부하 (공조·히터·펌프)',`${f(s.stopAuxKw,2)} kW <span class="na">(정차 ${dur(s.stopAuxS)} 기준, 12V 제외)</span>`+(s.heaterOnS?` · 배터리 히터 ${dur(s.heaterOnS)}`:'')):'')
       +(s.elevNetM!=null?kv('고도 변화',`${s.elevNetM>0?'+':''}${s.elevNetM} m (누적 오르막 ${s.climbM} m)`):'')
       +kv('동글 기록',s.coverage!=null?`${Math.round(s.coverage*100)}% · ${s.parts||0}구간`+(s.partList?' ('+s.partList.map(p=>dt(p.start).slice(-5)+'~'+dt(p.end).slice(-5)).join(', ')+')':''):'–')
       +(s.movingS!=null?kv('움직인 시간',dur(s.movingS)):'')+kv('회생 (기록 구간)',`${f(s.regenKwh,2)} kWh`):'')
@@ -4463,10 +4464,11 @@ async function openDay(d){
       const hm=new Date(r.start*1000).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false});
       return `<tr><td>${hm}<br><small class="na">${f(r.miles,1)} mi<br>${dur(r.durationS)}</small></td>`
       +`<td class="r">${f(r.avgMph,0)} mph${r.movingMph!=null?`<br><small class="na">이동 ${f(r.movingMph,0)}</small>`:''}</td>`
-      +`<td class="r"><b>${wh==null?'–':f(wh,0)}</b>${r.whPerMi==null&&wh!=null?' <span class="pill low" title="전력이 일부 구간만 기록됨">일부</span>':''}<br><small class="na">${S.mech!=null?`모터 ${S.mech}<br>기타 ${S.other==null?'–':S.other}${r.otherKw!=null?` · ${f(r.otherKw,1)} kW`:''}`:'분해 불가'}</small></td>`
+      +`<td class="r"><b>${wh==null?'–':f(wh,0)}</b>${r.whPerMi==null&&wh!=null?' <span class="pill low" title="전력이 일부 구간만 기록됨">일부</span>':''}<br><small class="na">${S.mech==null?'분해 불가':`모터 ${S.mech}<br>`+(S.climate!=null?`공조 등 ${S.climate} <span title="정차·토크 0일 때 팩 부하 (12V 제외)">(${f(r.stopAuxKw,1)} kW)</span><br>손실 ${S.loss}`
+        :`기타 ${S.other==null?'–':S.other}${r.otherKw!=null?` · ${f(r.otherKw,1)} kW`:''}`)}${r.heaterOnS?`<br>배터리 히터 ${dur(r.heaterOnS)}`:''}</small></td>`
       +`<td class="r">${r.elevNetM==null?'–':sg(r.elevNetM)+' m'}<br><small class="na">${r.climbWhPerMi==null?'':sg(r.climbWhPerMi)}</small></td></tr>`;}).join('')
     ||'<tr><td colspan="4" class="na">주행 없음</td></tr>')+'</tbody></table></div>'
-    +'<p class="na" style="font-size:11.5px;margin:4px 2px 10px">모터 = 바퀴로 나간 일(오르막·가속·공기저항 포함). 기타 = 공조·히터·펌프·모터 손실처럼 시간당 거의 일정한 kW라서 느리게(정체·신호) 달릴수록 mi당 커짐. 고도 몫 = 출발→도착 고도차를 들어 올리는 데 든 에너지(오르막 +, 내리막 −, 차량 2.55 t 기준), 모터 값 안에 포함됨.</p>';
+    +'<p class="na" style="font-size:11.5px;margin:4px 2px 10px">모터 = 바퀴로 나간 일(오르막·가속·공기저항 포함). 공조 등 = 정차 중(모터 토크 0) 팩이 내는 전력(실내 냉난방·배터리 히터·펌프, 12V 제외)이 주행 내내 든다고 본 몫. 손실 = 나머지(모터·인버터 손실 등). 둘 다 시간당 kW라 느리게(정체·신호) 달릴수록 mi당 커짐. 고도 몫 = 출발→도착 고도차를 들어 올리는 데 든 에너지(오르막 +, 내리막 −, 차량 2.55 t 기준), 모터 값 안에 포함됨.</p>';
   const L=D.limits||{},V=D.lowVoltage||{};
   h+='<div class="h3">BMS 한계 · 12V (측정 조건 포함)</div><div class="kv">'+kv('BMS 방전 한계',ext(L.maxDischargePower,'kW',0))+kv('BMS 회생 한계',ext(L.maxRegenPower,'kW',0))
     +kv('충전·회생 허용 전류 (0x202)',ext(L.bmsMaxChargeA,'A',0))+kv('방전 허용 전류 (0x202)',ext(L.bmsMaxDischargeA,'A',0))+kv('충전 전력',ext(L.chargeKw,'kW',2))+kv('주행 팩 출력',ext(L.driveKw,'kW',0))

@@ -277,3 +277,12 @@ def test_drive_list_explains_wh_per_mile():
   assert r['avgMph'] == pytest.approx(15.2 / 1820 * 3600, abs=0.1) and r['elevNetM'] == 80
   assert r['split']['mech'] == round(3.6e3 / 15.2) and r['split']['other'] == round(3.4e3 / r['avgMph'])
   assert r['climbWhPerMi'] == round(2550 * 9.81 * 80 / 3600 / 15.2)
+
+
+def test_other_load_splits_into_climate_and_loss():
+  ses = {'type': 'DRIVE', 'start': 1000.0, 'end': 2800.0, 'durationS': 1800.0, 'miles': 15.0, 'kwhOut': 6.0, 'kwhIn': 0.5,
+         'miSpeed': 15.0, 'avgKw': 11.0, 'mechKwh': 3.6, 'duLossKwh': 0.1, 'dcdcKwh': 0.08, 'otherKw': 4.8, 'splitShare': 1.0,
+         'stopAuxKw': 2.4, 'stopAuxS': 600}
+  r, = daily.drive_list([ses], [])
+  assert r['avgMph'] == 30.0 and r['split']['other'] == 160
+  assert r['split']['climate'] == 80 and r['split']['loss'] == 80
