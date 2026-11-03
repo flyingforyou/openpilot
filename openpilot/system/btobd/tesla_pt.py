@@ -103,7 +103,10 @@ BMS_LIMITS = [
 BMS_LIMIT_IDS = sorted({s.msg for s in BMS_LIMITS})
 # battery heater state, pumps and heater output, and the A/C compressor: rotated while driving too. On the
 # panda buses 0x20A is a different message (2026-11-03: 0-127 jumps every drive); only the diag port has THC's.
-HEATER_IDS = [0x26A, 0x32A, 0x20A]
+# 0x53A (muxed by byte 0, not in the public tables) followed the 2026-11-03 HI/26/24/22/20/off test
+# where the 2-minute discovery round caught it; 0x268 is the old Model S "climate" ID from Instructables.
+# Both rotate while driving so the next drives have them densely, raw only until decoded.
+HEATER_IDS = [0x26A, 0x32A, 0x20A, 0x53A, 0x268]
 
 # Seen on 2026-10-27 with plausible scales but no second source yet.
 CANDIDATES = [
