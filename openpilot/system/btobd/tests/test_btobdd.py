@@ -123,3 +123,33 @@ def test_carstate_motion_and_its_age():
   assert v == {'vehicleSpeedMph': 26.84, 'gear': 'D'} and 0 <= a['gear'] < 0.5
   p.sm = _SM(5.0)                                   # card stopped: nothing, rather than an old gear
   assert p.motion() == ({}, {})
+
+
+def test_onroad_from_the_param_manager_writes(tmp_path, monkeypatch):
+  # 0.11.2 has no IsOnroad; reading it made every drive 'offroad' (2026-11-03 07:24-07:46 logged no DRIVE)
+  monkeypatch.setattr(btobdd, 'PARAMS_DIR', str(tmp_path))
+  assert not btobdd._onroad()                      # manager not running: no param
+  (tmp_path / 'IsOffroad').write_text('0')
+  assert btobdd._onroad()
+  (tmp_path / 'IsOffroad').write_text('1')
+  assert not btobdd._onroad()
+
+
+def test_latest_msgs_keeps_the_newest_and_its_time(monkeypatch):
+  import time
+
+  class Msg:
+    def __init__(self, v):
+      self.carState = v
+
+  q = [None, Msg('a'), None]
+  lm = btobdd.LatestMsgs.__new__(btobdd.LatestMsgs)
+  lm._recv = lambda sock: q.pop(0)
+  lm.sock, lm.data, lm.recv_time = {'carState': None}, {}, {'carState': 0.0}
+  lm.update()
+  assert lm.recv_time['carState'] == 0.0             # nothing yet
+  lm.update()
+  t = lm.recv_time['carState']
+  assert lm['carState'] == 'a' and time.monotonic() - t < 1
+  lm.update()                                        # nothing new: the old message keeps its own time
+  assert lm['carState'] == 'a' and lm.recv_time['carState'] == t

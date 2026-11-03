@@ -503,3 +503,16 @@ def test_carstate_lines_in_raw_replay_as_gear_and_speed(tmp_path):
   out = vlog.replay_raw(raw)
   d = [s for s in out['sessions'] if s['type'] == 'DRIVE']
   assert len(d) == 1 and d[0]['miSpeed'] == pytest.approx(30 * 236 / 3600, rel=0.05)
+
+
+def test_drive_with_gear_every_other_cycle_is_held_by_onroad():
+  # 2026-11-03: carState reached 7 of 14 cycles a minute; without gear the current alone said PARKED,
+  # the candidate flipped every cycle and the 22-minute drive never became DRIVE
+  m = vlog.ModeMachine()
+  m.update(0.0, {'gear': 'P', 'packCurrent': -2.0})
+  m.update(40.0, {'gear': 'P', 'packCurrent': -2.0})
+  assert m.mode == 'PARKED'
+  for k in range(1, 20):
+    v = {'gear': 'D', 'vehicleSpeedMph': 40.0, 'packCurrent': -80.0} if k % 2 else {'packCurrent': -80.0}
+    m.update(40.0 + 4 * k, v, onroad=True)
+  assert m.mode == 'DRIVE'

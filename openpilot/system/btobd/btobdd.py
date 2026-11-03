@@ -101,7 +101,9 @@ def _take_cmd() -> dict | None:
 
 
 def _onroad() -> bool:
-  return _param('IsOnroad') == '1'
+  # 0.11.2 has no IsOnroad: this read it and was False on every drive (2026-11-03 07:24-07:46 logged no
+  # DRIVE). manager writes IsOffroad ('0' while started) and clears it on start.
+  return _param('IsOffroad') == '0'
 
 
 def _viewer() -> bool:
@@ -111,16 +113,40 @@ def _viewer() -> bool:
     return False
 
 
+class LatestMsgs:
+  """The newest message of each service, from conflated sockets, with the time it was taken. A
+  SubMaster takes one message per socket per update: read twice per ~4 s poll cycle, 100 Hz carState
+  fell minutes behind and missed half the cycles (2026-11-03: gear/speed in 7 of 14 cycles a minute,
+  so the mode flipped DRIVE/PARKED and never held)."""
+
+  def __init__(self, services):
+    import openpilot.cereal.messaging as messaging
+    self._recv = messaging.recv_one_or_none
+    self.sock = {s: messaging.sub_sock(s, conflate=True) for s in services}
+    self.data: dict = {}
+    self.recv_time = dict.fromkeys(services, 0.0)
+
+  def update(self, timeout: int = 0) -> None:
+    for s, sock in self.sock.items():
+      m = self._recv(sock)
+      if m is not None:
+        self.data[s], self.recv_time[s] = getattr(m, s), time.monotonic()
+
+  def __getitem__(self, s: str):
+    return self.data[s]
+
+
 class CarPower:
   """The car's 12 V and ignition as the panda sees them. Missing messaging (tests, a bench without
   the stack) just reads as unknown."""
+
+  SERVICES = ('pandaStates', 'deviceState', 'carState')
 
   def __init__(self):
     self.sm = None
     self.awake_until = 0.0
     try:
-      import openpilot.cereal.messaging as messaging
-      self.sm = messaging.SubMaster(['pandaStates', 'deviceState', 'carState'])
+      self.sm = LatestMsgs(self.SERVICES)
     except Exception:
       pass
 
