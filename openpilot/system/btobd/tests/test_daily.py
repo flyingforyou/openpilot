@@ -235,3 +235,17 @@ def test_snapshot_outlives_its_source(store):
     assert DAY not in r['built']
     assert json.loads((out / f'{DAY}.json').read_text()) == before
     assert [x['date'] for x in daily.index(str(out))['days']][0] == DAY
+
+
+def test_old_swapped_lifetime_counters_do_not_split_the_pack():
+  # 10/28 from live.jsonl (decoded before the 0x3D2 fix) then 10/29 from raw: same car, same pack
+  def snap(odo, ch, dis):
+    return {'day': {'energy': {'counters': {'batteryOdometerMi': {'first': odo, 'last': odo},
+                                            'kwhChargeTotal': {'first': ch, 'last': ch},
+                                            'kwhDischargeTotal': {'first': dis, 'last': dis}}}}}
+  prev = {'packId': 'pack@139165mi', 'packOdo': 139170.0, 'packDis': 76252.8}
+  assert daily.assign_pack(prev, snap(139197.6, 76264.7, 71915.3))[0] == 'pack@139165mi'
+  assert daily.unswap_lifetime({'kwhChargeTotal': 71908.4, 'kwhDischargeTotal': 76252.8}) == \
+    {'kwhChargeTotal': 76252.8, 'kwhDischargeTotal': 71908.4}
+  ok = {'kwhChargeTotal': 76264.7, 'kwhDischargeTotal': 71915.3}
+  assert daily.unswap_lifetime(dict(ok)) == ok

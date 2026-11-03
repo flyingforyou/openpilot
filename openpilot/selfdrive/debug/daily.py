@@ -265,6 +265,20 @@ def summarize_raw(path: str, tz: ZoneInfo) -> dict:
   return out
 
 
+LIFETIME_SWAP_KWH = 100.0
+
+
+def unswap_lifetime(v: dict) -> dict:
+  """live.jsonl holds values as decoded then, and up to 2026-10-30 0x3D2's charge/discharge totals were
+  read the wrong way round (tesla_sx.lifetime_energy). Energy into a pack can fall short of energy out
+  by at most what it holds, so lifetime charge more than LIFETIME_SWAP_KWH under discharge is that
+  swap: 10/28 read 71,908 in / 76,252 out, 10/29 from raw 76,264 / 71,915."""
+  ch, dis = v.get('kwhChargeTotal'), v.get('kwhDischargeTotal')
+  if isinstance(ch, (int, float)) and isinstance(dis, (int, float)) and ch < dis - LIFETIME_SWAP_KWH:
+    v['kwhChargeTotal'], v['kwhDischargeTotal'] = dis, ch
+  return v
+
+
 def summarize_live(path: str, until: float, tz: ZoneInfo) -> dict:
   """{local date: partial summary} from live.jsonl lines before `until` (the first raw frame). A line
   carries the values of one publish without per-value times: every value on it counts as heard then,
@@ -289,7 +303,7 @@ def summarize_live(path: str, until: float, tz: ZoneInfo) -> dict:
         break
       if t < STALE_CLOCK_BEFORE or r.get('event') != 'live':
         continue
-      v = dict(r.get('values') or {})
+      v = unswap_lifetime(dict(r.get('values') or {}))
       raw = (r.get('raw') or {}).get('102')
       if raw:
         try:
@@ -644,8 +658,12 @@ def assign_pack(prev: dict | None, day: dict) -> tuple[str | None, str]:
   if prev is None or prev.get('packId') is None:
     return name(), '처음 기록된 팩' if name() else '팩 카운터를 못 들음'
   p_odo, p_dis = prev.get('packOdo'), prev.get('packDis')
-  if odo and p_odo is not None and odo['first'] < p_odo - PACK_ODO_DROP_MI:
-    return name(), '배터리 주행거리가 줄어듦: 다른 팩'
+  if odo and p_odo is not None:
+    # the odometer settles it when both days have it: lifetime kWh is only the fallback (a snapshot kept
+    # from live.jsonl can carry the pre-2026-10-30 swapped 0x3D2, which looked like a 4,300 kWh drop)
+    if odo['first'] < p_odo - PACK_ODO_DROP_MI:
+      return name(), '배터리 주행거리가 줄어듦: 다른 팩'
+    return prev['packId'], '같은 팩'
   if dis and p_dis is not None and dis['first'] < p_dis - PACK_KWH_DROP:
     return name(), '누적 방전량이 줄어듦: 다른 팩'
   return prev['packId'], '같은 팩' if (odo or dis) else '카운터 없음: 전날 팩 유지'
