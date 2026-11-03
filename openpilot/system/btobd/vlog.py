@@ -48,6 +48,7 @@ REST_A = 5.0           # |packCurrent| at or under this counts as rest
 REST_HOLD_S = 60.0     # ... for this long before a resting snapshot
 HEALTH_EVERY_S = 6 * 3600
 SERIES_DT = {'DRIVE': 5.0, 'AC_CHARGE': 5.0, 'DC_CHARGE': 5.0, 'CHARGE_UNKNOWN': 5.0, 'PARKED': 60.0}
+CAND_LAPSE_S = 60.0
 HOLD_S = {'DRIVE': 3.0, 'CHARGE': 20.0, 'PARKED': 30.0}   # a new mode must persist this long
 RING_S = 60.0
 POST_S = 20.0
@@ -102,6 +103,7 @@ class ModeMachine:
     self.since = 0.0
     self._cand: str | None = None
     self._cand_since = 0.0
+    self._cand_seen = 0.0
 
   @staticmethod
   def candidate(v: dict, onroad: bool) -> str | None:
@@ -137,8 +139,12 @@ class ModeMachine:
     if c is None or c == self.mode:
       self._cand = None
       return False
-    if c != self._cand:
+    # a candidate not seen for CAND_LAPSE_S starts over: 11/01 20:48 left DRIVE pending after a few
+    # frames, the next were 11/02 07:17, and the switch came at once dated 20:48 -- a 652-minute drive
+    # that swallowed the morning's
+    if c != self._cand or t - self._cand_seen > CAND_LAPSE_S:
       self._cand, self._cand_since = c, t
+    self._cand_seen = t
     hold = HOLD_S['CHARGE' if c in CHARGE_MODES else c]
     if t - self._cand_since < hold:
       return False

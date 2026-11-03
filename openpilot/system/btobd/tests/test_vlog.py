@@ -532,3 +532,14 @@ def test_drive_energy_split_into_motor_loss_dcdc_and_other():
   for k in range(0, 600, 4):
     s.add(float(k), {'packVoltage': 400.0, 'packCurrent': -50.0}, 0)
   assert 'otherKw' not in s.finish()
+
+
+def test_a_pending_mode_does_not_carry_across_a_gap():
+  # 11/01 20:48: a few onroad frames left DRIVE pending; the next frames came 11/02 07:17
+  m = vlog.ModeMachine()
+  m.update(0.0, {'gear': 'D', 'packCurrent': -5.0}, onroad=True)
+  m.update(2.0, {'gear': 'D', 'packCurrent': -5.0}, onroad=True)
+  assert m.mode is None
+  t = 10 * 3600.0
+  assert not m.update(t, {'gear': 'D', 'packCurrent': -50.0}, onroad=True)    # held again, from now
+  assert m.update(t + 4, {'gear': 'D', 'packCurrent': -50.0}, onroad=True) and m.since == t
