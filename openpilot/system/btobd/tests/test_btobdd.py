@@ -160,3 +160,9 @@ def test_battery_heater_and_pumps_are_heard_while_driving():
   for cycle in range(40):
     seen.update(btobdd.cycle_ids('DRIVE', cycle, WATCH_IDS, tesla_pt.LIVE_IDS))
   assert set(tesla_pt.HEATER_IDS) <= seen
+
+
+def test_ac_compressor_is_heard_while_driving():
+  # THC 0x20A is only on the diag port: the panda's 0x20A is another message
+  assert 0x20A in tesla_pt.HEATER_IDS
+  assert {s.msg for s in tesla_pt.LIVE_SIGS if s.key == 'compCooling'} == {0x20A}

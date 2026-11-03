@@ -72,7 +72,8 @@ SERIES_KEYS = ('packVoltage', 'packCurrent', 'packPower', 'socUI', 'socDisplay',
                'vehicleSpeedMph', 'gear', 'rearMechPower', 'frontMechPower', 'rearTorqueMeasured', 'frontTorqueMeasured',
                'rearMotorRpm', 'maxDischargePower', 'maxRegenPower', 'moduleTempMin', 'moduleTempMax', 'cellMin',
                'cellMax', 'cellDelta', 'cellSync', 'dcdcOutputVoltage', 'inverterTemp', 'motorTemp', 'bmsState',
-               'pilot', 'acVolts1', 'acVolts2', 'acVolts3', 'heaterState', 'pump1', 'refrigPressure')
+               'pilot', 'acVolts1', 'acVolts2', 'acVolts3', 'heaterState', 'pump1', 'refrigPressure',
+               'compCooling')
 
 
 def _day(t: float) -> str:
@@ -203,7 +204,8 @@ SPLIT_MIN_SHARE = 0.8      # motor power heard over this share of the covered ti
 # Standing still with both motors at no torque, what the pack gives beyond the 12 V side is the cabin
 # heat/AC, battery heating and pumps alone: no motor loss in it. 0.05-2.4 kW over 10/29-11/03, 2.2-2.4 on
 # the cold mornings and under 0.5 on warm afternoons. A drive's 'other' kW above that is motor loss.
-# (No CAN field the panda sees tracked it: the climate controller is on a bus that is not tapped.)
+# (The panda buses do not carry the climate controller. On the diag port talas9's THC tables decode:
+# compressor 0x20A, refrigerant 0x33A, pumps/battery heater 0x32A/0x26A. The cabin PTC heater has none.)
 STOP_AUX_MIN_S = 60.0
 STILL_TORQUE_NM = 5.0
 
@@ -239,7 +241,8 @@ class Session:
               'events': [], 'flags': [], 'socFirstAt': {}, 'socBinS': {}, 'socPctS': {}, 'curve': {},
               'limitMinDischarge': None, 'limitMinRegen': None, 'counters': {},
               'split': [0.0, 0.0, 0.0, 0.0, 0.0],   # pack out, motor output, drive-unit loss, DC-DC kWh; seconds
-              'stopAux': [0.0, 0.0], 'heaterOnS': 0.0}  # standing still with no motor torque: kWh, seconds
+              'stopAux': [0.0, 0.0], 'heaterOnS': 0.0,  # standing still with no motor torque: kWh, seconds
+              'comp': [0.0, 0.0]}                       # A/C compressor cooling request: %-seconds, seconds heard
     self._last_kw_t: float | None = None
     self._last_kw: float | None = None
     self._last_spd_t: float | None = None
@@ -286,6 +289,9 @@ class Session:
             d['stopAux'][1] += dt
         if v.get('heaterState') not in (None, 0):
           d['heaterOnS'] += dt
+        if v.get('compCooling') is not None:
+          d['comp'][0] += v['compCooling'] * dt
+          d['comp'][1] += dt
         if self._last_soc is not None:
           b = str(int(self._last_soc // 10 * 10))
           d['socBinS'][b] = d['socBinS'].get(b, 0.0) + dt
@@ -373,6 +379,11 @@ class Session:
       d['stopAuxKw'], d['stopAuxS'] = round(st[0] / (st[1] / 3600.0), 2), round(st[1])
     if not d['heaterOnS']:
       d.pop('heaterOnS')
+    # the cabin's electric heater has no broadcast in the public tables; the compressor does (THC 0x20A),
+    # so a large standing-still load with the compressor and battery heater idle is cabin heat
+    cp = d.pop('comp', None)
+    if d['type'] == 'DRIVE' and cp and cp[1] >= STOP_AUX_MIN_S:
+      d['compPct'], d['compS'] = round(cp[0] / cp[1], 1), round(cp[1])
     if reason:
       d['flags'].append(reason)
     if d['missingRate'] and d['missingRate'] > 0.2:

@@ -480,7 +480,7 @@ def drive_list(drives: list, routes: list) -> list:
       continue
     hrs = x['durationS'] / 3600 if x.get('durationS') else None
     r = {k: x.get(k) for k in ('start', 'end', 'durationS', 'miles', 'milesSource', 'movingMph', 'whPerMi', 'whPerMiPart',
-                               'coverage', 'elevNetM', 'climbM', 'otherKw', 'stopAuxKw', 'stopAuxS', 'heaterOnS', 'tempStart',
+                               'coverage', 'elevNetM', 'climbM', 'otherKw', 'stopAuxKw', 'stopAuxS', 'heaterOnS', 'compPct', 'tempStart',
                                'tempMin', 'tempMax', 'route', 'flags')}
     r['avgMph'] = x.get('avgMph') or (round(mi / hrs, 1) if hrs else None)
     if x.get('mechKwh') is not None:

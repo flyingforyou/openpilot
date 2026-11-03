@@ -312,6 +312,10 @@ def merge_drives(sessions: list, routes: list) -> list:
       row['stopAuxKw'] = round(sum(s['stopAuxKw'] * s['stopAuxS'] for s in stop) / row['stopAuxS'], 2)
     if any(s.get('heaterOnS') for s in parts):
       row['heaterOnS'] = round(sum(s.get('heaterOnS') or 0 for s in parts))
+    comp = [s for s in parts if s.get('compS')]
+    if comp:
+      row['compS'] = sum(s['compS'] for s in comp)
+      row['compPct'] = round(sum(s['compPct'] * s['compS'] for s in comp) / row['compS'], 1)
     if all('bmsKwhIn' in s for s in parts):
       row['bmsKwhIn'] = round(sum(s['bmsKwhIn'] for s in parts), 3)
       row['bmsKwhOut'] = round(sum(s['bmsKwhOut'] for s in parts), 3)
@@ -533,8 +537,8 @@ def _csv(rows: list, cols: list) -> bytes:
 SESSION_COLS = ['source', 'type', 'route', 'start', 'end', 'durationS', 'movingS', 'coverage', 'parts', 'socStart', 'socEnd',
                 'kwhIn', 'kwhOut', 'avgKw', 'kwMax', 'kwMin', 'miles', 'milesSource', 'partMiles', 'whPerMi', 'whPerMiPart', 'regenKwh', 'min10to80', 'min20to80', 'tempMin', 'tempMax',
                 'cellDeltaSyncMax', 'limitMinDischarge', 'limitMinRegen', 'samples', 'gapS', 'missingRate', 'staleRate',
-                'avgMph', 'movingMph', 'mechKwh', 'duLossKwh', 'dcdcKwh', 'otherKw', 'stopAuxKw', 'stopAuxS', 'heaterOnS', 'elevNetM',
-                'climbM', 'flags']
+                'avgMph', 'movingMph', 'mechKwh', 'duLossKwh', 'dcdcKwh', 'otherKw', 'stopAuxKw', 'stopAuxS', 'heaterOnS', 'compPct',
+                'compS', 'elevNetM', 'climbM', 'flags']
 
 
 def export(kind: str, arg: str = '') -> tuple[bytes, str] | None:

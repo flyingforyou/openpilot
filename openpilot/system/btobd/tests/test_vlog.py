@@ -554,3 +554,18 @@ def test_standing_still_load_is_measured_only_with_no_motor_torque():
     s.add(float(k), {**base, 'packCurrent': -20.0, 'rearTorqueMeasured': 300.0, 'frontTorqueMeasured': 0.0}, 0)
   d = s.finish()
   assert d['stopAuxKw'] == pytest.approx(2.4, abs=0.05) and 110 <= d['stopAuxS'] <= 120
+
+
+def test_compressor_request_is_averaged_over_the_seconds_it_was_heard():
+  s = vlog.Session('DRIVE', 0.0, {})
+  base = {'packVoltage': 400.0, 'packCurrent': -20.0}
+  for k in range(0, 120, 4):
+    s.add(float(k), {**base, 'compCooling': 60 if k < 60 else 0}, 0)
+  for k in range(120, 240, 4):      # not heard: neither counted nor taken as off
+    s.add(float(k), base, 0)
+  d = s.finish()
+  assert d['compPct'] == pytest.approx(30, abs=2) and 110 <= d['compS'] <= 120
+  short = vlog.Session('DRIVE', 0.0, {})
+  for k in range(0, 40, 4):
+    short.add(float(k), {**base, 'compCooling': 50}, 0)
+  assert 'compPct' not in short.finish()
