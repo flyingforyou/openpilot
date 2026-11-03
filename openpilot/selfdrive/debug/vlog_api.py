@@ -682,7 +682,7 @@ def rx_state() -> dict:
 # discharge limit only above 20% and 10 C, cell spread only from a synchronised sweep, ...).
 CHECK_DAYS = 14
 STATS_CACHE = os.path.join(tdiag.LOG_DIR, 'vlog-stats-cache.json')
-STATS_VERSION = 5           # bump when file_stats derives something new: cached hours are decoded again
+STATS_VERSION = 6           # bump when file_stats derives something new: cached hours are decoded again
 BMS_FAULT = (7, 8)
 MIN_N = 3                   # fewer samples than this and a check is "표본 부족", never 정상
 # Pack resistance: dV/dI between two 0x102 readings at most R_WINDOW_S apart whose current differs by
@@ -787,12 +787,14 @@ def file_stats(path: str) -> dict:
       put('rangeIdealFull', V['rangeIdealMi'] / V['socUI'] * 100, wall)
     if 'moduleTempMax' in changed and V.get('moduleTempMin') is not None:
       put('moduleSpread', V['moduleTempMax'] - V['moduleTempMin'], wall)
-    if 'cellDelta' in changed and V.get('cellSync') and V.get('bmsState') in (3, 4):
+    # AC charging only (BMS 3): at DC currents the spread is brick IR, not balance -- 61 mV on 2026-10-31
+    # 13:33 at 146 kW from 8%. Likewise the AC volts: during the 11/02 DC charge they read 393 V.
+    if 'cellDelta' in changed and V.get('cellSync') and V.get('bmsState') == 3:
       put('chargeDeltaMv', V['cellDelta'] * 1000, wall)
     if 'maxDischargePower' in changed and (V.get('socDisplay') or 0) > 20 and (V.get('moduleTempMin') or 0) > 10:
       put('dischargeLimitOk', V['maxDischargePower'], wall)
     for k in ('acVolts1', 'acVolts2', 'acVolts3'):
-      if k in changed and V[k] > 80:
+      if k in changed and V[k] > 80 and V.get('bmsState') == 3:
         put('acVoltsCharge', V[k], wall)
     if 'pilotHigh' in changed and V.get('pilot') == 2:
       put('pilotHighCharge', V['pilotHigh'], wall)
@@ -921,7 +923,7 @@ CHECKS = [
   ('배터리', 'cellMin', '셀 최저 전압', 'V', 3, (3.2, None), (3.0, None), '3.2 V 이상 (부하 중 포함)'),
   ('배터리', 'cellMax', '셀 최고 전압', 'V', 3, (None, 4.17), (None, 4.2), '4.17 V 이하'),
   ('배터리', 'restDeltaMv', '셀 편차 (휴지·동시 측정)', 'mV', 0, (None, 20), (None, 40), '20 mV 미만'),
-  ('배터리', 'chargeDeltaMv', '셀 편차 (충전 중·동시 측정)', 'mV', 0, (None, 25), (None, 40), '25 mV 미만'),
+  ('배터리', 'chargeDeltaMv', '셀 편차 (AC 충전 중·동시 측정)', 'mV', 0, (None, 25), (None, 40), '25 mV 미만'),
   ('배터리', 'moduleTempMax', '모듈 최고 온도', '°C', 1, (None, 45), (None, 55), '45 °C 이하'),
   ('배터리', 'moduleTempMin', '모듈 최저 온도', '°C', 1, (0, None), None, '0 °C 미만은 충전·회생 제한'),
   ('배터리', 'moduleSpread', '모듈 온도 편차', '°C', 1, (None, 5), (None, 10), '5 °C 미만'),
@@ -958,7 +960,7 @@ CHECKS = [
   ('구동', 'rearRegenPowerMax', '뒤 회생 허용 최대', 'kW', 0, None, None, ''),
   ('구동', 'vehicleSpeedMph', '속도', 'mph', 0, None, None, ''),
   ('충전', 'chargeKw', '충전 전력 (팩 기준)', 'kW', 1, None, None, ''),
-  ('충전', 'acVoltsCharge', 'AC 입력 전압 (충전 중)', 'V', 0, (190, 264), (180, 270), '190~264 V'),
+  ('충전', 'acVoltsCharge', 'AC 입력 전압 (AC 충전 중)', 'V', 0, (190, 264), (180, 270), '190~264 V'),
   ('충전', 'pilotHighCharge', '파일럿 전압 (충전 중)', 'V', 2, (5.0, 7.0), None, 'J1772 충전 중 6 V'),
   ('충전', 'pilotLowCharge', '파일럿 음전압 (충전 중)', 'V', 2, (None, -11.0), (None, -10.0), 'J1772 −12 V · 높으면 충전기/배선 의심'),
   ('열관리', 'refrigPressure', '냉매 압력', 'bar', 1, None, None, ''),

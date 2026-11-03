@@ -249,3 +249,11 @@ def test_old_swapped_lifetime_counters_do_not_split_the_pack():
     {'kwhChargeTotal': 76252.8, 'kwhDischargeTotal': 71908.4}
   ok = {'kwhChargeTotal': 76264.7, 'kwhDischargeTotal': 71915.3}
   assert daily.unswap_lifetime(dict(ok)) == ok
+
+
+def test_ac_only_checks_are_not_fed_by_a_dc_charge():
+  data = Path(__file__).parent / 'data'
+  dc = vlog_api.file_stats(str(data / 'raw_dc_unplug_drive_20261031.jsonl.gz'))
+  assert 'acVoltsCharge' not in dc and 'chargeDeltaMv' not in dc
+  ac = vlog_api.file_stats(str(RAW))
+  assert 200 < ac['acVoltsCharge'][0] <= ac['acVoltsCharge'][1] < 260

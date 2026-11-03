@@ -213,6 +213,7 @@ DECODERS = {
 MIN_LEN = {0x102: 2, 0x302: 3, 0x382: 8, 0x232: 4, 0x266: 8, 0x2E5: 7, 0x116: 4, 0x106: 7, 0x154: 7,
            0x1D4: 7, 0x210: 6, 0x3D2: 8, 0x562: 4, 0x306: 3, 0x338: 6}
 CELL_ID = 0x6F2
+TEMP_SNA = 0x2000     # 14-bit most negative (-99.9 C): a module temperature slot with no value
 WATCH_IDS = sorted(DECODERS) + [CELL_ID]
 # All 96 brick voltages count as one measurement only when every slot arrived within this many
 # seconds of the others. Driving, a sweep catches ~11 of the 24 frames, so the grid mixes frames read
@@ -252,6 +253,8 @@ class TeslaSXState:
           self.cells_v_at[idx * 4 + k] = t
       elif idx < 32:
         for k, v in enumerate(vals):
+          if v & 0x3FFF == TEMP_SNA:
+            continue    # not a reading: one frame on 2026-11-01 14:28 had all four at -99.9 C, a 134.6 C 'spread'
           self.cells_t[(idx - 24) * 4 + k] = round(_s(v, 14) * 0.0122, 1)
       self._summarise_cells(t)
       return

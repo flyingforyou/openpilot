@@ -159,3 +159,10 @@ def test_short_frames_are_ignored():
   s = t.TeslaSXState()
   s.feed(0x382, b('FC 9A'), 0.0)
   assert s.values == {}
+
+
+def test_module_temperature_sna_is_not_a_reading():
+  # real frame, 2026-11-01 14:28:35: index 29 with all four temperatures at 0x2000 (-99.9 C)
+  s = t.TeslaSXState()
+  s.feed(0x6F2, b('1D 00 20 00 08 00 02 80'), 0.0)
+  assert s.cells_t[20:24] == [None] * 4 and 'moduleTempMin' not in s.values
