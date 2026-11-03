@@ -59,7 +59,12 @@ GEARS = {'park': 'P', 'drive': 'D', 'reverse': 'R', 'neutral': 'N'}
 # DISCOVERY is listened to one per cycle, raw only, so the candidates (0x3F8 TPMS?, ...) build up a
 # record without a decoder. 0x202/0x332 left it on 2026-10-30 once decoded (tesla_pt.BMS_LIMITS) and
 # rotate in every mode, driving included: their check against 0x232 needs driving frames.
-DISCOVERY = [0x3F8, 0x388, 0x246, 0x528, 0x467, 0x252, 0x3F2, 0x51F, 0x21C, 0x37A, 0x33A, 0x39A]
+# The THC_* IDs talas9 names all end in A; these xxA IDs on the diag port are not in its tables. The cabin
+# PTC heater has no known broadcast (it sits on its own 250 kbps link to the THC), so whatever THC
+# says about it would be among them -- most read all zero on the 10/27 capture, parked with no heat.
+THC_UNKNOWN = [0x31A, 0x34A, 0x35A, 0x38A, 0x3AA, 0x3BA, 0x3CA, 0x3EA, 0x48A, 0x49A, 0x4AA, 0x4BA, 0x51A,
+               0x53A, 0x62A, 0x64A, 0x65A, 0x66A]
+DISCOVERY = [0x3F8, 0x388, 0x246, 0x528, 0x467, 0x252, 0x3F2, 0x51F, 0x21C, 0x37A, 0x33A, 0x39A] + THC_UNKNOWN
 RETRY_S = 15.0
 DWELL = 0.15
 # ~1 Hz messages: 0.15 s caught 0x382 about 30 times an hour while charging. Wait for one frame.
