@@ -4363,7 +4363,7 @@ const ST={OK:'완전',PARTIAL:'일부',NO_DATA:'없음'};
 const MODE={drive:'주행',charge:'충전',park:'주차'};
 const at=a=>!a?'':[a.mode?MODE[a.mode]:null,a.soc!=null?'SOC '+f(a.soc,0)+'%':null,a.temp!=null?f(a.temp,1)+' °C':null,a.i!=null?f(a.i,0)+' A':null,a.mph!=null&&a.mode==='drive'?f(a.mph,0)+' mph':null].filter(x=>x).join(' · ');
 const METRICS=[['nominalFullPack','공칭 완충 용량','kWh',2,'ok'],['soh','SOH (신품 대비)','%',1,'ok'],['cellDeltaMv','셀 편차 (휴지·동시 측정)','mV',1,'low'],
-  ['rMohm','내부저항 (같은 조건)','mΩ',1,'r'],['tempMax','모듈 최고 온도','°C',1,''],['miles','일일 주행거리','mi',1,''],['chargedKwh','일일 충전량 (팩 유입)','kWh',2,''],['whPerMi','일일 전비 (거리 가중)','Wh/mi',0,'']];
+  ['rMohm','내부저항 (같은 조건)','mΩ',1,'r'],['tempMax','모듈 최고 온도','°C',1,''],['miles','일일 주행거리','mi',1,''],['chargedKwh','일일 충전량 (팩 유입)','kWh',2,''],['whPerMi','일일 전비 (거리 가중)','Wh/mi',0,''],['avgMph','일일 평균 속도 (총거리÷총시간)','mph',1,'']];
 let IDX=null,RANGE=30,PACK='',SEL=null;
 async function load(){
   try{IDX=await (await fetch('/api/daily'+(PACK?'?pack='+encodeURIComponent(PACK):''))).json();}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';return;}
@@ -4458,11 +4458,12 @@ async function openDay(d){
   // Per drive: what the Wh/mi is made of. 'other' is a roughly constant kW (cabin heat/AC, battery
   // heating, pumps, motor losses the car does not report) and so costs more per mile the slower the drive.
   const sg=x=>x==null?'–':(x>0?'+':'')+x;
-  h+='<div class="h3">주행별 전비 (같은 거리라도 다른 이유)</div><div class="sc"><table><thead><tr><th>시작 · 거리</th><th class="r">평균 속도</th><th class="r">Wh/mi<br><small>모터 · 기타</small></th><th class="r">고도 변화<br><small>Wh/mi 몫</small></th></tr></thead><tbody>'
+  h+='<div class="h3">주행별 전비 (같은 거리라도 다른 이유)</div><div class="sc"><table><thead><tr><th>시작</th><th class="r">평균</th><th class="r">Wh/mi</th><th class="r">고도<br><small>Wh/mi</small></th></tr></thead><tbody>'
     +((E.driveList||[]).map(r=>{const S=r.split||{},wh=r.whPerMi!=null?r.whPerMi:r.whPerMiPart;
-      return `<tr><td>${tm(r.start)}<br><small class="na">${f(r.miles,1)} mi · ${dur(r.durationS)}</small></td>`
-      +`<td class="r">${f(r.avgMph,0)} mph${r.movingMph!=null?`<br><small class="na">이동 중 ${f(r.movingMph,0)}</small>`:''}</td>`
-      +`<td class="r"><b>${wh==null?'–':f(wh,0)}</b>${r.whPerMi==null&&wh!=null?' <span class="pill low" title="전력이 일부 구간만 기록됨">일부</span>':''}<br><small class="na">${S.mech!=null?`모터 ${S.mech} · 기타 ${S.other==null?'–':S.other}${r.otherKw!=null?` (${f(r.otherKw,1)} kW)`:''}`:'분해 불가 (모터 출력 수신 부족)'}</small></td>`
+      const hm=new Date(r.start*1000).toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',hour12:false});
+      return `<tr><td>${hm}<br><small class="na">${f(r.miles,1)} mi<br>${dur(r.durationS)}</small></td>`
+      +`<td class="r">${f(r.avgMph,0)} mph${r.movingMph!=null?`<br><small class="na">이동 ${f(r.movingMph,0)}</small>`:''}</td>`
+      +`<td class="r"><b>${wh==null?'–':f(wh,0)}</b>${r.whPerMi==null&&wh!=null?' <span class="pill low" title="전력이 일부 구간만 기록됨">일부</span>':''}<br><small class="na">${S.mech!=null?`모터 ${S.mech}<br>기타 ${S.other==null?'–':S.other}${r.otherKw!=null?` · ${f(r.otherKw,1)} kW`:''}`:'분해 불가'}</small></td>`
       +`<td class="r">${r.elevNetM==null?'–':sg(r.elevNetM)+' m'}<br><small class="na">${r.climbWhPerMi==null?'':sg(r.climbWhPerMi)}</small></td></tr>`;}).join('')
     ||'<tr><td colspan="4" class="na">주행 없음</td></tr>')+'</tbody></table></div>'
     +'<p class="na" style="font-size:11.5px;margin:4px 2px 10px">모터 = 바퀴로 나간 일(오르막·가속·공기저항 포함). 기타 = 공조·히터·펌프·모터 손실처럼 시간당 거의 일정한 kW라서 느리게(정체·신호) 달릴수록 mi당 커짐. 고도 몫 = 출발→도착 고도차를 들어 올리는 데 든 에너지(오르막 +, 내리막 −, 차량 2.55 t 기준), 모터 값 안에 포함됨.</p>';

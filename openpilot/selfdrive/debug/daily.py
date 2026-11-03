@@ -808,7 +808,7 @@ def index_row(s: dict) -> dict:
 
 
 # ---- trend ---------------------------------------------------------------------------------------------
-TREND_METRICS = ('nominalFullPack', 'soh', 'cellDeltaMv', 'rMohm', 'tempMax', 'miles', 'chargedKwh', 'whPerMi')
+TREND_METRICS = ('nominalFullPack', 'soh', 'cellDeltaMv', 'rMohm', 'tempMax', 'miles', 'chargedKwh', 'whPerMi', 'avgMph')
 WHOLE_DAY_METRICS = ('miles', 'chargedKwh')   # a partial day's figure covers only what was recorded
 
 
