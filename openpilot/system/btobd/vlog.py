@@ -185,6 +185,31 @@ def energy_check(d: dict) -> dict:
   return out
 
 
+# Where a drive's energy went, from what the car reports alongside pack power: both motors' mechanical
+# output (0x266/0x2E5, climbing included), their reported dissipation and the DC-DC input (12 V side).
+# The rest is everything else drawing on the pack -- cabin heat/AC, battery heating, pumps, and motor
+# losses the dissipation figure does not carry -- and it runs as a roughly constant kW, so it costs per
+# mile what it costs per hour divided by speed. On 2026-10-31..11-03 it was 2.0-5.7 kW; with the drive's
+# net climb it explained most of the 291-444 Wh/mi spread between drives of the same length.
+SPLIT_MIN_SHARE = 0.8      # motor power heard over this share of the covered time, or no split
+
+
+def split_kw(v: dict) -> tuple[float, float, float] | None:
+  r, f = v.get('rearMechPower'), v.get('frontMechPower')
+  if r is None or f is None:
+    return None
+  loss = ((v.get('rearDissipation') or 0.0) + (v.get('frontDissipation') or 0.0)) / 1000.0
+  return r + f, loss, (v.get('dcdcInputPower') or 0.0) / 1000.0
+
+
+def energy_split(sp: list | None, covered_s: float, kind: str) -> dict:
+  if kind != 'DRIVE' or not sp or covered_s <= 0 or sp[4] < SPLIT_MIN_SHARE * covered_s:
+    return {}
+  out, mech, loss, dcdc, secs = sp
+  return {'mechKwh': round(mech, 3), 'duLossKwh': round(loss, 3), 'dcdcKwh': round(dcdc, 3),
+          'otherKw': round((out - mech - loss - dcdc) / (secs / 3600.0), 2), 'splitShare': round(secs / covered_s, 3)}
+
+
 class Session:
   def __init__(self, kind: str, t: float, v: dict):
     self.d = {'type': kind, 'start': t, 'end': t, 'socStart': v.get(SOC_KEY), 'socEnd': v.get(SOC_KEY),
@@ -193,7 +218,8 @@ class Session:
               'samples': 0, 'staleSamples': 0, 'gapS': 0.0, 'coveredS': 0.0, 'miSpeed': 0.0,
               'tempMin': None, 'tempMax': None, 'tempStart': None, 'tempEnd': None, 'cellDeltaSyncMax': None,
               'events': [], 'flags': [], 'socFirstAt': {}, 'socBinS': {}, 'socPctS': {}, 'curve': {},
-              'limitMinDischarge': None, 'limitMinRegen': None, 'counters': {}}
+              'limitMinDischarge': None, 'limitMinRegen': None, 'counters': {},
+              'split': [0.0, 0.0, 0.0, 0.0, 0.0]}   # pack out, motor output, drive-unit loss, DC-DC kWh; seconds
     self._last_kw_t: float | None = None
     self._last_kw: float | None = None
     self._last_spd_t: float | None = None
@@ -230,6 +256,11 @@ class Session:
         else:
           d['kwhOut'] -= e
         d['coveredS'] += dt
+        sp = split_kw(v)
+        if sp is not None:
+          for k, x in enumerate((-kw, *sp)):
+            d['split'][k] += x * dt / 3600.0
+          d['split'][4] += dt
         if self._last_soc is not None:
           b = str(int(self._last_soc // 10 * 10))
           d['socBinS'][b] = d['socBinS'].get(b, 0.0) + dt
@@ -311,6 +342,7 @@ class Session:
     d.pop('kwSum')
     d.update(energy_check(d))
     d.pop('counters', None)
+    d.update(energy_split(d.pop('split', None), d['coveredS'], d['type']))
     if reason:
       d['flags'].append(reason)
     if d['missingRate'] and d['missingRate'] > 0.2:

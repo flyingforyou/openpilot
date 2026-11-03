@@ -4234,6 +4234,9 @@ async function openSession(s){
       +kv('평균 속도',s.avgMph==null?'–':`${f(s.avgMph,1)} mph (정차 포함)`+(s.movingMph!=null?` · ${f(s.movingMph,1)} mph (이동 중)`:''))
       +kv('효율',(s.whPerMi!=null?f(s.whPerMi,0)+' Wh/mi':s.whPerMiPart!=null?`${f(s.whPerMiPart,0)} Wh/mi (기록된 ${f(s.partMiles,2)} mi만, 참고값)`:'–')
         +((s.flags||[]).includes('distance-from-route')?' <span class="na">(속도 수신이 드물어 거리는 openpilot 기준)</span>':''))
+      +(s.mechKwh!=null&&s.miles?kv('전비 구성',`모터 ${f(s.mechKwh*1000/s.miles,0)} · 구동 손실 ${f(s.duLossKwh*1000/s.miles,0)} · DC-DC ${f(s.dcdcKwh*1000/s.miles,0)} Wh/mi · 기타 ${f(s.otherKw,1)} kW`
+        +(s.avgMph?` (= ${f(s.otherKw*1000/s.avgMph,0)} Wh/mi)`:'')):'')
+      +(s.elevNetM!=null?kv('고도 변화',`${s.elevNetM>0?'+':''}${s.elevNetM} m (누적 오르막 ${s.climbM} m)`):'')
       +kv('동글 기록',s.coverage!=null?`${Math.round(s.coverage*100)}% · ${s.parts||0}구간`+(s.partList?' ('+s.partList.map(p=>dt(p.start).slice(-5)+'~'+dt(p.end).slice(-5)).join(', ')+')':''):'–')
       +(s.movingS!=null?kv('움직인 시간',dur(s.movingS)):'')+kv('회생 (기록 구간)',`${f(s.regenKwh,2)} kWh`):'')
     +(s.min10to80!=null?kv('10→80% (실측)',s.min10to80+'분'):'')+(s.min20to80!=null?kv('20→80% (실측)',s.min20to80+'분'):'')
@@ -4452,6 +4455,17 @@ async function openDay(d){
   const cv=(k,l)=>cnt[k]?`${l} ${f(cnt[k].diff,k==='batteryOdometerMi'?1:2)}${cnt[k].coversSessions?'':' <span class="pill low" title="첫·끝 수신이 세션을 다 감싸지 못함">구간 일부</span>'}<br><small>${tm(cnt[k].from)} ~ ${tm(cnt[k].to)} · ${f(cnt[k].first,1)} → ${f(cnt[k].last,1)}</small>`:'';
   h+='<div class="h3">에너지 · 주행</div><div class="kv">'+kv('누적 충전 차이 (kWh)',cv('kwhChargeTotal','')||'<span class="na">–</span>')+kv('누적 방전 차이 (kWh)',cv('kwhDischargeTotal','')||'<span class="na">–</span>')
     +kv('배터리 주행거리 차이 (mi)',cv('batteryOdometerMi','')||'<span class="na">–</span>')+kv('주행 세션',`${E.drives||0}회 · ${f(E.driveSessionsMi,1)} mi`)+kv('충전 세션 유입',`${f(E.chargeSessionsKwh,2)} kWh`)+'</div>';
+  // Per drive: what the Wh/mi is made of. 'other' is a roughly constant kW (cabin heat/AC, battery
+  // heating, pumps, motor losses the car does not report) and so costs more per mile the slower the drive.
+  const sg=x=>x==null?'–':(x>0?'+':'')+x;
+  h+='<div class="h3">주행별 전비 (같은 거리라도 다른 이유)</div><div class="sc"><table><thead><tr><th>시작 · 거리</th><th class="r">평균 속도</th><th class="r">Wh/mi<br><small>모터 · 기타</small></th><th class="r">고도 변화<br><small>Wh/mi 몫</small></th></tr></thead><tbody>'
+    +((E.driveList||[]).map(r=>{const S=r.split||{},wh=r.whPerMi!=null?r.whPerMi:r.whPerMiPart;
+      return `<tr><td>${tm(r.start)}<br><small class="na">${f(r.miles,1)} mi · ${dur(r.durationS)}</small></td>`
+      +`<td class="r">${f(r.avgMph,0)} mph${r.movingMph!=null?`<br><small class="na">이동 중 ${f(r.movingMph,0)}</small>`:''}</td>`
+      +`<td class="r"><b>${wh==null?'–':f(wh,0)}</b>${r.whPerMi==null&&wh!=null?' <span class="pill low" title="전력이 일부 구간만 기록됨">일부</span>':''}<br><small class="na">${S.mech!=null?`모터 ${S.mech} · 기타 ${S.other==null?'–':S.other}${r.otherKw!=null?` (${f(r.otherKw,1)} kW)`:''}`:'분해 불가 (모터 출력 수신 부족)'}</small></td>`
+      +`<td class="r">${r.elevNetM==null?'–':sg(r.elevNetM)+' m'}<br><small class="na">${r.climbWhPerMi==null?'':sg(r.climbWhPerMi)}</small></td></tr>`;}).join('')
+    ||'<tr><td colspan="4" class="na">주행 없음</td></tr>')+'</tbody></table></div>'
+    +'<p class="na" style="font-size:11.5px;margin:4px 2px 10px">모터 = 바퀴로 나간 일(오르막·가속·공기저항 포함). 기타 = 공조·히터·펌프·모터 손실처럼 시간당 거의 일정한 kW라서 느리게(정체·신호) 달릴수록 mi당 커짐. 고도 몫 = 출발→도착 고도차를 들어 올리는 데 든 에너지(오르막 +, 내리막 −, 차량 2.55 t 기준), 모터 값 안에 포함됨.</p>';
   const L=D.limits||{},V=D.lowVoltage||{};
   h+='<div class="h3">BMS 한계 · 12V (측정 조건 포함)</div><div class="kv">'+kv('BMS 방전 한계',ext(L.maxDischargePower,'kW',0))+kv('BMS 회생 한계',ext(L.maxRegenPower,'kW',0))
     +kv('충전·회생 허용 전류 (0x202)',ext(L.bmsMaxChargeA,'A',0))+kv('방전 허용 전류 (0x202)',ext(L.bmsMaxDischargeA,'A',0))+kv('충전 전력',ext(L.chargeKw,'kW',2))+kv('주행 팩 출력',ext(L.driveKw,'kW',0))

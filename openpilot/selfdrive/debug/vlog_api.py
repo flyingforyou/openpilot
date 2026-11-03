@@ -119,6 +119,7 @@ def _route_summary(paths: list) -> dict | None:
   import zstandard
   from openpilot.cereal import log as capnp_log
   cs: list = []
+  alt: list = []
   off = gps_off = init_off = None
   for p in paths:
     try:
@@ -133,6 +134,8 @@ def _route_summary(paths: list) -> dict | None:
           off = m.clocks.wallTimeNanos / 1e9 - m.logMonoTime / 1e9
         elif w == 'gpsLocationExternal' and m.gpsLocationExternal.hasFix and m.gpsLocationExternal.unixTimestampMillis > 0:
           gps_off = m.gpsLocationExternal.unixTimestampMillis / 1000 - m.logMonoTime / 1e9
+          if m.gpsLocationExternal.verticalAccuracy < ALT_MAX_ERR_M:
+            alt.append(m.gpsLocationExternal.altitude)
         elif w == 'initData' and init_off is None:
           init_off = m.initData.wallTimeNanos / 1e9 - m.logMonoTime / 1e9
     except Exception:
@@ -150,7 +153,31 @@ def _route_summary(paths: list) -> dict | None:
       if v0 > 0.5:
         moving += dt
   return {'start': round(cs[0][0] + off, 1), 'end': round(cs[-1][0] + off, 1), 'miles': round(dist / 1609.344, 2),
-          'movingS': round(moving), 'clock': 'gps' if off == gps_off else 'system'}
+          'movingS': round(moving), 'clock': 'gps' if off == gps_off else 'system', **elevation(alt)}
+
+
+ALT_MAX_ERR_M = 15.0
+ALT_HYST_M = 5.0
+ROUTE_SUMMARY_V = 2      # bump when _route_summary gains a field: cached routes are summarised again
+
+
+def elevation(alt: list) -> dict:
+  """Net and total climb (m) from GPS altitude (qlog, ~1 Hz). The ends are medians of the first and last
+  30 fixes, and the climb counts rises of the 31-fix (~30 s) running mean only past ALT_HYST_M from the lowest
+  point before them: summing every small rise turned 3 m of GPS noise into ~50 m of 'climb'. On 2026-10-29..11-03 the two usual places were ~80 m apart, worth
+  ~40 Wh/mi either way over 13-16 mi (2.55 t)."""
+  if len(alt) < 60:
+    return {}
+  sm = [sum(alt[max(0, i - 15):i + 16]) / len(alt[max(0, i - 15):i + 16]) for i in range(len(alt))]
+  climb, low = 0.0, sm[0]
+  for a in sm:
+    if a < low:
+      low = a
+    elif a - low > ALT_HYST_M:      # a rise counts once it clears the noise, from the lowest point before it
+      climb += a - low
+      low = a
+  a0, a1 = sorted(alt[:30])[15], sorted(alt[-30:])[15]
+  return {'elevNetM': round(a1 - a0), 'climbM': round(climb)}
 
 
 def _route_dirs(days: float) -> dict:
@@ -188,7 +215,7 @@ def _refresh_routes(days: float) -> None:
   try:
     for name, segs in _route_dirs(days).items():
       segs.sort()
-      key = f'{len(segs)}:{int(max(s[2] for s in segs))}'
+      key = f'{ROUTE_SUMMARY_V}:{len(segs)}:{int(max(s[2] for s in segs))}'
       if cache.get(name, {}).get('key') == key:
         continue
       # a route still being written is summarised again once it stops growing
@@ -270,6 +297,15 @@ def merge_drives(sessions: list, routes: list) -> list:
       wh = round(net * 1000 / dist, 1)
       row['whPerMi' if row['coverage'] >= 0.8 else 'whPerMiPart'] = wh
     row['regenKwh'] = row['kwhIn']
+    for k in ('elevNetM', 'climbM'):
+      if r.get(k) is not None:
+        row[k] = r[k]
+    # where the energy went (vlog.energy_split), when every part has it
+    if all('mechKwh' in s for s in parts):
+      for k in ('mechKwh', 'duLossKwh', 'dcdcKwh'):
+        row[k] = round(sum(s[k] for s in parts), 3)
+      hrs = sum(s['durationS'] * s['splitShare'] for s in parts) / 3600
+      row['otherKw'] = round(sum(s['otherKw'] * s['durationS'] * s['splitShare'] for s in parts) / 3600 / hrs, 2) if hrs > 0 else None
     if all('bmsKwhIn' in s for s in parts):
       row['bmsKwhIn'] = round(sum(s['bmsKwhIn'] for s in parts), 3)
       row['bmsKwhOut'] = round(sum(s['bmsKwhOut'] for s in parts), 3)
@@ -490,7 +526,8 @@ def _csv(rows: list, cols: list) -> bytes:
 
 SESSION_COLS = ['source', 'type', 'route', 'start', 'end', 'durationS', 'movingS', 'coverage', 'parts', 'socStart', 'socEnd',
                 'kwhIn', 'kwhOut', 'avgKw', 'kwMax', 'kwMin', 'miles', 'milesSource', 'partMiles', 'whPerMi', 'whPerMiPart', 'regenKwh', 'min10to80', 'min20to80', 'tempMin', 'tempMax',
-                'cellDeltaSyncMax', 'limitMinDischarge', 'limitMinRegen', 'samples', 'gapS', 'missingRate', 'staleRate', 'flags']
+                'cellDeltaSyncMax', 'limitMinDischarge', 'limitMinRegen', 'samples', 'gapS', 'missingRate', 'staleRate',
+                'avgMph', 'movingMph', 'mechKwh', 'duLossKwh', 'dcdcKwh', 'otherKw', 'elevNetM', 'climbM', 'flags']
 
 
 def export(kind: str, arg: str = '') -> tuple[bytes, str] | None:

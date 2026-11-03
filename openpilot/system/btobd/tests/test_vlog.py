@@ -516,3 +516,19 @@ def test_drive_with_gear_every_other_cycle_is_held_by_onroad():
     v = {'gear': 'D', 'vehicleSpeedMph': 40.0, 'packCurrent': -80.0} if k % 2 else {'packCurrent': -80.0}
     m.update(40.0 + 4 * k, v, onroad=True)
   assert m.mode == 'DRIVE'
+
+
+def test_drive_energy_split_into_motor_loss_dcdc_and_other():
+  # 20 kW out of the pack, 15 kW at the wheels, 0.5 kW drive-unit loss, 0.3 kW DC-DC: 4.2 kW is the rest
+  s = vlog.Session('DRIVE', 0.0, {})
+  for k in range(0, 3601, 4):
+    s.add(float(k), {'packVoltage': 400.0, 'packCurrent': -50.0, 'rearMechPower': 10.0, 'frontMechPower': 5.0,
+                     'rearDissipation': 375.0, 'frontDissipation': 125.0, 'dcdcInputPower': 300.0,
+                     'vehicleSpeedMph': 30.0}, 0)
+  d = s.finish()
+  assert d['mechKwh'] == pytest.approx(15.0, rel=0.01) and d['duLossKwh'] == pytest.approx(0.5, rel=0.01)
+  assert d['otherKw'] == pytest.approx(4.2, abs=0.01) and d['splitShare'] == 1.0
+  s = vlog.Session('DRIVE', 0.0, {})                 # motor power not heard: no split rather than a wrong one
+  for k in range(0, 600, 4):
+    s.add(float(k), {'packVoltage': 400.0, 'packCurrent': -50.0}, 0)
+  assert 'otherKw' not in s.finish()

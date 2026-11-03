@@ -37,7 +37,7 @@ from zoneinfo import ZoneInfo
 from openpilot.selfdrive.debug import vlog_api
 from openpilot.system.btobd import tdiag, tesla_pt, vlog
 
-VERSION = 6
+VERSION = 7
 DAILY_DIR = os.path.join(tdiag.LOG_DIR, 'daily')
 DEFAULT_TZ = 'America/Los_Angeles'
 # The device boots on a stale clock (2026-07-28) until NTP/GPS sets it; frames stamped before this are
@@ -465,6 +465,33 @@ def _awake_minutes(power: list, t0: float, t1: float) -> int | None:
   return sum(1 for r in rows if vlog.power_state(r) in ('AWAKE', 'DRIVE'))
 
 
+PACK_MASS_KG = 2550.0       # Model X 90D curb ~2,470 kg plus a driver: climbing 1 m takes 6.9 Wh
+DRIVE_LIST_MIN_MI = 0.3
+
+
+def drive_list(drives: list, routes: list) -> list:
+  """One row per drive (openpilot's route where there is one, as /vlog shows it), with what its Wh/mi
+  is made of: motor output, drive-unit loss, DC-DC, and the rest as a constant kW whose cost per mile
+  is that over the speed (vlog.energy_split); climbing's share from the route's GPS net elevation."""
+  rows = []
+  for x in vlog_api.merge_drives(drives, routes):
+    mi = x.get('miles')
+    if x.get('type') != 'DRIVE' or not mi or mi < DRIVE_LIST_MIN_MI:
+      continue
+    hrs = x['durationS'] / 3600 if x.get('durationS') else None
+    r = {k: x.get(k) for k in ('start', 'end', 'durationS', 'miles', 'milesSource', 'movingMph', 'whPerMi', 'whPerMiPart',
+                               'coverage', 'elevNetM', 'climbM', 'otherKw', 'tempStart', 'tempMin', 'tempMax', 'route', 'flags')}
+    r['avgMph'] = x.get('avgMph') or (round(mi / hrs, 1) if hrs else None)
+    if x.get('mechKwh') is not None:
+      r['split'] = {'mech': round(x['mechKwh'] * 1000 / mi), 'duLoss': round(x['duLossKwh'] * 1000 / mi),
+                    'dcdc': round(x['dcdcKwh'] * 1000 / mi),
+                    'other': round(x['otherKw'] * 1000 / r['avgMph']) if x.get('otherKw') is not None and r['avgMph'] else None}
+    if x.get('elevNetM') is not None:
+      r['climbWhPerMi'] = round(PACK_MASS_KG * 9.81 * x['elevNetM'] / 3600 / mi)     # Wh per mile, + uphill
+    rows.append(r)
+  return rows
+
+
 def build_day(d: str, parts: list, tz: ZoneInfo, ctx: dict) -> dict:
   """One day's snapshot from its partial summaries and the day's sessions/events/rx/power rows."""
   t0, t1 = day_bounds(d, tz)
@@ -524,6 +551,8 @@ def build_day(d: str, parts: list, tz: ZoneInfo, ctx: dict) -> dict:
                'avgMph': round(j_mi / j_h, 1) if j_h > 0 else None,
                'whPerMi': round(sum(s['kwhOut'] - s['kwhIn'] for s in judged) * 1000 / j_mi, 1) if j_mi >= 1 else None,
                'netOutKwh': round(sum((s.get('kwhOut') or 0) - (s.get('kwhIn') or 0) for s in drives), 3)}
+  t0, t1 = day_bounds(d, tz)
+  routes = [r for r in ctx.get('routes', []) if t0 <= r['start'] < t1]
   kinds = {'AC': 0, 'DC': 0, 'unknown': 0}
   for c in charges:
     kinds[{'AC_CHARGE': 'AC', 'DC_CHARGE': 'DC'}.get(c['type'], 'unknown')] += 1
@@ -569,6 +598,7 @@ def build_day(d: str, parts: list, tz: ZoneInfo, ctx: dict) -> dict:
                   'energy': {'counters': cum, 'chargeSessionsKwh': round(sum(c['kwhIn'] or 0 for c in charges), 3),
                              'odometerMi': cum['batteryOdometerMi']['diff'] if cum.get('batteryOdometerMi', {}).get('coversSessions') else None,
                              'driveSessionsMi': round(drive_mi, 2), 'drives': len(drives), 'driveSummary': drive_sum,
+                             'driveList': drive_list(drives, routes),
                              'chargeKinds': kinds, 'chargeKwMax': max((c['kwMax'] for c in charges if c.get('kwMax') is not None), default=None)},
                   'limits': {k: _ext(m, k) for k in ('maxDischargePower', 'maxRegenPower', 'bmsMaxChargeA', 'bmsMaxDischargeA',
                                                        'bmsMaxChargeV', 'bmsMinDischargeV', 'chargeKw', 'driveKw')},
@@ -691,6 +721,8 @@ def ensure(vlog_dir: str | None = None, out_dir: str = DAILY_DIR, force: bool = 
   ctx = {'sessions': sessions, 'events': vlog.read_jsonl(os.path.join(vlog_dir, 'events.jsonl')),
          'rx': vlog.read_jsonl(os.path.join(vlog_dir, 'rx.jsonl')),
          'power': vlog.read_jsonl(os.path.join(vlog_dir, 'power.jsonl')), 'packNewKwh': ref,
+         'routes': sorted(({'route': n, **{k: v for k, v in r.items() if k != 'key'}} for n, r in vlog_api._load_routes().items()
+                           if r.get('start') and r.get('end')), key=lambda r: r['start']) if vlog_dir == vlog_api.VLOG_DIR else [],
          'today': local_date(now, tz)}
   # A snapshot outlives its source: raw is pruned oldest first and live.jsonl rotates, and a day built
   # again from what is left would be a worse record of it (on 2026-11-03 the rotation took 10/27-28
@@ -716,6 +748,7 @@ def ensure(vlog_dir: str | None = None, out_dir: str = DAILY_DIR, force: bool = 
            'events': _sig([e for e in ctx['events'] if t0 <= e.get('t', 0) < t1]),
            'rx': _sig([r for r in ctx['rx'] if t0 <= r.get('t', 0) < t1]),
            'power': _sig([r['t'] for r in ctx['power'] if t0 <= r['t'] < t1]),
+           'routes': _sig([r for r in ctx['routes'] if t0 <= r['start'] < t1]),
            'prevPack': prev.get('packId') if prev else None}
     sig = _sig(src)
     path = os.path.join(out_dir, f'{ds}.json')

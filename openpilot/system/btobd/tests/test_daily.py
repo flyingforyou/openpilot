@@ -257,3 +257,23 @@ def test_ac_only_checks_are_not_fed_by_a_dc_charge():
   assert 'acVoltsCharge' not in dc and 'chargeDeltaMv' not in dc
   ac = vlog_api.file_stats(str(RAW))
   assert 200 < ac['acVoltsCharge'][0] <= ac['acVoltsCharge'][1] < 260
+
+
+def test_elevation_from_noisy_gps():
+  import random
+  rnd = random.Random(1)
+  up = [-30 + 80 * min(1, max(0, (k - 100) / 800)) + rnd.gauss(0, 3) for k in range(1000)]    # +80 m, GPS noise 3 m
+  e = vlog_api.elevation(up)
+  assert e['elevNetM'] == pytest.approx(80, abs=4) and 75 <= e['climbM'] <= 95                 # noise does not add up
+  assert vlog_api.elevation(up[:30]) == {}
+
+
+def test_drive_list_explains_wh_per_mile():
+  ses = {'type': 'DRIVE', 'start': 1000.0, 'end': 2800.0, 'durationS': 1800.0, 'miles': 15.0, 'kwhOut': 6.0, 'kwhIn': 0.5,
+         'miSpeed': 15.0, 'avgKw': 11.0, 'socStart': 60.0, 'socEnd': 52.0, 'mechKwh': 3.6, 'duLossKwh': 0.1, 'dcdcKwh': 0.08,
+         'otherKw': 3.4, 'splitShare': 0.98}
+  route = {'route': 'r1', 'start': 990.0, 'end': 2810.0, 'miles': 15.2, 'movingS': 1600, 'elevNetM': 80, 'climbM': 110}
+  r, = daily.drive_list([ses], [route])
+  assert r['avgMph'] == pytest.approx(15.2 / 1820 * 3600, abs=0.1) and r['elevNetM'] == 80
+  assert r['split']['mech'] == round(3.6e3 / 15.2) and r['split']['other'] == round(3.4e3 / r['avgMph'])
+  assert r['climbWhPerMi'] == round(2550 * 9.81 * 80 / 3600 / 15.2)
