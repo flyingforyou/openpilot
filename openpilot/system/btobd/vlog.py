@@ -700,7 +700,7 @@ class VehicleLog:
     while self.recent and t - self.recent[0]['t'] > END_KEEP_S:
       self.recent.popleft()
     if self.modes.update(t, v, onroad):
-      self._gap_resolve(False)
+      self._gap_resolve(False, reopen=False)
       if self.session:
         self._append('sessions.jsonl', self._finish())
       self.session = Session(self.modes.mode, self.modes.since, self.held[0][1] if self.held else v)
@@ -787,14 +787,18 @@ class VehicleLog:
       return False
     return None if soc is None else abs(soc - last) <= PARKED_GAP_SOC
 
-  def _gap_resolve(self, keep: bool) -> None:
+  def _gap_resolve(self, keep: bool, reopen: bool = True) -> None:
     """Settle a provisional carry-over across a silence: keep the merged session, or cut it where the
-    silence began and start a new parked session from what came after."""
+    silence began and (reopen) start a new parked session from what came after. A mode change or a
+    close does not reopen: what came after belongs to the next session, or is too short to be one."""
     g, self._gap = self._gap, None
     if g is None or keep:
       return
     self.session = g['snap']
     self._append('sessions.jsonl', self._finish('link-gap'))
+    self.session = None
+    if not reopen:
+      return
     buf = g['buf']
     self.session = Session('PARKED', buf[0][0] if buf else g['since'], buf[0][1] if buf else {})
     for x in buf:
@@ -871,7 +875,7 @@ class VehicleLog:
 
   def close(self, t: float, reason: str = 'stopped') -> None:
     self._flush_held()      # a mode that never won: its samples stay with the session they came in
-    self._gap_resolve(False)
+    self._gap_resolve(False, reopen=False)
     if self.session:
       self.session.d['end'] = max(self.session.d['end'], t if t else 0)
       self._append('sessions.jsonl', self._finish(reason))

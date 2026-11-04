@@ -673,3 +673,19 @@ def test_a_silence_is_judged_by_the_first_soc_heard_after_it(soc_after, n):
   assert len(s) == n and all(x['type'] == 'PARKED' for x in s)
   if n == 2:
     assert s[0]['end'] < t + 200 and s[1]['start'] >= t + 3 * 3600
+
+
+def test_a_drive_after_a_silence_leaves_no_empty_parked_fragment():
+  # 10/30 07:17: woke parked with no SOC yet, then drove -- the cut left a zero-length parked session
+  vl = vlog.VehicleLog('', write=False)
+  t = 1_793_322_000.0
+  v = {'gear': 'P', 'socDisplay': 56.9, 'packVoltage': 390.0, 'packCurrent': -0.4}
+  for i in range(30):
+    vl.update(t + i * 5, v, dict.fromkeys(v, 0.0))
+  quiet = {'gear': 'P', 'packVoltage': 390.0, 'packCurrent': -0.4}
+  vl.update(t + 6 * 3600, quiet, dict.fromkeys(quiet, 0.0))
+  d = {'gear': 'D', 'vehicleSpeedMph': 20.0, 'packVoltage': 380.0, 'packCurrent': -30.0}
+  for i in range(1, 30):
+    vl.update(t + 6 * 3600 + i * 2, d, dict.fromkeys(d, 0.0))
+  vl.close(t + 6 * 3600 + 60)
+  assert [x['type'] for x in vl.out['sessions']] == ['PARKED', 'DRIVE']
