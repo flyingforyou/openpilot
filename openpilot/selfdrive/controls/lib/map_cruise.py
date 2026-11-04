@@ -193,7 +193,10 @@ CURVE_LOOKAHEAD_T = 4.0
 # to need it. This is a protection that did not have to fire, not one measured saving time.
 MAP_CURVE_NEAR = 60.0
 
-OFFSET_SPLIT = 40 * CV.MPH_TO_MS
+# The split sits between 45 and 50: 45 is as fast as city roads are posted here, and +10 on them
+# (MAX 55 on a 45 arterial, 2026-11-03) was too much for the driver. Halfway, so a 45 that arrives
+# as 45.0001 or 44.9999 after the m/s round trip lands on the same side either way.
+OFFSET_SPLIT = 47.5 * CV.MPH_TO_MS
 OFFSET_BELOW = 5 * CV.MPH_TO_MS
 OFFSET_ABOVE = 10 * CV.MPH_TO_MS
 
@@ -303,9 +306,9 @@ class MapCruiseController:
     as `navMap.speedOffset` (UI_userSpeedOffset) and this module ignores it on purpose -- nothing
     reads that field, and nothing should start. It is one number for every road, which is the
     thing this ladder exists to fix: on this car it reads +10 in 99.9% of logged frames, so
-    honouring it would only ever mean "ignore the ladder below 40mph", which is exactly where the
+    honouring it would only ever mean "ignore the ladder up to 45mph", which is exactly where the
     ladder matters most. Differentiating the offset by posted limit is the intended behaviour, so
-    a target that sits +5 rather than +10 under 40mph is correct and not a bug to chase.
+    a target that sits +5 rather than +10 up to 45mph is correct and not a bug to chase.
 
     offset_max (TeslaMapSpeedOffset) caps the ladder from the page: 2026-11-03 the driver read MAX 55
     on a 45 road as the map being wrong, and asked for it to match the sign.
@@ -496,6 +499,10 @@ class MapCruiseController:
     # target's own offset, so the cap cannot be looser than what the map would have asked for.
     if posted > 0.0:
       cap = posted + self._limit_offset(posted)
+      if ramp == RAMP_ON:
+        # the merge guard outranks it: the posted limit on an on-ramp is the road being left, and
+        # with +5 up to 45 a 45 arterial's cap (50) would otherwise hold a merge below the car's speed
+        cap = max(cap, v_ego)
       if self.v_target > cap:
         self.v_target = float(max(MIN_TARGET, cap))
         self.source = 'capped'

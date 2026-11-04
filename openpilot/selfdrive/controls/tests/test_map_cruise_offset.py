@@ -74,19 +74,20 @@ def settle(c, limit_mph, stalk_mph, v_ego_mph=40, n=40, nav=None):
 
 
 class TestPerLimitOffset:
-  """Below 40mph the fleet runs about 5 over, not 10. See OFFSET_SPLIT."""
+  """City limits (up to 45mph) get 5 over, faster roads 10. See OFFSET_SPLIT."""
 
-  @pytest.mark.parametrize("limit,expected", [(25, 30), (30, 35), (35, 40)])
-  def test_low_limits_get_five(self, limit, expected):
+  @pytest.mark.parametrize("limit,expected", [(25, 30), (30, 35), (35, 40), (40, 45), (45, 50)])
+  def test_city_limits_get_five(self, limit, expected):
     assert settle(make(), limit, 70) == pytest.approx(expected, abs=1.0)
 
-  @pytest.mark.parametrize("limit,expected", [(40, 50), (45, 55), (65, 75)])
-  def test_forty_and_up_get_ten(self, limit, expected):
+  @pytest.mark.parametrize("limit,expected", [(50, 60), (55, 65), (65, 75)])
+  def test_fifty_and_up_get_ten(self, limit, expected):
     assert settle(make(), limit, 85) == pytest.approx(expected, abs=1.0)
 
-  def test_split_is_inclusive_at_forty(self):
-    assert (40 * MPH) >= OFFSET_SPLIT
-    assert settle(make(), 40, 85) == pytest.approx(50, abs=1.0)
+  def test_split_is_between_forty_five_and_fifty(self):
+    # 2026-11-03: MAX 55 on a 45 arterial was too much
+    assert (45 * MPH) * 1.001 < OFFSET_SPLIT < (50 * MPH) * 0.999
+    assert settle(make(), 45, 85) == pytest.approx(50, abs=1.0)
 
   def test_car_offset_no_longer_participates(self):
     # UI_userSpeedOffset used to cap the ladder. It is one number for every road and read +10
@@ -99,7 +100,7 @@ class TestPerLimitOffset:
     assert OFFSET_BELOW < OFFSET_ABOVE
 
   @pytest.mark.parametrize("offset,limit,expected", [(0, 45, 45), (0, 25, 25), (5, 45, 50), (5, 25, 30),
-                                                     (10, 45, 55), (10, 25, 30)])
+                                                     (10, 45, 50), (10, 55, 65), (10, 25, 30)])
   def test_page_offset_caps_the_ladder(self, offset, limit, expected):
     # 2026-11-03: a 45 road showed MAX 55 and read as the map being wrong
     c = make()
@@ -124,9 +125,9 @@ class TestStalkIsATriggerNotASetpoint:
   def test_target_ignores_where_the_stalk_sits(self):
     # Same road, three different stalk positions, one answer: the road's.
     c = make()
-    assert settle(c, 45, 40) == pytest.approx(55, abs=1.0)
-    assert settle(c, 45, 55) == pytest.approx(55, abs=1.0)
-    assert settle(c, 45, 80) == pytest.approx(55, abs=1.0)
+    assert settle(c, 45, 40) == pytest.approx(50, abs=1.0)
+    assert settle(c, 45, 55) == pytest.approx(50, abs=1.0)
+    assert settle(c, 45, 80) == pytest.approx(50, abs=1.0)
 
   def test_a_press_does_not_survive_into_the_next_zone(self):
     c = make()
@@ -142,7 +143,7 @@ class TestCapsStillBind:
     # reading on a straight 45 must now leave the posted target alone.
     nav = FakeNav(45, road_class_for(45))
     nav.fleetSplineSpeed = 30 * MPH
-    assert settle(make(use_curve=True), 45, 85, nav=nav) == pytest.approx(55.0, abs=1.0)
+    assert settle(make(use_curve=True), 45, 85, nav=nav) == pytest.approx(50.0, abs=1.0)
 
   def test_ramp_fleet_speed_still_used(self):
     nav = FakeNav(45, road_class_for(45))
@@ -187,16 +188,16 @@ class TestCurveLatAccelCap:
   def test_straight_leaves_the_posted_target_alone(self):
     # No curvature to speak of, so the curvature limit is ~100mph and nothing else caps a
     # non-ramp road: the posted target stands even with the fleet reading well below it.
-    assert self._run(self.make_curve(), 45, 47.0, 3000) == pytest.approx(55.0, abs=1.0)
+    assert self._run(self.make_curve(), 45, 47.0, 3000) == pytest.approx(50.0, abs=1.0)
 
   def test_neither_exceeds_the_map_target(self):
     # Both inputs high -> the posted target still bounds it.
-    assert self._run(self.make_curve(), 45, 80.0, 3000) == pytest.approx(55, abs=1.0)
+    assert self._run(self.make_curve(), 45, 80.0, 3000) == pytest.approx(50, abs=1.0)
 
   def test_off_leaves_the_hairpin_uncapped(self):
     # curve_lat_accel = 0 turns the only geometry cap off. Nothing else looks at the corner, so
     # even the logged hairpin comes back at the posted target -- this is what the toggle costs.
-    assert self._run(self.make_curve(lat_accel=0.0), 45, 28.5, 31) == pytest.approx(55.0, abs=1.0)
+    assert self._run(self.make_curve(lat_accel=0.0), 45, 28.5, 31) == pytest.approx(50.0, abs=1.0)
 
   def test_lower_criterion_slows_more(self):
     tight = self._run(self.make_curve(2.5), 45, 40.0, 100)
@@ -324,13 +325,13 @@ class TestBaseLimitOutvoted:
     """base leading the posted band by a few mph is the normal, useful case."""
     c = make()
     got = settle(c, 45, 70, nav=self._nav(40, 45, road_class=4))
-    assert got == pytest.approx(50, abs=1.0), "a 5 mph lead is base doing its job"
+    assert got == pytest.approx(45, abs=1.0), "a 5 mph lead is base doing its job"
 
   def test_base_higher_than_the_others_is_untouched(self):
     """The rule is one-directional: it only fires when base is the slow outlier."""
     c = make()
     got = settle(c, 35, 70, nav=self._nav(45, 35, road_class=4))
-    assert got == pytest.approx(55, abs=1.0), "base still leads upward"
+    assert got == pytest.approx(50, abs=1.0), "base still leads upward"
 
   def test_never_on_a_ramp(self):
     """Off-ramp: base dropping first is the early warning, not a bad match. 539 of the observed
