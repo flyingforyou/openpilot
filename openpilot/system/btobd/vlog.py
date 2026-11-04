@@ -667,10 +667,16 @@ class VehicleLog:
       # NTP sets it a few minutes in. Monotonic time says nothing happened in between, so what was
       # logged since is moved to the real time, not cut off: until 2026-11-03 the session was closed
       # there, and a drive the device woke for came out as a '7/28' fragment plus the rest.
+      # Monotonic going back is a reboot (a raw replay runs across them), and after a long silence the
+      # car may have done anything: neither carries the session over.
       if self._clock:
-        jump = (t - self._clock[0]) - (mono - self._clock[1])
+        dm = mono - self._clock[1]
+        jump = (t - self._clock[0]) - dm
         if abs(jump) > CLOCK_JUMP_S:
-          self._redate(jump)
+          if 0 <= dm <= LINK_GAP_S:
+            self._redate(jump)
+          elif self.session:
+            self.close(self.session.d['end'], 'restart')
       self._clock = (t, mono)
     if self.session and t - self.session.d['end'] > LINK_GAP_S:
       # the link was down long enough that the car may have done anything meanwhile

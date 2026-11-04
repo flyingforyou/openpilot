@@ -285,6 +285,22 @@ def test_clock_set_after_a_cold_boot_redates_the_drive_instead_of_cutting_it():
   assert s[0]['miles'] == pytest.approx(30 * 59 / 3600, abs=0.01)   # the energy and distance across the jump count
 
 
+def test_a_reboot_in_a_raw_replay_is_not_taken_for_the_clock_being_set():
+  # monotonic starts over at a reboot; the first rebuild with re-dating moved the 11/03 14:40 drive by
+  # the gap between the two boots and gave it a negative duration
+  vl = vlog.VehicleLog('', write=False)
+  t, t2 = 1_793_744_000.0, 1_793_745_600.0
+  v = {'gear': 'D', 'vehicleSpeedMph': 30.0, 'packVoltage': 360.0, 'packCurrent': -40.0}
+  for i in range(30):
+    vl.update(t + i, v, dict.fromkeys(v, 0.0), mono=1000.0 + i)
+  for i in range(30):
+    vl.update(t2 + i, v, dict.fromkeys(v, 0.0), mono=50.0 + i)
+  vl.close(t2 + 30)
+  s = vl.out['sessions']
+  assert len(s) == 2 and 'restart' in s[0]['flags'] and all(x['end'] >= x['start'] for x in s)
+  assert s[0]['start'] == pytest.approx(t, abs=1) and s[1]['start'] == pytest.approx(t2, abs=1)
+
+
 def test_raw_flushed_under_the_stale_clock_goes_out_again_under_the_real_time(tmp_path):
   d = tmp_path / 'vlog'
   vl = vlog.VehicleLog(str(d))
