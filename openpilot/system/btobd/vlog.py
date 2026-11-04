@@ -808,7 +808,7 @@ class VehicleLog:
     # a line is the old clock's when its wall-minus-mono offset is the old one; frames of this cycle may
     # already carry the new time, and a flush that started on an old line put them in the old hour's file
     off = self._clock[0] - self._clock[1]
-    self.raw_buf = [[r[0] + dt, *r[1:]] if abs(r[0] - r[1] - off) < CLOCK_JUMP_S else r
+    self.raw_buf = [[round(r[0] + dt, 3), *r[1:]] if abs(r[0] - r[1] - off) < CLOCK_JUMP_S else r
                     for r in (self.boot_raw or []) + self.raw_buf]
     self.boot_raw = None
     self.raw_flush += dt
