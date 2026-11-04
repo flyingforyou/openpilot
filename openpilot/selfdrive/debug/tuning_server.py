@@ -838,6 +838,18 @@ class State:
           'vEgo': round(cs.vEgo, 2),
           'gap': int(cs.cruiseState.gapAdjust),
           'blindspot': [bool(cs.leftBlindspot), bool(cs.rightBlindspot)],
+          # Chassis readings decoded with the Model 3 layouts (wheel speeds 0x175, friction brake
+          # torque 0x185, ultrasonics 0x20E/0x22E). None when the message is not arriving.
+          'chassis': {
+            'wheels': ([round(cs.wheelSpeeds.fl, 2), round(cs.wheelSpeeds.fr, 2),
+                        round(cs.wheelSpeeds.rl, 2), round(cs.wheelSpeeds.rr, 2)]
+                       if cs.wheelSpeeds.fl or cs.wheelSpeeds.rl else None),
+            'brake': ([round(cs.chassisSensors.brakeTorqueFl), round(cs.chassisSensors.brakeTorqueFr),
+                       round(cs.chassisSensors.brakeTorqueRl), round(cs.chassisSensors.brakeTorqueRr)]
+                      if cs.chassisSensors.brakeTorqueValid else None),
+            'ussFront': list(cs.chassisSensors.ussFront) if cs.chassisSensors.ussValid else None,
+            'ussRear': list(cs.chassisSensors.ussRear) if cs.chassisSensors.ussValid else None,
+          },
           'aTarget': round(sm['longitudinalPlan'].aTarget, 2),
           # What is actually running, not what the parameter says -- the parameter is read
           # once at startup, so the two disagree between a change and the next restart. None
@@ -1785,6 +1797,19 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
   </div>
 </div>
 
+<div class="card"><div class="h">섀시 센서 <span class="hlp">Model 3 정의로 해독 · 초음파 거리 단위는 실측 미검증</span></div>
+  <div class="grid">
+    <div><div class="k">바퀴 속도 FL / FR</div><div class="v" style="font-size:14px"><span id="whF">–</span><small>mph</small></div></div>
+    <div><div class="k">바퀴 속도 RL / RR</div><div class="v" style="font-size:14px"><span id="whR">–</span><small>mph</small></div></div>
+    <div><div class="k">마찰 제동 앞 L / R</div><div class="v" style="font-size:14px"><span id="btF">–</span><small>Nm</small></div></div>
+    <div><div class="k">마찰 제동 뒤 L / R</div><div class="v" style="font-size:14px"><span id="btR">–</span><small>Nm</small></div></div>
+    <div style="grid-column:1/-1"><div class="k">초음파 앞 1–6 (cm, · = 감지 없음)</div>
+      <div class="v" style="font-size:13px;font-family:ui-monospace,monospace;white-space:pre" id="ussF">–</div></div>
+    <div style="grid-column:1/-1"><div class="k">초음파 뒤 7–12</div>
+      <div class="v" style="font-size:13px;font-family:ui-monospace,monospace;white-space:pre" id="ussR">–</div></div>
+  </div>
+</div>
+
 <div class="card"><div class="h">지도 자동 크루즈 <span id="mapState" class="hlp"></span></div>
   <div class="grid">
     <div><div class="k">크루즈 목표</div><div class="v"><span id="mtgt">–</span><small>mph</small></div></div>
@@ -1915,9 +1940,23 @@ async function poll(){
     const b=$('bs'),[l,r]=s.blindspot||[false,false];
     b.textContent=l&&r?'L R':l?'L':r?'R':'없음';
     b.className='pill '+((l||r)?'on':'off');
+    updateChassis(s.chassis||{});
     updateMap(s.map);
     updateMapHealth(s.map, s.connected, s.onroad);
   }catch(e){$('conn').textContent='디바이스에 연결할 수 없습니다';}
+}
+
+function updateChassis(c){
+  const mph=v=>(v*2.23694).toFixed(1);
+  const w=c.wheels, t=c.brake;
+  $('whF').textContent=w?`${mph(w[0])} / ${mph(w[1])}`:'–';
+  $('whR').textContent=w?`${mph(w[2])} / ${mph(w[3])}`:'–';
+  $('btF').textContent=t?`${t[0]} / ${t[1]}`:'–';
+  $('btR').textContent=t?`${t[2]} / ${t[3]}`:'–';
+  // 500 = nothing detected, 511 = no data, 0 = blocked
+  const uss=a=>a?a.map(v=>v===500?'  · ':v===511?'  - ':v===0?' 막힘':String(v).padStart(4)).join(' '):'–';
+  $('ussF').textContent=uss(c.ussFront);
+  $('ussR').textContent=uss(c.ussRear);
 }
 
 // Driving model selection. Applied at the next modeld start rather than swapped under a

@@ -54,6 +54,13 @@ CURVATURE_STALE_FRAMES = 50
 # a vehicle that has gone rather than one between updates.
 DAS_OBJECT_STALE_FRAMES = 50
 
+# Chassis messages decoded with the Model 3 layouts. Nothing in control reads them, so they are
+# registered exempt from the alive check: one going quiet must never cost a CAN error and an
+# engagement. That leaves staleness to us, since the parser keeps the last value forever. The ESP
+# pair runs at 100Hz and the ultrasonics at 25Hz; half a second without a frame means stopped.
+CHASSIS_SENSOR_MSGS = ("ESP_wheelSpeeds", "ESP_brakeTorque", "PARK_sdiFront", "PARK_sdiRear")
+CHASSIS_SENSOR_STALE_FRAMES = 50
+
 
 def decode_tesla_gap(raw_gap: int) -> int:
   """Convert Tesla legacy DTR_Dist_Rq raw value to a gap level.
@@ -286,6 +293,8 @@ class CarState(CarStateBase):
     # Raven's party DBC carries none of the map messages, so it gets no decoder at all rather
     # than one that would fault the first time it looked a message up.
     self.nav_map = None if CP.carFingerprint == CAR.TESLA_MODEL_S_HW3 else NavMapDecoder()
+    # Cycles since each chassis sensor message last arrived; starts stale until the first frame.
+    self.chassis_sensor_age = dict.fromkeys(CHASSIS_SENSOR_MSGS, CHASSIS_SENSOR_STALE_FRAMES)
 
   def update_autopark_state(self, autopark_now: bool):
     # Takes the decoded "the park module has the car" boolean rather than the signal it came
@@ -572,6 +581,8 @@ class CarState(CarStateBase):
     ret.leftBlindspot = park_left_blindspot or das_left_blindspot
     ret.rightBlindspot = park_right_blindspot or das_right_blindspot
 
+    self.update_chassis_sensors(ret, cp_chassis)
+
     # Navigation / map view of the road ahead. Decoded for every legacy car that has the
     # messages: it is pure decode off what the gateway broadcasts anyway, and whether anything
     # acts on it is a planner decision, not a car one.
@@ -625,6 +636,37 @@ class CarState(CarStateBase):
       self.stw_actn = dict(stw) if len(stw) else None
 
     return ret
+
+  def update_chassis_sensors(self, ret: structs.CarState, cp_chassis) -> None:
+    """Wheel speeds, friction brake torque and the twelve ultrasonics, each published only while
+    its message is still arriving. A stopped message reads as zero/empty and not valid, rather
+    than as its last frame frozen in place."""
+    for name in CHASSIS_SENSOR_MSGS:
+      fresh = any(cp_chassis.vl_all[name].values())
+      self.chassis_sensor_age[name] = 0 if fresh else min(self.chassis_sensor_age[name] + 1, CHASSIS_SENSOR_STALE_FRAMES)
+    alive = {name: age < CHASSIS_SENSOR_STALE_FRAMES for name, age in self.chassis_sensor_age.items()}
+
+    if alive["ESP_wheelSpeeds"]:
+      ws = cp_chassis.vl["ESP_wheelSpeeds"]
+      ret.wheelSpeeds.fl = ws["ESP_wheelSpeedFrL"] * CV.KPH_TO_MS
+      ret.wheelSpeeds.fr = ws["ESP_wheelSpeedFrR"] * CV.KPH_TO_MS
+      ret.wheelSpeeds.rl = ws["ESP_wheelSpeedReL"] * CV.KPH_TO_MS
+      ret.wheelSpeeds.rr = ws["ESP_wheelSpeedReR"] * CV.KPH_TO_MS
+
+    sensors = ret.chassisSensors
+    if alive["ESP_brakeTorque"]:
+      bt = cp_chassis.vl["ESP_brakeTorque"]
+      sensors.brakeTorqueValid = True
+      sensors.brakeTorqueFl = float(bt["ESP_brakeTorqueFrL"])
+      sensors.brakeTorqueFr = float(bt["ESP_brakeTorqueFrR"])
+      sensors.brakeTorqueRl = float(bt["ESP_brakeTorqueReL"])
+      sensors.brakeTorqueRr = float(bt["ESP_brakeTorqueReR"])
+
+    if alive["PARK_sdiFront"] and alive["PARK_sdiRear"]:
+      front, rear = cp_chassis.vl["PARK_sdiFront"], cp_chassis.vl["PARK_sdiRear"]
+      sensors.ussValid = True
+      sensors.ussFront = [int(front[f"PARK_sdiSensor{i}RawDistData"]) for i in range(1, 7)]
+      sensors.ussRear = [int(rear[f"PARK_sdiSensor{i}RawDistData"]) for i in range(7, 13)]
 
   def update_das_objects(self, ret: structs.CarState, cp_ap_party) -> None:
     """The factory's view of the vehicles around the car, held together and published.
@@ -697,7 +739,8 @@ class CarState(CarStateBase):
         Bus.ap_party: CANParser(DBC[CP.carFingerprint][Bus.party], [], CANBUS.autopilot_party),
         Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CANBUS.powertrain),
         Bus.ap_pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CANBUS.autopilot_powertrain),
-        Bus.chassis: CANParser(DBC[CP.carFingerprint][Bus.chassis], [], CANBUS.chassis if CP.carFingerprint == CAR.TESLA_MODEL_S_HW3 else CANBUS.party),
+        Bus.chassis: CANParser(DBC[CP.carFingerprint][Bus.chassis], [(m, float('nan')) for m in CHASSIS_SENSOR_MSGS],
+                               CANBUS.chassis if CP.carFingerprint == CAR.TESLA_MODEL_S_HW3 else CANBUS.party),
       }
 
     return {

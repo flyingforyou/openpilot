@@ -27,11 +27,13 @@ class TestSnapBaseSpeedLimit:
     """Straight off the 0000006b drive, where these read 34.673 / 39.706 / 44.739 / 64.871."""
     assert snap_base_speed_limit(raw_ms, False) / MPH == pytest.approx(mph, abs=0.01)
 
-  def test_a_forty_clears_the_offset_split(self):
-    """The whole point: truncation put a 40 zone under OFFSET_SPLIT, so the ladder paid +5."""
+  def test_snapped_limits_land_on_the_right_side_of_the_offset_split(self):
+    """The ladder pays +5 up to 45 and +10 from 50. Truncation used to put a limit on the wrong
+    side of the split when the split sat on a posted value; snapped, 45 stays on the +5 side and
+    50 clears it."""
     from openpilot.selfdrive.controls.lib.map_cruise import OFFSET_SPLIT
-    assert as_received(40 * MPH) < OFFSET_SPLIT
-    assert snap_base_speed_limit(as_received(40 * MPH), False) >= OFFSET_SPLIT
+    assert snap_base_speed_limit(as_received(45 * MPH), False) < OFFSET_SPLIT
+    assert snap_base_speed_limit(as_received(50 * MPH), False) >= OFFSET_SPLIT
 
   def test_no_value_stays_no_value(self):
     # 0 means "this source has no limit here", which is a real state on a ramp -- not a speed.

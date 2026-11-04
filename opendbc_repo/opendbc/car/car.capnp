@@ -247,6 +247,25 @@ struct CarState {
   # is, and which one the factory itself considers to be merging in.
   dasObjects @65 :List(DasObject);
 
+  # Chassis-bus readings found by decoding with the Model 3 layouts (same ids, same Tesla
+  # checksum on every frame of route 0244). Legacy Tesla only; zero/empty everywhere else.
+  # wheelSpeeds, from the same ESP family (0x175), goes in the standard field above.
+  chassisSensors @66 :ChassisSensors;
+
+  struct ChassisSensors {
+    brakeTorqueValid @0 :Bool;   # ESP_brakeTorque (0x185) has arrived
+    brakeTorqueFl @1 :Float32;   # Nm, friction brake torque per corner
+    brakeTorqueFr @2 :Float32;
+    brakeTorqueRl @3 :Float32;
+    brakeTorqueRr @4 :Float32;
+    # Raw ultrasonic distance per sensor, cm: front 1-6 (0x20E), rear 7-12 (0x22E), in DBC order.
+    # 500 = nothing detected, 511 = no data, 0 = blocked. The cm scale is NOT yet confirmed
+    # against a measured distance -- it reads well short of the radar lead when stopped.
+    ussValid @5 :Bool;
+    ussFront @6 :List(UInt16);
+    ussRear @7 :List(UInt16);
+  }
+
   struct DasObject {
     group @0 :UInt8;      # 0 lead, 1 left, 2 right, 3 cut-in
     objType @1 :UInt8;    # 0 unknown, 1 truck, 2 car, 3 motorcycle, 4 bicycle, 5 pedestrian

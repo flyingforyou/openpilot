@@ -217,6 +217,23 @@ BO_ 341 ESP_B: 8 ESP
  SG_ ESP_wheelPulseCountReL : 23|8@0+ (1,0) [0|254] ""  NEO,EPAS
  SG_ ESP_wheelPulseCountReR : 31|8@0+ (1,0) [0|254] ""  NEO,EPAS
 
+BO_ 373 ESP_wheelSpeeds: 8 ESP
+ SG_ ESP_wheelSpeedFrL : 0|13@1+ (0.04,0) [0|327.64] "km/h"  NEO
+ SG_ ESP_wheelSpeedFrR : 13|13@1+ (0.04,0) [0|327.64] "km/h"  NEO
+ SG_ ESP_wheelSpeedReL : 26|13@1+ (0.04,0) [0|327.64] "km/h"  NEO
+ SG_ ESP_wheelSpeedReR : 39|13@1+ (0.04,0) [0|327.64] "km/h"  NEO
+ SG_ ESP_wheelSpeedsCounter : 52|4@1+ (1,0) [0|15] ""  NEO
+ SG_ ESP_wheelSpeedsChecksum : 56|8@1+ (1,0) [0|255] ""  NEO
+
+BO_ 389 ESP_brakeTorque: 8 ESP
+ SG_ ESP_brakeTorqueFrL : 0|12@1+ (2,0) [0|8190] "Nm"  NEO
+ SG_ ESP_brakeTorqueFrR : 12|12@1+ (2,0) [0|8190] "Nm"  NEO
+ SG_ ESP_brakeTorqueReL : 24|12@1+ (2,0) [0|8190] "Nm"  NEO
+ SG_ ESP_brakeTorqueReR : 36|12@1+ (2,0) [0|8190] "Nm"  NEO
+ SG_ ESP_brakeTorqueQF : 50|1@1+ (1,0) [0|1] ""  NEO
+ SG_ ESP_brakeTorqueCounter : 52|4@1+ (1,0) [0|15] ""  NEO
+ SG_ ESP_brakeTorqueChecksum : 56|8@1+ (1,0) [0|255] ""  NEO
+
 BO_ 513 SDM1: 5 GTW
  SG_ SDM_bcklPassStatus : 3|2@0+ (1,0) [0|3] "" NEO
  SG_ SDM_bcklDrivStatus : 5|2@0+ (1,0) [0|3] "" NEO
@@ -241,6 +258,26 @@ BO_ 782 PARK_status2: 8 PARK
  SG_ PARK_sdiBlindSpotLeft : 29|2@1+ (1,0) [0|3] "" DAS,GTW
  SG_ PARK_status2Counter : 52|4@1+ (1,0) [0|0] "" GTW,DAS
  SG_ PARK_status2Checksum : 56|8@1+ (1,0) [0|0] "" GTW
+
+BO_ 526 PARK_sdiFront: 8 PARK
+ SG_ PARK_sdiSensor1RawDistData : 0|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiSensor2RawDistData : 9|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiSensor3RawDistData : 18|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiSensor4RawDistData : 27|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiSensor5RawDistData : 36|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiSensor6RawDistData : 45|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiFrontCounter : 54|2@1+ (1,0) [0|3] "" NEO
+ SG_ PARK_sdiFrontChecksum : 56|8@1+ (1,0) [0|255] "" NEO
+
+BO_ 558 PARK_sdiRear: 8 PARK
+ SG_ PARK_sdiSensor7RawDistData : 0|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiSensor8RawDistData : 9|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiSensor9RawDistData : 18|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiSensor10RawDistData : 27|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiSensor11RawDistData : 36|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiSensor12RawDistData : 45|9@1+ (1,0) [0|511] "cm" NEO
+ SG_ PARK_sdiRearCounter : 54|2@1+ (1,0) [0|3] "" NEO
+ SG_ PARK_sdiRearChecksum : 56|8@1+ (1,0) [0|255] "" NEO
 
 BO_ 792 GTW_carState: 8 GTW
  SG_ YEAR : 0|7@1+ (1,2000) [2000|2127] "Year" NEO
@@ -937,6 +974,18 @@ VAL_ 780 occupancyStatus 1 "OCCUPIED" 0 "UNOCCUPIED" ;
 VAL_ 780 buckleStatus 1 "LATCHED" 0 "UNLATCHED" ;
 VAL_ 782 PARK_sdiBlindSpotRight 3 "SNA" 2 "UNUSED" 1 "WARNING" 0 "NO_WARNING" ;
 VAL_ 782 PARK_sdiBlindSpotLeft 3 "SNA" 2 "UNUSED" 1 "WARNING" 0 "NO_WARNING" ;
+VAL_ 526 PARK_sdiSensor1RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 526 PARK_sdiSensor2RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 526 PARK_sdiSensor3RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 526 PARK_sdiSensor4RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 526 PARK_sdiSensor5RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 526 PARK_sdiSensor6RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 558 PARK_sdiSensor7RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 558 PARK_sdiSensor8RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 558 PARK_sdiSensor9RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 558 PARK_sdiSensor10RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 558 PARK_sdiSensor11RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
+VAL_ 558 PARK_sdiSensor12RawDistData 0 "BLOCKED" 1 "NEAR_DETECTION" 500 "NO_OBJECT_DETECTED" 511 "SNA" ;
 VAL_ 792 BOOT_STATE 2 "Init" 3 "SNA" 0 "closed" 1 "open" ;
 VAL_ 792 CERRD 1 "CAN error detect" 0 "no Can error detected" ;
 VAL_ 792 DAY 1 "Init" 0 "SNA" ;
