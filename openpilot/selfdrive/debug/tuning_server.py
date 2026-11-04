@@ -1105,6 +1105,8 @@ class Handler(BaseHTTPRequestHandler):
       return self._send(200, PAGE_CHECKS, 'text/html; charset=utf-8')
     if page == '/tdiag':
       return self._send(200, PAGE_TDIAG, 'text/html; charset=utf-8')
+    if page == '/dongle':
+      return self._send(200, PAGE_DONGLE, 'text/html; charset=utf-8')
     if page == '/vlog':
       return self._send(200, PAGE_VLOG, 'text/html; charset=utf-8')
     if page == '/daily':
@@ -2142,6 +2144,15 @@ border:1px solid var(--line);color:var(--mut)}
 </style></head><body>
 <h1>openpilot</h1><div class="sub" id="sub">연결 중…</div>
 
+<!-- Only until a dongle is registered (BtObdAddress) or while connecting to it keeps failing; the pairing
+     controls used to live only on /tdiag, which is not in this menu. -->
+<a class="card" href="/dongle" id="c-bt" hidden>
+  <div class="t">블루투스 동글 연결</div>
+  <div class="d">진단 포트에 꽂은 OBD 동글을 찾아 연결합니다. 한 번 연결해 두면 차가 깨어 있을 때마다
+    자동으로 다시 붙어 배터리·주행 기록을 남기고, 이 메뉴는 사라집니다.</div>
+  <div class="st"><span class="pill" id="p-bt">–</span></div>
+</a>
+
 <a class="card" href="/live">
   <div class="t">Live · 앞차 인식과 설정</div>
   <div class="d">R/V 인식 출처, 앞차 거리·속도, gap, 제동 요구를 실시간으로 보고
@@ -2255,6 +2266,17 @@ async function tick(){
   const v=document.getElementById('p-veh');
   v.textContent=vehOn?'차량 켜짐':'차량 꺼짐 / 미연결';
   v.className='pill'+(vehOn?' on':'');
+  if(!(btTick++%5))btCard();
+}
+let btTick=0;
+// passive: the menu showing this card must not hold the dongle link the way /dongle does
+async function btCard(){
+  try{
+    const s=await(await fetch('/api/obd?passive=1')).json();
+    const need=s.bt!=='absent'&&(!s.target||s.link==='error');
+    document.getElementById('c-bt').hidden=!need;
+    document.getElementById('p-bt').textContent=!s.target?'등록된 동글 없음':'연결 실패 · '+s.target;
+  }catch(e){}
 }
 async function once(){
   try{
@@ -3771,6 +3793,88 @@ tick(); setInterval(()=>{if(!busy) tick();},2000);
 </script></body></html>
 """
 
+
+
+# First-time pairing, reached from the menu card that shows only while no dongle is registered. The same
+# controls as /tdiag's group 0, without the capture and UDS tools around them. Polls /api/obd without
+# passive, so a car that is asleep still gets the link attempt while this page is open.
+PAGE_DONGLE = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>동글 연결</title><style>
+:root{--bg:#0B0F14;--card:#141C26;--line:#243040;--tx:#E4EAF0;--mut:#8A97A6;--dim:#5D6B7B;
+--radar:#5AC8FA;--ok:#4CC38A;--hot:#F5B942;--bad:#E5484D;--m:ui-monospace,SFMono-Regular,Menlo,monospace;
+--s:system-ui,-apple-system,"Apple SD Gothic Neo","Noto Sans KR",sans-serif}
+@media(prefers-color-scheme:light){:root{--bg:#F4F7FA;--card:#fff;--line:#DCE3EA;--tx:#0E151D;
+--mut:#54636F;--dim:#8494A2;--radar:#0A72A8;--ok:#1B7F53;--hot:#9A6210;--bad:#C2292E}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font-family:var(--s);
+padding:18px;padding-bottom:calc(18px + env(safe-area-inset-bottom));max-width:640px}
+a.back{color:var(--dim);font-family:var(--m);font-size:11px;text-decoration:none}
+h1{font-size:17px;margin:8px 0 3px}
+.sub{font-family:var(--m);font-size:11px;color:var(--dim);margin-bottom:16px}
+.grp{background:var(--card);border:1px solid var(--line);border-radius:11px;margin-bottom:11px;overflow:hidden}
+.gt{font-size:12px;color:var(--mut);padding:10px 13px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap}
+.row{display:flex;align-items:center;gap:10px;padding:8px 13px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+.row:last-child{border-bottom:none}
+.lb{font-size:13px;flex:1;min-width:140px}
+.a{font-family:var(--m);font-size:10.5px;color:var(--dim)}
+.pill{font-family:var(--m);font-size:10.5px;padding:3px 8px;border-radius:99px;border:1px solid var(--line);color:var(--mut)}
+.pill.ok{border-color:var(--ok);color:var(--ok)}.pill.warn{border-color:var(--hot);color:var(--hot)}.pill.bad{border-color:var(--bad);color:var(--bad)}
+button{font:inherit;font-size:12.5px;padding:7px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--tx);cursor:pointer}
+button.pri{background:var(--radar);border-color:var(--radar);color:#04131C}
+button:disabled{opacity:.5;cursor:default}
+input{font:inherit;font-size:12.5px;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--tx);width:90px}
+.err{color:var(--bad);font-size:12.5px;padding:9px 13px;border-top:1px solid var(--line)}
+.hint{font-size:12px;color:var(--mut);line-height:1.6;padding:11px 13px}
+.done{color:var(--ok)}
+</style></head><body>
+<a class="back" href="/">← 메뉴</a>
+<h1>블루투스 동글 연결</h1>
+<div class="sub" id="sub">불러오는 중…</div>
+
+<div class="grp"><div class="gt"><span>상태</span><span id="pills"></span></div>
+  <div class="hint" id="st"></div><div class="err" id="err" hidden></div></div>
+
+<div class="grp">
+  <div class="gt"><span>주변 동글</span><span class="a" id="scanst"></span></div>
+  <div id="target"></div>
+  <div class="row"><span class="lb">찾기</span><span>PIN <input id="pin" value="1234" aria-label="PIN"></span><button class="pri" id="scan">검색</button></div>
+  <div id="devs"></div>
+</div>
+
+<div class="grp"><div class="hint">
+  1. 동글을 차 진단 포트에 꽂고 차를 깨웁니다(문 열기·브레이크 밟기). 동글 불이 켜져야 검색됩니다.<br>
+  2. 검색을 누르고 목록에서 동글(보통 OBDII·Vgate·V-LINK 같은 이름)을 연결합니다. PIN은 대부분 1234, 아니면 0000입니다.<br>
+  3. 연결되면 등록이 끝납니다. 그다음부터는 차가 깨어 있을 때 자동으로 다시 붙고, 메뉴의 이 항목은 사라집니다.<br>
+  동글에는 AT 설정 명령만 보내고, 차에는 아무것도 보내지 않습니다(듣기 전용).
+</div></div>
+
+<script>
+const $=i=>document.getElementById(i);
+const esc=x=>String(x==null?'':x).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+async function obd(b){try{const r=await fetch('/api/obd',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});
+  const j=await r.json();if(j.error)alert(j.error);}finally{tick();}}
+$('scan').onclick=()=>obd({cmd:'scan'});
+function render(s){
+  const bt={up:['블루투스 켜짐','ok'],absent:['블루투스 커널 없음','bad'],error:['블루투스 오류','bad']}[s.bt]||[s.bt,'warn'];
+  const lk={connected:['동글 연결됨','ok'],connecting:['연결 중','warn'],error:['연결 실패','bad']}[s.link]||['동글 대기','warn'];
+  $('pills').innerHTML=`<span class="pill ${bt[1]}">${bt[0]}</span> <span class="pill ${lk[1]}">${lk[0]}</span>`;
+  $('sub').textContent=s.stale?'동글 데몬 응답 없음':'';
+  $('st').innerHTML=s.bt==='absent'?'이 기기에는 블루투스 커널이 없어 동글을 쓸 수 없습니다.'
+    :s.link==='connected'?`<span class="done">연결 완료${s.elm&&s.elm.version?' · '+esc(s.elm.version):''}.</span> 등록됐으니 <a href="/" style="color:inherit">메뉴</a>로 돌아가도 됩니다.`
+    :s.target?`등록된 동글 ${esc(s.target)}에 ${s.link==='connecting'?'연결하는 중입니다…':'연결을 기다리는 중입니다 (15초마다 다시 시도).'}`
+    :'등록된 동글이 없습니다. 아래에서 검색한 뒤 연결하세요.';
+  $('err').hidden=!s.error;$('err').textContent=s.error||'';
+  if(document.activeElement!==$('pin'))$('pin').value=s.pin||'1234';
+  $('target').innerHTML=s.target?`<div class="row"><span class="lb">연결 대상 <span class="a">${esc(s.target)}</span></span><button id="disc">등록 해제</button></div>`:'';
+  if(s.target)$('disc').onclick=()=>{if(confirm('이 동글 등록을 해제할까요? 자동 기록이 멈춥니다.'))obd({cmd:'disconnect'});};
+  $('scanst').textContent=s.discovering?'검색 중…':'';
+  $('scan').disabled=s.bt!=='up'||s.discovering;
+  $('devs').innerHTML=(s.devices||[]).map(d=>`<div class="row"><span class="lb">${esc(d.name||'(이름 없음)')} ${d.paired?'<span class="pill ok">페어링됨</span>':''}<br><span class="a">${esc(d.addr)} · ${d.rssi==null?'–':d.rssi} dBm</span></span><button class="pri" data-a="${esc(d.addr)}">연결</button></div>`).join('');
+  document.querySelectorAll('#devs button').forEach(x=>x.onclick=()=>obd({cmd:'connect',addr:x.dataset.a,pin:$('pin').value.trim()}));
+}
+async function tick(){try{render(await(await fetch('/api/obd')).json());}catch(e){$('sub').textContent='디바이스에 연결할 수 없습니다';}}
+tick();setInterval(tick,1500);
+</script></body></html>"""
 
 
 PAGE_TDIAG = """<!doctype html><html lang="ko"><head><meta charset="utf-8">
