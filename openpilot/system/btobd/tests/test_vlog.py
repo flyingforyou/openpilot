@@ -608,3 +608,16 @@ def test_compressor_request_is_averaged_over_the_seconds_it_was_heard():
   for k in range(0, 40, 4):
     short.add(float(k), {**base, 'compCooling': 50}, 0)
   assert 'compPct' not in short.finish()
+
+
+def test_neutral_at_a_standstill_parked_and_woken_is_not_a_drive():
+  # 2026-11-03 18:52-19:08: parked in P, then every wake-up (BMS in support) read gear N at 0 mph and
+  # was logged as a 1-3 minute drive
+  vl = vlog.VehicleLog('', write=False)
+  t = 1_793_761_000.0
+  for i in range(120):
+    v = {'gear': 'N', 'vehicleSpeedMph': 0.0, 'bmsState': 2, 'packVoltage': 390.0, 'packCurrent': -0.5}
+    vl.update(t + i * 5, v, dict.fromkeys(v, 0.0))
+  vl.close(t + 600)
+  assert [s['type'] for s in vl.out['sessions']] == ['PARKED']
+  assert vlog.ModeMachine.candidate({'gear': 'N', 'vehicleSpeedMph': 4.0}, False) == 'DRIVE'

@@ -97,7 +97,7 @@ class ModeMachine:
   Charging: BMS state CHARGER/FASTCHARGE, or (gear not D/R and >3 A into the pack) when the BMS state
   is not heard and the plug is not out. DC when the BMS says FASTCHARGE or the fast-charge contactor
   is closed or the pilot says fast charge; AC when the BMS says CHARGER with a line-charge pilot;
-  otherwise CHARGE_UNKNOWN. Driving: gear D/R/N, or openpilot onroad, or moving >3 mph -- speed alone
+  otherwise CHARGE_UNKNOWN. Driving: gear D/R (N only rolling), or openpilot onroad, or moving >3 mph -- speed alone
   only when the gear is not being heard.
   """
 
@@ -112,7 +112,9 @@ class ModeMachine:
   def candidate(v: dict, onroad: bool) -> str | None:
     gear, spd, cur = v.get('gear'), v.get('vehicleSpeedMph'), v.get('packCurrent')
     bms, fc, pilot = v.get('bmsState'), v.get('fcContactor'), v.get('pilot')
-    moving_gear = gear in ('D', 'R', 'N')
+    # N only while rolling: parked and woken (BMS in support, 2026-11-03 18:52-19:08) the drive inverter
+    # reports N at a standstill, and every wake-up came out as a drive
+    moving_gear = gear in ('D', 'R') or (gear == 'N' and spd is not None and abs(spd) > 0.5)
     # current into the pack stands for charging only when nothing better is heard: regen reads the same
     # with the gear frame stale, and on 2026-10-31 it kept a DC charge open 11 min into the drive after
     # it, with the BMS saying not charging and the plug out the whole time
