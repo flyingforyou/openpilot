@@ -98,6 +98,14 @@ class TestPerLimitOffset:
   def test_ladder_constants_are_ordered(self):
     assert OFFSET_BELOW < OFFSET_ABOVE
 
+  @pytest.mark.parametrize("offset,limit,expected", [(0, 45, 45), (0, 25, 25), (5, 45, 50), (5, 25, 30),
+                                                     (10, 45, 55), (10, 25, 30)])
+  def test_page_offset_caps_the_ladder(self, offset, limit, expected):
+    # 2026-11-03: a 45 road showed MAX 55 and read as the map being wrong
+    c = make()
+    c.set_config(enabled=True, offset_ratio=1.0, v_max=90 * MPH, sync_cluster=True, offset_max=offset * MPH)
+    assert settle(c, limit, 85) == pytest.approx(expected, abs=1.0)
+
 
 class TestStalkIsATriggerNotASetpoint:
   """A press hands the road to the map; it must not pin the target to itself."""

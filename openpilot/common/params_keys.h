@@ -255,6 +255,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Percent of the posted limit to target, before the car's own offset is added. 100 is the
     // sign as posted.
     {"TeslaMapAutoSpeedRatio", {PERSISTENT, INT, "100"}},
+    {"TeslaMapSpeedOffset", {PERSISTENT, INT, "10"}},
     // Ceiling for the auto-set speed, kph. This is the number the stalk cannot be, because on
     // this car the stalk *is* v_cruise (pcmCruise) -- using it as the ceiling would pin the map
     // to whatever was dialled in on the last street. Set once; the map moves freely below it.

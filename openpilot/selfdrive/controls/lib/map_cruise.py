@@ -202,6 +202,7 @@ class MapCruiseController:
   def __init__(self):
     self.enabled = False
     self.offset_ratio = 1.0
+    self.offset_max = OFFSET_ABOVE   # TeslaMapSpeedOffset: the ladder, capped (0 = the sign itself)
     self.use_curve = True
     self.use_map_curve = True
     self.sync_cluster = False
@@ -228,11 +229,13 @@ class MapCruiseController:
 
   def set_config(self, enabled: bool, offset_ratio: float,
                  v_max: float, use_curve: bool = True, sync_cluster: bool = False,
-                 curve_lat_accel: float = 0.0, use_map_curve: bool = True) -> None:
+                 curve_lat_accel: float = 0.0, use_map_curve: bool = True,
+                 offset_max: float = OFFSET_ABOVE) -> None:
     if not enabled and self.enabled:
       self.reset()
     self.enabled = enabled
     self.offset_ratio = offset_ratio
+    self.offset_max = max(0.0, offset_max)
     self.use_curve = use_curve
     self.sync_cluster = sync_cluster
     self.curve_lat_accel = curve_lat_accel
@@ -303,8 +306,11 @@ class MapCruiseController:
     honouring it would only ever mean "ignore the ladder below 40mph", which is exactly where the
     ladder matters most. Differentiating the offset by posted limit is the intended behaviour, so
     a target that sits +5 rather than +10 under 40mph is correct and not a bug to chase.
+
+    offset_max (TeslaMapSpeedOffset) caps the ladder from the page: 2026-11-03 the driver read MAX 55
+    on a 45 road as the map being wrong, and asked for it to match the sign.
     """
-    return OFFSET_ABOVE if limit >= OFFSET_SPLIT else OFFSET_BELOW
+    return min(OFFSET_ABOVE if limit >= OFFSET_SPLIT else OFFSET_BELOW, self.offset_max)
 
   def _with_offset(self, limit: float) -> float:
     """Posted limit -> what to actually target."""
