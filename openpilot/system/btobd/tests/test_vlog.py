@@ -651,3 +651,25 @@ def test_a_silence_that_hid_a_drive_still_splits():
   vl.close(t + 3600 + 150)
   s = vl.out['sessions']
   assert len(s) == 2 and 'link-gap' in s[0]['flags']
+
+
+@pytest.mark.parametrize("soc_after,n", [(56.7, 1), (50.0, 2)])
+def test_a_silence_is_judged_by_the_first_soc_heard_after_it(soc_after, n):
+  # 2026-10-29 18:45-22:03 and 10-30 01:08 stayed apart: old raw read the SOC only every few cycles,
+  # so the first sample after the silence had none to compare
+  vl = vlog.VehicleLog('', write=False)
+  t = 1_793_322_000.0
+  v = {'gear': 'P', 'socDisplay': 56.9, 'packVoltage': 390.0, 'packCurrent': -0.4}
+  for i in range(30):
+    vl.update(t + i * 5, v, dict.fromkeys(v, 0.0))
+  quiet = {'gear': 'P', 'packVoltage': 390.0, 'packCurrent': -0.4}
+  for i in range(6):
+    vl.update(t + 3 * 3600 + i * 5, quiet, dict.fromkeys(quiet, 0.0))
+  v2 = {**v, 'socDisplay': soc_after}
+  for i in range(6, 30):
+    vl.update(t + 3 * 3600 + i * 5, v2, dict.fromkeys(v2, 0.0))
+  vl.close(t + 3 * 3600 + 150)
+  s = vl.out['sessions']
+  assert len(s) == n and all(x['type'] == 'PARKED' for x in s)
+  if n == 2:
+    assert s[0]['end'] < t + 200 and s[1]['start'] >= t + 3 * 3600

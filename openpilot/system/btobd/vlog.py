@@ -21,6 +21,7 @@ Sign: packCurrent and packPower are positive INTO the pack (charging, regen).
 """
 from __future__ import annotations
 
+import copy
 import gzip
 import json
 import os
@@ -47,6 +48,7 @@ BOOT_RAW_MAX = 60000
 MAX_GAP_S = 15.0       # energy is not integrated across a gap longer than this
 LINK_GAP_S = 600.0     # a session with no sample for this long is closed where it stopped
 PARKED_GAP_SOC = 1.0   # ...unless it is parked on both sides of the silence with the SOC within this
+PARKED_GAP_WAIT_S = 300.0  # how long to wait for an SOC after the silence before splitting anyway
 REST_A = 5.0           # |packCurrent| at or under this counts as rest
 REST_HOLD_S = 60.0     # ... for this long before a resting snapshot
 HEALTH_EVERY_S = 6 * 3600
@@ -557,6 +559,7 @@ class VehicleLog:
     self.boot_raw: list | None = []       # raw already on disk under a clock that may still be set; None once settled
     self._mono0: float | None = None
     self.held: list = []                  # (t, v, stale) sampled while another mode is being held
+    self._gap: dict | None = None         # a parked session carried over a silence before the SOC was heard
     self.held_for: str | None = None
     self.recent: deque = deque()          # light samples for charge_end
     from openpilot.system.btobd.tesla_pt import LIVE_SIGS
@@ -681,9 +684,15 @@ class VehicleLog:
           elif self.session:
             self.close(self.session.d['end'], 'restart')
       self._clock = (t, mono)
-    if self.session and t - self.session.d['end'] > LINK_GAP_S and not self._still_parked(v):
-      # the link was down long enough that the car may have done anything meanwhile
-      self.close(self.session.d['end'], 'link-gap')
+    if self.session and t - self.session.d['end'] > LINK_GAP_S:
+      parked = self._still_parked(v)
+      if parked is None:
+        # parked again but no SOC heard yet (raw before 2026-10-30 read it every few cycles): carry on
+        # provisionally, keeping the session as it was so the gap can still be cut when the SOC says so
+        self._gap = {'snap': copy.deepcopy(self.session), 'soc': self.session.d['socEnd'], 'since': t, 'buf': []}
+      elif not parked:
+        # the link was down long enough that the car may have done anything meanwhile
+        self.close(self.session.d['end'], 'link-gap')
     kw = v['packVoltage'] * v['packCurrent'] / 1000 if 'packVoltage' in v and 'packCurrent' in v else None
     ac = [v[k] for k in ('acVolts1', 'acVolts2', 'acVolts3') if v.get(k) is not None]
     self.recent.append({'t': t, 'kw': kw, 'prox': v.get('proximity'), 'pilot': v.get('pilot'), 'ac': max(ac) if ac else None,
@@ -691,6 +700,7 @@ class VehicleLog:
     while self.recent and t - self.recent[0]['t'] > END_KEEP_S:
       self.recent.popleft()
     if self.modes.update(t, v, onroad):
+      self._gap_resolve(False)
       if self.session:
         self._append('sessions.jsonl', self._finish())
       self.session = Session(self.modes.mode, self.modes.since, self.held[0][1] if self.held else v)
@@ -709,6 +719,12 @@ class VehicleLog:
       self._flush_held()
       if self.session:
         self.session.add(t, v, stale)
+      if self._gap:
+        self._gap['buf'].append((t, v, stale))
+        if v.get(SOC_KEY) is not None:
+          self._gap_resolve(abs(v[SOC_KEY] - self._gap['soc']) <= PARKED_GAP_SOC)
+        elif t - self._gap['since'] > PARKED_GAP_WAIT_S:
+          self._gap_resolve(False)
     for e in self.events.update(t, self.modes.mode, v):
       if self.session:
         self.session.d['events'].append({'t': e['t'], 'type': e['type']})
@@ -760,14 +776,30 @@ class VehicleLog:
     self._append('health.jsonl', snap)
     self.last_health, self.last_health_soc = t, soc
 
-  def _still_parked(self, v: dict) -> bool:
+  def _still_parked(self, v: dict) -> bool | None:
     """A parked car that slept goes silent: 2026-11-03 18:48 to 11-04 07:10 in P the whole time came out
     as three sessions, cut at each silence. It carries on when the first sample back is parked too
-    and the SOC has not moved -- a drive or a charge unseen would have moved it."""
+    and the SOC has not moved -- a drive or a charge unseen would have moved it. None: parked, but
+    no SOC to compare yet (see _gap)."""
     d = self.session.d
     soc, last = v.get(SOC_KEY), d.get('socEnd')
-    return (d['type'] == 'PARKED' and self.modes.candidate(v, False) in ('PARKED', None)
-            and soc is not None and last is not None and abs(soc - last) <= PARKED_GAP_SOC)
+    if d['type'] != 'PARKED' or self.modes.candidate(v, False) not in ('PARKED', None) or last is None:
+      return False
+    return None if soc is None else abs(soc - last) <= PARKED_GAP_SOC
+
+  def _gap_resolve(self, keep: bool) -> None:
+    """Settle a provisional carry-over across a silence: keep the merged session, or cut it where the
+    silence began and start a new parked session from what came after."""
+    g, self._gap = self._gap, None
+    if g is None or keep:
+      return
+    self.session = g['snap']
+    self._append('sessions.jsonl', self._finish('link-gap'))
+    buf = g['buf']
+    self.session = Session('PARKED', buf[0][0] if buf else g['since'], buf[0][1] if buf else {})
+    for x in buf:
+      self.session.add(*x)
+    self._save_open()
 
   def _redate(self, dt: float) -> None:
     """Everything still in memory that was timed by the old clock, moved by dt. Raw already on disk
@@ -839,6 +871,7 @@ class VehicleLog:
 
   def close(self, t: float, reason: str = 'stopped') -> None:
     self._flush_held()      # a mode that never won: its samples stay with the session they came in
+    self._gap_resolve(False)
     if self.session:
       self.session.d['end'] = max(self.session.d['end'], t if t else 0)
       self._append('sessions.jsonl', self._finish(reason))
