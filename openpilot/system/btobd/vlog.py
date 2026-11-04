@@ -42,6 +42,8 @@ CELL_KEYS = frozenset(('cellMin', 'cellMax', 'cellAvg', 'cellDelta', 'cellCount'
 SOC_KEY = 'socDisplay'
 CHARGE_JOIN_S = 600.0  # charge sessions this close together are one plug-in (link drops, restarts)
 CLOCK_JUMP_S = 60.0    # wall time moving this much more or less than monotonic = the clock was set
+BOOT_RAW_S = 3600.0    # raw flushed this early in a run is kept in memory, to be re-dated if the clock is set
+BOOT_RAW_MAX = 60000
 MAX_GAP_S = 15.0       # energy is not integrated across a gap longer than this
 LINK_GAP_S = 600.0     # a session with no sample for this long is closed where it stopped
 REST_A = 5.0           # |packCurrent| at or under this counts as rest
@@ -549,6 +551,8 @@ class VehicleLog:
     self.last_health_soc: float | None = None
     self.raw_buf: list = []
     self.raw_flush = 0.0
+    self.boot_raw: list | None = []       # raw already on disk under a clock that may still be set; None once settled
+    self._mono0: float | None = None
     self.held: list = []                  # (t, v, stale) sampled while another mode is being held
     self.held_for: str | None = None
     self.recent: deque = deque()          # light samples for charge_end
@@ -633,6 +637,13 @@ class VehicleLog:
       return
     buf, self.raw_buf = self.raw_buf, []
     self.raw_flush = wall or time.time()
+    if self.boot_raw is not None:
+      if self._mono0 is None:
+        self._mono0 = buf[0][1]
+      if buf[-1][1] - self._mono0 > BOOT_RAW_S or len(self.boot_raw) + len(buf) > BOOT_RAW_MAX:
+        self.boot_raw = None
+      else:
+        self.boot_raw.extend(buf)
     if not self.write:
       return
     name = 'raw-' + datetime.fromtimestamp(buf[0][0], UTC).strftime('%Y%m%d-%H') + '.jsonl.gz'
@@ -652,10 +663,14 @@ class VehicleLog:
     v = fresh(values, age, self.fast_s)
     stale = sum(1 for k in SERIES_KEYS if k in values and k not in v)
     if mono is not None:
-      # the device boots on a stale clock (2026-07-28) and NTP/GPS sets it mid-session; a session
-      # spanning that jump came out 93 days long, backwards
-      if self._clock and abs((t - self._clock[0]) - (mono - self._clock[1])) > CLOCK_JUMP_S and self.session:
-        self.close(self.session.d['end'], 'clock-jump')
+      # The device cold-boots on a stale clock (2026-07-28 15:04 UTC) whenever its power is cut, and
+      # NTP sets it a few minutes in. Monotonic time says nothing happened in between, so what was
+      # logged since is moved to the real time, not cut off: until 2026-11-03 the session was closed
+      # there, and a drive the device woke for came out as a '7/28' fragment plus the rest.
+      if self._clock:
+        jump = (t - self._clock[0]) - (mono - self._clock[1])
+        if abs(jump) > CLOCK_JUMP_S:
+          self._redate(jump)
       self._clock = (t, mono)
     if self.session and t - self.session.d['end'] > LINK_GAP_S:
       # the link was down long enough that the car may have done anything meanwhile
@@ -735,6 +750,52 @@ class VehicleLog:
       snap['flags'] = ['cell-sum-mismatch']
     self._append('health.jsonl', snap)
     self.last_health, self.last_health_soc = t, soc
+
+  def _redate(self, dt: float) -> None:
+    """Everything still in memory that was timed by the old clock, moved by dt. Raw already on disk
+    goes out again under the new time (the stale copies stay in their own hour's file); series and
+    events already written keep the old date."""
+    if self.session:
+      s, d = self.session, self.session.d
+      for k in ('start', 'end', 'firstT'):
+        if k in d:
+          d[k] += dt
+      d['socFirstAt'] = {k: x + dt for k, x in d['socFirstAt'].items()}
+      for e in d['events']:
+        e['t'] += dt
+      s._last_kw_t = s._last_kw_t + dt if s._last_kw_t is not None else None
+      s._last_spd_t = s._last_spd_t + dt if s._last_spd_t is not None else None
+      if 'redated' not in d['flags']:
+        d['flags'].append('redated')
+    m = self.modes
+    m.since += dt
+    m._cand_since += dt
+    m._cand_seen += dt
+    self.held = [(t + dt, v, st) for t, v, st in self.held]
+    for r in self.recent:
+      r['t'] += dt
+    ev = self.events
+    for r in ev.ring:
+      r['t'] += dt
+    for e in ev.pending:
+      e['t'] += dt
+    ev.peak_kw = deque((t + dt, *x) for t, *x in ev.peak_kw)
+    ev.peak_lim = deque((t + dt, *x) for t, *x in ev.peak_lim)
+    ev.was_charging_at = ev.was_charging_at + dt if ev.was_charging_at is not None else None
+    ev.low_since = ev.low_since + dt if ev.low_since is not None else None
+    ev.last_fired = {k: x + dt for k, x in ev.last_fired.items()}
+    self.last_series += dt
+    self.last_health += dt
+    self.rest_since = self.rest_since + dt if self.rest_since is not None else None
+    # a line is the old clock's when its wall-minus-mono offset is the old one; frames of this cycle may
+    # already carry the new time, and a flush that started on an old line put them in the old hour's file
+    off = self._clock[0] - self._clock[1]
+    self.raw_buf = [[r[0] + dt, *r[1:]] if abs(r[0] - r[1] - off) < CLOCK_JUMP_S else r
+                    for r in (self.boot_raw or []) + self.raw_buf]
+    self.boot_raw = None
+    self.raw_flush += dt
+    if self.session:
+      self._save_open()
 
   def _flush_held(self) -> None:
     if self.session:

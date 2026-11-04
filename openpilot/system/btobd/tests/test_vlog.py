@@ -265,19 +265,42 @@ def test_gap_does_not_grow_with_stale_power():
   assert s['gapS'] <= s['durationS']
 
 
-def test_clock_jump_closes_the_session():
+def test_clock_set_after_a_cold_boot_redates_the_drive_instead_of_cutting_it():
+  # 2026-11-03: every power cut booted the device at 2026-07-28 15:04 UTC; NTP set the clock minutes
+  # into the drive, and the drive came out as a '7/28' fragment plus the rest
   vl = vlog.VehicleLog('', write=False)
-  t, mono = 1_785_000_000.0, 100.0          # stale boot clock
+  t, mono = 1_785_250_000.0, 100.0          # stale boot clock
+  t2 = 1_793_745_000.0                      # what it really was
   v = {'gear': 'D', 'vehicleSpeedMph': 30.0, 'packVoltage': 360.0, 'packCurrent': -40.0}
   for i in range(30):
+    vl.frame(t + i, mono + i, 0x102, b'\x00' * 8, 'w:102')
     vl.update(t + i, v, dict.fromkeys(v, 0.0), mono=mono + i)
-  t2 = 1_793_000_000.0                      # NTP set the clock
   for i in range(30, 60):
+    vl.frame(t2 + i, mono + i, 0x102, b'\x00' * 8, 'w:102')
     vl.update(t2 + i, v, dict.fromkeys(v, 0.0), mono=mono + i)
   vl.close(t2 + 60)
   s = vl.out['sessions']
-  assert 'clock-jump' in s[0]['flags'] and all(x['end'] >= x['start'] for x in s)
-  assert s[-1]['start'] >= t2
+  assert len(s) == 1 and 'redated' in s[0]['flags']
+  assert s[0]['start'] == pytest.approx(t2, abs=1) and s[0]['durationS'] == pytest.approx(59, abs=2)
+  assert s[0]['miles'] == pytest.approx(30 * 59 / 3600, abs=0.01)   # the energy and distance across the jump count
+
+
+def test_raw_flushed_under_the_stale_clock_goes_out_again_under_the_real_time(tmp_path):
+  d = tmp_path / 'vlog'
+  vl = vlog.VehicleLog(str(d))
+  t, mono, t2 = 1_785_250_000.0, 100.0, 1_793_745_000.0
+  v = {'gear': 'P', 'packVoltage': 360.0, 'packCurrent': -1.0}
+  for i in range(40):                       # flushed every 10 s: lands in the 2026-07-28 file
+    vl.frame(t + i, mono + i, 0x102, b'\x00' * 8, 'w:102')
+    vl.update(t + i, v, dict.fromkeys(v, 0.0), mono=mono + i)
+  for i in range(40, 50):
+    vl.frame(t2 + i, mono + i, 0x102, b'\x00' * 8, 'w:102')
+    vl.update(t2 + i, v, dict.fromkeys(v, 0.0), mono=mono + i)
+  vl.close(t2 + 50)
+  real = [json.loads(x) for n in sorted(os.listdir(d)) if n.startswith('raw-20261103')
+          for x in gzip.open(d / n, 'rt')]
+  assert len(real) == 50 and all(t2 <= r[0] <= t2 + 50 for r in real)
+  assert [r[1] for r in real] == sorted(r[1] for r in real)
 
 
 RAW = os.path.join(os.path.dirname(__file__), 'data', 'raw_charge_20261030.jsonl.gz')
