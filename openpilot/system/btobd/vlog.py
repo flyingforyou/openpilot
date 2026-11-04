@@ -46,6 +46,7 @@ BOOT_RAW_S = 3600.0    # raw flushed this early in a run is kept in memory, to b
 BOOT_RAW_MAX = 60000
 MAX_GAP_S = 15.0       # energy is not integrated across a gap longer than this
 LINK_GAP_S = 600.0     # a session with no sample for this long is closed where it stopped
+PARKED_GAP_SOC = 1.0   # ...unless it is parked on both sides of the silence with the SOC within this
 REST_A = 5.0           # |packCurrent| at or under this counts as rest
 REST_HOLD_S = 60.0     # ... for this long before a resting snapshot
 HEALTH_EVERY_S = 6 * 3600
@@ -680,7 +681,7 @@ class VehicleLog:
           elif self.session:
             self.close(self.session.d['end'], 'restart')
       self._clock = (t, mono)
-    if self.session and t - self.session.d['end'] > LINK_GAP_S:
+    if self.session and t - self.session.d['end'] > LINK_GAP_S and not self._still_parked(v):
       # the link was down long enough that the car may have done anything meanwhile
       self.close(self.session.d['end'], 'link-gap')
     kw = v['packVoltage'] * v['packCurrent'] / 1000 if 'packVoltage' in v and 'packCurrent' in v else None
@@ -759,6 +760,15 @@ class VehicleLog:
     self._append('health.jsonl', snap)
     self.last_health, self.last_health_soc = t, soc
 
+  def _still_parked(self, v: dict) -> bool:
+    """A parked car that slept goes silent: 2026-11-03 18:48 to 11-04 07:10 in P the whole time came out
+    as three sessions, cut at each silence. It carries on when the first sample back is parked too
+    and the SOC has not moved -- a drive or a charge unseen would have moved it."""
+    d = self.session.d
+    soc, last = v.get(SOC_KEY), d.get('socEnd')
+    return (d['type'] == 'PARKED' and self.modes.candidate(v, False) in ('PARKED', None)
+            and soc is not None and last is not None and abs(soc - last) <= PARKED_GAP_SOC)
+
   def _redate(self, dt: float) -> None:
     """Everything still in memory that was timed by the old clock, moved by dt. Raw already on disk
     goes out again under the new time (the stale copies stay in their own hour's file); series and
@@ -816,6 +826,16 @@ class VehicleLog:
     if d['type'] in CHARGE_MODES:
       d.update(charge_end([s for s in self.recent if s['t'] >= d['start']], d.get('kwMax'), d['type'], until=d['end']))
     return d
+
+  def let_go(self, t: float) -> None:
+    """The link is dropped because the car is asleep. A parked session stays open, for _still_parked to
+    carry on when the car wakes; anything else ends here."""
+    if self.session and self.session.d['type'] == 'PARKED':
+      self._flush_held()
+      self._save_open()
+      self.flush_raw(t)
+    else:
+      self.close(t, 'car-asleep')
 
   def close(self, t: float, reason: str = 'stopped') -> None:
     self._flush_held()      # a mode that never won: its samples stay with the session they came in

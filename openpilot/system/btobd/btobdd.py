@@ -591,7 +591,7 @@ class Daemon:
           _take_cmd()   # a command for a dead adapter would only fire long after it was meant
         if self.elm is not None:
           self.disconnect()
-          self.vlog.close(time.time(), 'car-asleep')
+          self.vlog.let_go(time.time())
         time.sleep(0.5)
       if time.monotonic() - last_pub > 0.8 or self.elm is None:
         self._publish()

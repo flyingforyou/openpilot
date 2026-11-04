@@ -621,3 +621,33 @@ def test_neutral_at_a_standstill_parked_and_woken_is_not_a_drive():
   vl.close(t + 600)
   assert [s['type'] for s in vl.out['sessions']] == ['PARKED']
   assert vlog.ModeMachine.candidate({'gear': 'N', 'vehicleSpeedMph': 4.0}, False) == 'DRIVE'
+
+
+def test_a_parked_car_that_slept_stays_one_session():
+  # 2026-11-03 18:48 to 11-04 07:10, in P the whole time, came out as three parked sessions
+  vl = vlog.VehicleLog('', write=False)
+  t = 1_793_761_700.0
+  v = {'gear': 'P', 'socDisplay': 91.8, 'packVoltage': 390.0, 'packCurrent': -0.4}
+  for i in range(30):
+    vl.update(t + i * 5, v, dict.fromkeys(v, 0.0))
+  vl.let_go(t + 150)                                   # linger over, link dropped
+  v2 = {**v, 'socDisplay': 92.6}
+  for i in range(30):
+    vl.update(t + 6 * 3600 + i * 5, v2, dict.fromkeys(v2, 0.0))
+  vl.close(t + 6 * 3600 + 150)
+  s = vl.out['sessions']
+  assert len(s) == 1 and s[0]['type'] == 'PARKED' and s[0]['durationS'] > 6 * 3600
+
+
+def test_a_silence_that_hid_a_drive_still_splits():
+  vl = vlog.VehicleLog('', write=False)
+  t = 1_793_761_700.0
+  v = {'gear': 'P', 'socDisplay': 91.8, 'packVoltage': 390.0, 'packCurrent': -0.4}
+  for i in range(30):
+    vl.update(t + i * 5, v, dict.fromkeys(v, 0.0))
+  v2 = {**v, 'socDisplay': 85.0}                       # SOC moved: something happened unseen
+  for i in range(30):
+    vl.update(t + 3600 + i * 5, v2, dict.fromkeys(v2, 0.0))
+  vl.close(t + 3600 + 150)
+  s = vl.out['sessions']
+  assert len(s) == 2 and 'link-gap' in s[0]['flags']
