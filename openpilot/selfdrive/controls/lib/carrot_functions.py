@@ -10,7 +10,8 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_t_follow import low_speed_jerk_factor, ramp_t_follow
 from openpilot.selfdrive.controls.lib.lane_change_guards import side_lead_unsafe
-from openpilot.selfdrive.controls.lib.map_cruise import CURVE_LOOKAHEAD_T, MapCruiseController
+from openpilot.selfdrive.controls.lib import map_cruise as _map_cruise
+from openpilot.selfdrive.controls.lib.map_cruise import MapCruiseController
 from openpilot.selfdrive.controls.lib.model_stop import (
   STOP_ADJUST_SPEED_BP,
   STOP_ADJUST_SPEED_V,
@@ -31,7 +32,7 @@ from openpilot.selfdrive.selfdrived.events import Events
 # with the square of speed, which is what put the car 12m off a lead at 74mph on 2026-08-14.
 DEFAULT_COMFORT_BRAKE_2 = 2.5   # matches COMFORT_BRAKE in longitudinal_mpc_carrot/long_mpc.py
 
-_CURVE_MASK = np.asarray(ModelConstants.T_IDXS) <= CURVE_LOOKAHEAD_T
+_T_IDXS = np.asarray(ModelConstants.T_IDXS)
 
 EventName = log.OnroadEvent.EventName
 LaneChangeState = log.LaneChangeState
@@ -126,7 +127,7 @@ GAP_MULT_VALS = [1.0, 1.3, 1.6, 2.0]
 
 
 def _model_curvature(model) -> float:
-  """Tightest curvature the model sees within CURVE_LOOKAHEAD_T, 1/m. 0.0 if it cannot say.
+  """Tightest curvature the model sees between CURVE_START_T and CURVE_LOOKAHEAD_T, 1/m. 0.0 if it cannot say.
 
   Curvature is the yaw rate the path asks for divided by the speed it asks for. Taking the max
   over the window rather than the value at the horizon's end is what makes this a cap on the
@@ -137,10 +138,11 @@ def _model_curvature(model) -> float:
     velocity = np.asarray(model.velocity.x)
   except (AttributeError, ValueError):
     return 0.0
-  n = min(len(orientation_rate), len(velocity), len(_CURVE_MASK))
+  n = min(len(orientation_rate), len(velocity), len(_T_IDXS))
   if n < 2:
     return 0.0
-  mask = _CURVE_MASK[:n]
+  # read at call time so the window can be moved (map_cruise.CURVE_START_T / CURVE_LOOKAHEAD_T)
+  mask = (_T_IDXS[:n] >= _map_cruise.CURVE_START_T) & (_T_IDXS[:n] <= _map_cruise.CURVE_LOOKAHEAD_T)
   if not mask.any():
     return 0.0
   return float(np.max(np.abs(orientation_rate[:n][mask]) / np.maximum(velocity[:n][mask], 1.0)))

@@ -40,6 +40,8 @@ from openpilot.selfdrive.controls.lib import carrot_t_follow, research_long
 from openpilot.selfdrive.controls.lib.research_long import JerkLimiter, ResearchLongitudinal, more_binding
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeed, MAX_LAT_ACCEL as CURVE_LAT_ACCEL
 from openpilot.selfdrive.controls.lib.stopped_lead_early import StoppedLeadEarly
+from openpilot.selfdrive.controls.lib.lane_change_accel import LaneChangeAccel
+from openpilot.cereal import log as _log
 from opendbc.car.lateral import AVERAGE_ROAD_ROLL
 
 
@@ -198,6 +200,9 @@ class _CarrotLongitudinalPlannerImpl:
     self.stopped_lead = StoppedLeadEarly(dt)
     self.stopped_lead_enabled = True
     self.stopped_lead_cap = 0.0
+    # Accelerate out from behind a car during a lane change; see lane_change_accel.py.
+    self.lc_accel = LaneChangeAccel(dt)
+    self.lc_accel_enabled = True
 
   @staticmethod
   def parse_model(model_msg):
@@ -390,6 +395,7 @@ class _CarrotLongitudinalPlannerImpl:
       # radar now + the driving model's predicted change for the matched lead (long_mpc.model_lead_traj)
       self.mpc.lead_model_predict = self.params.get_bool("LeadModelPredict")
       self.stopped_lead_enabled = self.params.get_bool("StoppedLeadEarly")
+      self.lc_accel_enabled = self.params.get_bool("LaneChangeAccel")
       # BrakeOnsetJerk (0.1 m/s^3): how fast braking may build while the nearest lead is >= 3 s / 10 m away
       bj = self.params.get_int("BrakeOnsetJerk")
       self.cutin_mode = self.params.get_int("CutInSoftCap")
@@ -441,6 +447,13 @@ class _CarrotLongitudinalPlannerImpl:
       if self.research_active:
         self.output_should_stop = self.output_should_stop or (v_ego < 0.3 and output_a_target < 0.1)
 
+    changing = (self.mpc.mode == 'acc' and self.lc_accel_enabled and not reset_state and
+                sm['modelV2'].meta.laneChangeState == _log.LaneChangeState.laneChangeStarting)
+    a_max_free = min(float(carrot.get_carrot_accel(v_ego)), max(float(a_max_turns), 0.0))
+    side_lead = sm['radarState'].leadLeft if sm['carState'].leftBlinker else sm['radarState'].leadRight
+    output_a_target = self.lc_accel.update(output_a_target, changing, not carrot.laneChangeSideBlocked,
+                                           v_ego, v_cruise, a_max_free, sm['radarState'].leadOne, side_lead)
+
     # Last word in acc mode, after every lead-following rule: it can only lower the command.
     cap = None
     if self.mpc.mode == 'acc' and self.stopped_lead_enabled and not reset_state:
@@ -483,6 +496,7 @@ class _CarrotLongitudinalPlannerImpl:
     longitudinalPlan.curveSpeedVMax = self.curve_speed_v_max
     longitudinalPlan.curveSpeedATarget = self.curve_speed_a_target
     longitudinalPlan.stoppedLeadCap = self.stopped_lead_cap
+    longitudinalPlan.laneChangeAccelWeight = float(self.lc_accel.weight)
     longitudinalPlan.fcw = self.fcw
 
     longitudinalPlan.aTarget = float(self.output_a_target)

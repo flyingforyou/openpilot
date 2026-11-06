@@ -1308,6 +1308,8 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   curveSpeedATarget @53 :Float32;     # m/s^2 it would have commanded
   # stopped_lead_early.py's ceiling this frame, m/s^2; 0 = not limiting
   stoppedLeadCap @54 :Float32;
+  # lane_change_accel.py's blend toward free-road accel during a lane change, 0..1
+  laneChangeAccelWeight @55 :Float32;
 
   enum PlannerSource {
     stock @0;

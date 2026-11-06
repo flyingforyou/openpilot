@@ -169,6 +169,16 @@ MIN_TARGET = 20 * CV.KPH_TO_MS
 # but the number stands on its own: shorter and the cap arrives after the car is already in the
 # corner, longer and a bend well down the road holds the straight before it down.
 CURVE_LOOKAHEAD_T = 4.0
+# Where that window starts. It used to start at 0, so the bend the car was still in held the target
+# down until the wheel was nearly straight: through the last second of a tight turn the cap left
+# 0-3 km/h of room while the turn-accel cap had already let go (median of 5 no-lead turns), and the
+# car held its speed through the exit. Starting a little ahead it reads the road it is about to be
+# on; the bend it is in is still the turn-accel cap's (limit_accel_in_turns, 1 s ahead).
+# Closed loop over 15 tight turns since 10/31 (start 0 / 0.5 / 1.0 s): speed gained over the last
+# 2 s of the turn +0.9 / +1.9 / +2.9 km/h, in the 2 s after it +8.6 / +10.5 / +10.5. Peak lateral
+# accel moved only on the hardest turns, mid-turn: 4.52 -> 4.54 / 4.56 on the 0237 turn that
+# latched EPAS TMP_FAULT. 0.5 s keeps the exit gain without adding to that.
+CURVE_START_T = 0.5
 
 # Where the map's own road-ahead cubic takes over from the model, metres.
 #
