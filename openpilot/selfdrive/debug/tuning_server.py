@@ -887,6 +887,12 @@ class State:
             'curv150': round(2 * cs.navMap.curvC2 + 6 * cs.navMap.curvC3 * 150.0, 5),
             'curvRange': round(cs.navMap.curvRange, 0),
             'curvHealth': int(cs.navMap.curvHealth),
+            # CSA's view of the same road (C3 has always been 0), reaching further than the above.
+            'csa60': round(2 * cs.navMap.csaCurvC2 + 6 * cs.navMap.csaCurvC3 * 60.0, 5),
+            'csa150': round(2 * cs.navMap.csaCurvC2 + 6 * cs.navMap.csaCurvC3 * 150.0, 5),
+            'csaRange': round(cs.navMap.csaCurvRange, 0),
+            'freeway': bool(cs.navMap.controlledAccess),
+            'exitDist': round(cs.navMap.nextBranchDist, 0) if cs.navMap.nextBranchRightOffRamp else None,
             # seconds since each signal last carried a value; None = not once since the page's
             # server started
             'seen': {name: (round(now - map_seen[name], 1) if name in map_seen else None)
@@ -1822,6 +1828,10 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
     <div><div class="k">위치신뢰</div><div class="v"><span id="mconf">–</span><small>%</small></div></div>
     <div style="grid-column:1/-1"><div class="k">지도 곡률 (반경)</div>
       <div class="v" style="font-size:13px"><span id="mcurv">–</span></div></div>
+    <div style="grid-column:1/-1"><div class="k">CSA 곡률 (반경)</div>
+      <div class="v" style="font-size:13px"><span id="mcsa">–</span></div></div>
+    <div style="grid-column:1/-1"><div class="k">다음 오른쪽 출구</div>
+      <div class="v" style="font-size:13px"><span id="mexit">–</span></div></div>
   </div>
 </div>
 
@@ -1916,6 +1926,11 @@ function updateMap(m){
   $('mcurv').textContent = (m.curvHealth>0 && m.curvRange>0)
     ? `60m ${rad(m.curv60)} · 150m ${rad(m.curv150)} · 유효 ${m.curvRange}m`
     : '없음 (health 0)';
+  $('mcsa').textContent = m.csaRange>0
+    ? `60m ${rad(m.csa60)} · 150m ${rad(m.csa150)} · 유효 ${m.csaRange}m` : '없음';
+  // 300 is the field's ceiling, so it only says "at least 300 m".
+  $('mexit').textContent = m.exitDist==null || m.exitDist<0 ? (m.freeway?'고속도로 · 출구 정보 없음':'–')
+    : (m.exitDist>=300 ? '300m 이상' : `${m.exitDist}m`);
 }
 
 async function poll(){

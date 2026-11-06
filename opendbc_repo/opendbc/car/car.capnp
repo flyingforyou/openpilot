@@ -325,6 +325,21 @@ struct CarState {
     curvC3 @16 :Float32;      # 1/m^2
     curvRange @17 :Float32;   # m, how far ahead the cubic claims to describe. 0 = nothing to say
     curvHealth @18 :UInt8;    # 0 = do not use the cubic at all
+
+    # UI_driverAssistMapData (0x3C8). Over 111 countdowns the distance shrank at 0.91x the
+    # distance driven and every one was a freeway right exit, so read it as "metres to the next
+    # right off-ramp". 10 m steps; 300 means 300 m or more, -1 means no branch ahead (raw SNA).
+    controlledAccess @19 :Bool;   # freeway / limited-access road
+    nextBranchDist @20 :Float32;
+    nextBranchRightOffRamp @21 :Bool;
+
+    # UI_csaRoadCurvature (0x2E8), the curve-speed-assist view of the road ahead, same cubic form
+    # as above (C3 has always read 0 here). It reaches further than 0x2C8: against the curvature
+    # the car actually steered it correlates 0.50 at 60 m and 0.42 at 150 m, where 0x2C8 gets
+    # 0.42 and 0.05. 0 range = nothing to say.
+    csaCurvC2 @22 :Float32;     # 1/m
+    csaCurvC3 @23 :Float32;     # 1/m^2
+    csaCurvRange @24 :Float32;  # m
   }
 
   struct CruiseState {

@@ -49,6 +49,9 @@ NAV_MAP_STALE_FRAMES = 300
 # car down indefinitely. Half a second of silence is enough to stop believing it.
 CURVATURE_STALE_FRAMES = 50
 
+# UI_nextBranchDist is 5 bits x 10 m: 300 is "300 m or more" and the top code (310) is SNA.
+NEXT_BRANCH_MAX = 300.0
+
 # DAS_object gives each group about 6.7 Hz while carState runs at 100 Hz, so an object is only
 # refreshed every ~15 cycles. Half a second of silence is ten missed turns of its group, which is
 # a vehicle that has gone rather than one between updates.
@@ -126,6 +129,8 @@ class NavMapDecoder:
     self.stale_frames = NAV_MAP_STALE_FRAMES
     self.last_curv_nanos = 0
     self.curv_stale_frames = CURVATURE_STALE_FRAMES
+    self.last_csa_nanos = 0
+    self.csa_stale_frames = CURVATURE_STALE_FRAMES
 
   def update(self, ret: structs.CarState, cp_party, cp_ap_party) -> None:
     road_sign = cp_party.vl["UI_driverAssistRoadSign"]
@@ -200,6 +205,26 @@ class NavMapDecoder:
     nav.curvC3 = float(curv["UI_roadCurvC3"]) if fresh else 0.0
     nav.curvRange = float(curv["UI_roadCurvRange"]) if fresh else 0.0
     nav.curvHealth = int(curv["UI_roadCurvHealth"]) if fresh else 0
+
+    nav.controlledAccess = bool(map_data["UI_controlledAccess"])
+    branch_raw = float(map_data["UI_nextBranchDist"])
+    nav.nextBranchDist = branch_raw if nav.valid and branch_raw <= NEXT_BRANCH_MAX else -1.0
+    nav.nextBranchRightOffRamp = bool(map_data["UI_nextBranchRightOffRamp"])
+
+    # Registered with ignore_alive, so a car that never sends it reads as zeros, not CAN-invalid;
+    # the counter here is what stops a message that went quiet from holding its last bend.
+    csa = cp_party.vl["UI_csaRoadCurvature"]
+    csa_nanos = cp_party.ts_nanos["UI_csaRoadCurvature"]["UI_csaRoadCurvC2"]
+    if csa_nanos != self.last_csa_nanos:
+      self.last_csa_nanos = csa_nanos
+      self.csa_stale_frames = 0
+    else:
+      self.csa_stale_frames = min(self.csa_stale_frames + 1, CURVATURE_STALE_FRAMES)
+
+    csa_fresh = csa_nanos != 0 and self.csa_stale_frames < CURVATURE_STALE_FRAMES
+    nav.csaCurvC2 = float(csa["UI_csaRoadCurvC2"]) if csa_fresh else 0.0
+    nav.csaCurvC3 = float(csa["UI_csaRoadCurvC3"]) if csa_fresh else 0.0
+    nav.csaCurvRange = float(csa["UI_csaRoadCurvRange"]) if csa_fresh else 0.0
 
 
 class LegacySteerState(NamedTuple):
@@ -735,7 +760,7 @@ class CarState(CarStateBase):
   def get_can_parsers(CP):
     if CP.carFingerprint in LEGACY_CARS:
       return {
-        Bus.party: CANParser(DBC[CP.carFingerprint][Bus.party], [], CANBUS.party),
+        Bus.party: CANParser(DBC[CP.carFingerprint][Bus.party], [("UI_csaRoadCurvature", float('nan'))], CANBUS.party),
         Bus.ap_party: CANParser(DBC[CP.carFingerprint][Bus.party], [], CANBUS.autopilot_party),
         Bus.pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CANBUS.powertrain),
         Bus.ap_pt: CANParser(DBC[CP.carFingerprint][Bus.pt], [], CANBUS.autopilot_powertrain),

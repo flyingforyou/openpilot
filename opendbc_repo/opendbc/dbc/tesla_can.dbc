@@ -279,6 +279,20 @@ BO_ 558 PARK_sdiRear: 8 PARK
  SG_ PARK_sdiRearCounter : 54|2@1+ (1,0) [0|3] "" NEO
  SG_ PARK_sdiRearChecksum : 56|8@1+ (1,0) [0|255] "" NEO
 
+BO_ 296 UNK_speed128: 4 XXX
+ SG_ UNK128_vehicleSpeed : 16|16@1+ (0.015,0) [0|983.025] "km/h" NEO
+
+BO_ 542 UNK_steer21E: 8 XXX
+ SG_ UNK21E_steeringAngle : 40|16@1+ (0.0506,-1658) [-1658|1658.0] "deg" NEO
+
+BO_ 778 UNK_body30A: 8 XXX
+ SG_ UNK30A_leftTurnLamp : 46|1@1+ (1,0) [0|1] "" NEO
+ SG_ UNK30A_rightTurnLamp : 56|1@1+ (1,0) [0|1] "" NEO
+ SG_ UNK30A_doorsClosed : 58|1@1+ (1,0) [0|1] "" NEO
+
+BO_ 584 UNK_brake248: 4 XXX
+ SG_ UNK248_brakePedal : 23|1@1+ (1,0) [0|1] "" NEO
+
 BO_ 792 GTW_carState: 8 GTW
  SG_ YEAR : 0|7@1+ (1,2000) [2000|2127] "Year" NEO
  SG_ CERRD : 7|1@1+ (1,0) [0|1] "" NEO
