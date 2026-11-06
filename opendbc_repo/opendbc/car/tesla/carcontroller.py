@@ -72,6 +72,12 @@ class CarController(CarControllerBase):
     self.stalk_lever = StalkLever.IDLE
     self.stalk_press_frames = 0
     self.stalk_wait_frames = 0
+    # DAS_steeringControl's rolling counter. At startup the panda keeps forwarding the stock
+    # module's idle frames until one of ours continues their counter (see the handover in
+    # tesla_legacy.h), so until card says the panda has switched over, each frame carries the
+    # stock counter + 1; after that it counts on by itself. Set by card from pandaStates.
+    self.steer_counter = None
+    self.steer_counter_follow_stock = True
     self.packer = CANPacker(dbc_names[Bus.party])
     self.tesla_can = TeslaCAN(CP, self.packer)
 
@@ -263,6 +269,19 @@ class CarController(CarControllerBase):
     self.stalk_wait_frames = STALK_WAIT_FRAMES
     return [self.tesla_can.create_stalk_command(CS.stw_actn, self.stalk_lever)]
 
+  def _next_steer_counter(self, CS):
+    stock = getattr(CS, "stock_steer_counter", None)
+    if self.steer_counter_follow_stock and stock is not None:
+      # Our view of the stock stream can be a frame stale, so stock + 1 may repeat what we just
+      # sent; a repeat is a counter error to the EPAS, so step on instead.
+      counter = (stock + 1) % 16
+      self.steer_counter = (self.steer_counter + 1) % 16 if counter == self.steer_counter else counter
+    elif self.steer_counter is None:
+      self.steer_counter = (self.frame // 2) % 16
+    else:
+      self.steer_counter = (self.steer_counter + 1) % 16
+    return self.steer_counter
+
   def update(self, CC, CS, now_nanos):
     actuators = CC.actuators
     can_sends = []
@@ -302,8 +321,7 @@ class CarController(CarControllerBase):
         angle_cmd = self.coop_steer.update(self.apply_angle_last, lat_active, CS, self.VM).steeringAngleDeg
 
       if self.CP.carFingerprint in LEGACY_CARS:
-        cntr = (self.frame // 2) % 16
-        can_sends.append(self.tesla_can.create_steering_control(cntr, angle_cmd, lat_active))
+        can_sends.append(self.tesla_can.create_steering_control(self._next_steer_counter(CS), angle_cmd, lat_active))
       else:
         can_sends.append(self.tesla_can.create_steering_control(angle_cmd, lat_active))
 

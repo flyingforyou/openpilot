@@ -337,6 +337,14 @@ class Car:
         if self._ic_frame % 50 == 0:
           self._ic_enabled = self.params.get_bool("TeslaICIntegration")
         self.CI.CC.ic_enabled = self._ic_enabled
+      # Tesla HW1 startup handover: DAS_steeringControl follows the stock module's counter until
+      # pandaStates reports the car's safety mode. Replaying every logged start through the
+      # handover, stopping there was cleaner than holding on through pandaStates' 10 Hz lag.
+      if self.CP.brand == "tesla" and self.CI.CC is not None and hasattr(self.CI.CC, "steer_counter_follow_stock"):
+        car_safety = self.CP.safetyConfigs[0].safetyModel if len(self.CP.safetyConfigs) else None
+        in_car_mode = car_safety is not None and any(str(ps.safetyModel) == str(car_safety) for ps in self.sm['pandaStates'])
+        self.CI.CC.steer_counter_follow_stock = not in_car_mode
+
       # send car controls over can
       now_nanos = self.can_log_mono_time if REPLAY else int(time.monotonic() * 1e9)
       self.last_actuators_output, can_sends = self.CI.apply(CC, now_nanos)

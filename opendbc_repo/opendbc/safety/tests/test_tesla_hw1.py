@@ -20,6 +20,7 @@ MSG_DAS_object = 0x309
 # The cruise stalk. Also the gear selector on this car, which is the whole reason panda checks
 # the value rather than just the address.
 MSG_STW_ACTN_RQ = 0x45
+TESLA_STEER_HANDOVER_TIMEOUT_US = 100000  # tesla_legacy.h TESLA_STEER_HANDOVER_TIMEOUT
 MSG_DI_torque1 = 0x108  # HW1 uses different message ID
 
 
@@ -91,9 +92,7 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
     # LONG_CONTROL is what this class describes: every one of RELAY_MALFUNCTION_ADDRS,
     # FWD_BLACKLISTED_ADDRS and TX_MSGS assumes openpilot owns DAS_control. Stock ACC is the
     # other mode and gets its own class below.
-    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy,
-                                 int(TeslaSafetyFlags.FLAG_HW1 | TeslaSafetyFlags.LONG_CONTROL))
-    self.safety.init_tests()
+    self._init_mode(int(TeslaSafetyFlags.FLAG_HW1 | TeslaSafetyFlags.LONG_CONTROL))
 
   def _angle_cmd_msg(self, angle: float, state: bool | int, increment_timer: bool = True, bus: int = 0):
     values = {"DAS_steeringAngleRequest": angle, "DAS_steeringControlType": state}
@@ -272,6 +271,85 @@ class TestTeslaHW1Safety(common.CarSafetyTest, common.AngleSteeringSafetyTest, c
     """The stock module commanding angle on the camera bus, as it does through autopark."""
     return self._angle_cmd_msg(0, state=self.steer_control_types['ANGLE_CONTROL'], bus=2)
 
+  def _steer_frame(self, counter: int, state: str = 'NONE', bus: int = 0, angle: float = 0):
+    values = {"DAS_steeringAngleRequest": angle, "DAS_steeringControlType": self.steer_control_types[state],
+              "DAS_steeringControlCounter": counter}
+    return self.packer.make_can_msg_safety("DAS_steeringControl", bus, values)
+
+  def _init_mode(self, param: int, finish_handover: bool = True):
+    self._safety_param = param
+    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy, param)
+    self.safety.init_tests()
+    if finish_handover:
+      self._take_over_steering()
+
+  def _take_over_steering(self):
+    """Finish the startup DAS_steeringControl handover, so a test starts from the steady state the
+    rest of the drive runs in. With no stock frame ever seen, openpilot's first frame waits out
+    the handover timeout and then owns the channel."""
+    self.safety.set_timer(0)
+    self._tx(self._steer_frame(0))
+    self.safety.set_timer(TESLA_STEER_HANDOVER_TIMEOUT_US)
+    self.assertTrue(self._tx(self._steer_frame(0)))
+    self.safety.set_timer(0)
+
+  def _fresh_handover(self):
+    self._init_mode(self._safety_param, finish_handover=False)
+    self.safety.set_timer(0)
+
+  def test_startup_handover_forwards_stock_idle_until_counter_continues(self):
+    self._fresh_handover()
+    # The stock module's idle frames keep the EPAS fed until openpilot sends the frame that
+    # continues their counter; anything else from openpilot is held back meanwhile.
+    self.safety.set_timer(0)
+    self._rx(self._steer_frame(5, bus=2))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self.assertFalse(self._tx(self._steer_frame(3)))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self._rx(self._steer_frame(6, bus=2))
+    self.assertTrue(self._tx(self._steer_frame(7)))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    # and from then on openpilot owns it, counter or not
+    self._rx(self._steer_frame(8, bus=2))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self.assertTrue(self._tx(self._steer_frame(12)))
+
+  def test_startup_handover_waits_for_the_first_stock_frame(self):
+    # Right after the mode is set the stock counter is unknown: openpilot's frame waits instead of
+    # guessing, and the stock frame that arrives meanwhile is still forwarded.
+    self._fresh_handover()
+    self.assertFalse(self._tx(self._steer_frame(3)))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self._rx(self._steer_frame(5, bus=2))
+    self.assertTrue(self._tx(self._steer_frame(6)))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+
+  def test_startup_handover_times_out(self):
+    self._fresh_handover()
+    self._rx(self._steer_frame(5, bus=2))
+    self.assertFalse(self._tx(self._steer_frame(3)))
+    self.safety.set_timer(99000)
+    self.assertFalse(self._tx(self._steer_frame(3)))
+    self.safety.set_timer(100000)
+    self.assertTrue(self._tx(self._steer_frame(3)))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+
+  def test_engaging_ends_the_startup_handover(self):
+    self._fresh_handover()
+    self._rx(self._steer_frame(5, bus=2))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self.safety.set_controls_allowed(True)
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self.assertTrue(self._tx(self._steer_frame(3)))
+
+  def test_startup_handover_only_ever_forwards_idle_stock_frames(self):
+    self._fresh_handover()
+    # ANGLE_CONTROL from the stock module is never let through by the handover (autopark has
+    # its own gate), and openpilot takes the channel straight away.
+    self._rx(self._steer_frame(5, state='ANGLE_CONTROL', bus=2))
+    self.assertEqual(-1, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self.assertTrue(self._tx(self._steer_frame(3)))
+
   def test_stock_autopark_blocked_unless_opted_in(self):
     # Default HW1 config has no autopark flag, so the stock module stays gated exactly as before
     self._rx(self._stock_steering_msg())
@@ -412,10 +490,7 @@ class TestTeslaHW1StockAutoparkSafety(TestTeslaHW1Safety):
 
   def setUp(self):
     super().setUp()
-    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy,
-                                 int(TeslaSafetyFlags.FLAG_HW1 | TeslaSafetyFlags.LONG_CONTROL |
-                                     TeslaSafetyFlags.STOCK_AUTOPARK))
-    self.safety.init_tests()
+    self._init_mode(int(TeslaSafetyFlags.FLAG_HW1 | TeslaSafetyFlags.LONG_CONTROL | TeslaSafetyFlags.STOCK_AUTOPARK))
 
   def _assert_ap1_forwarded(self, forwarded: bool):
     expected = 0 if forwarded else -1
@@ -445,6 +520,14 @@ class TestTeslaHW1StockAutoparkSafety(TestTeslaHW1Safety):
     self.assertEqual(1, self._rx(lkas_cam))
     self.assertEqual(0, self.safety.safety_fwd_hook(2, lkas_cam.addr))
     self.assertFalse(self._tx(op_msg))
+
+  def test_startup_handover_only_ever_forwards_idle_stock_frames(self):
+    self._fresh_handover()
+    # Opted in, stock ANGLE_CONTROL is an autopark maneuver: its own gate forwards it and keeps
+    # openpilot off the bus. The handover has no say in that either way.
+    self._rx(self._steer_frame(5, state='ANGLE_CONTROL', bus=2))
+    self.assertEqual(0, self.safety.safety_fwd_hook(2, MSG_DAS_steeringControl))
+    self.assertFalse(self._tx(self._steer_frame(6)))
 
   def test_idle_stock_system_is_still_gated(self):
     self._rx(self._angle_cmd_msg(0, state=self.steer_control_types['NONE'], bus=2))
@@ -567,8 +650,7 @@ class TestTeslaHW1StockLongSafety(TestTeslaHW1Safety):
 
   def setUp(self):
     super().setUp()
-    self.safety.set_safety_hooks(CarParams.SafetyModel.teslaLegacy, int(TeslaSafetyFlags.FLAG_HW1))
-    self.safety.init_tests()
+    self._init_mode(int(TeslaSafetyFlags.FLAG_HW1))
 
   def test_no_longitudinal_tx(self):
     # engaged or not, with any payload -- the id is simply not ours in this mode

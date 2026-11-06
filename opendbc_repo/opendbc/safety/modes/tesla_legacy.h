@@ -49,6 +49,27 @@ static bool tesla_legacy_autopark_active = false;    // DAS_accState in the APC 
 static uint32_t tesla_legacy_autopark_ts = 0;
 static bool tesla_legacy_autopark_ts_valid = false;
 
+// Startup handover of DAS_steeringControl. Before this mode is set the relay is open and the EPAS
+// hears the stock DAS directly; the moment it closes, blocking the stock frame outright left the
+// EPAS with nothing for 7-89 ms (openpilot's next frame is up to a cycle away, and frames already
+// in flight were refused under the old mode) and then a counter that jumped, because openpilot's
+// rolling counter is its own. 41 of 41 logged starts had that hole; the drive whose cluster came
+// up with "Steering assist reduced" from the start had the longest one. So the stock module keeps
+// the channel, idle (NONE) frames only, until openpilot sends the frame that continues its counter
+// -- carcontroller derives its counter from the stock one until then -- and only that frame takes
+// over. Engaging, a stock module that isn't idle, or the timeout hands it over regardless.
+// Until the first stock frame in this mode has been seen its counter is unknown, so openpilot's
+// frames wait for it (or the timeout) rather than guessing; and since the fwd hook runs before the
+// rx hook, that first stock frame is forwarded on trust -- the same frame reached the EPAS straight
+// through the open relay a moment earlier.
+#define TESLA_STEER_HANDOVER_TIMEOUT 100000U  // us from openpilot's first frame
+static bool tesla_legacy_steer_handover_done = false;
+static bool tesla_legacy_steer_handover_started = false;
+static uint32_t tesla_legacy_steer_handover_ts = 0;
+static bool tesla_legacy_stock_steer_seen = false;       // a stock frame has arrived since init
+static bool tesla_legacy_stock_steer_idle = false;       // last stock frame on bus 2 was NONE
+static unsigned int tesla_legacy_stock_steer_counter = 0U;
+
 static void tesla_legacy_rx_hook(const CANPacket_t *msg) {
 
   // Steering angle: (0.1 * val) - 819.2 in deg.
@@ -126,6 +147,10 @@ static void tesla_legacy_rx_hook(const CANPacket_t *msg) {
       tesla_legacy_stock_lkas_prev = tesla_legacy_stock_lkas_now;
 
       tesla_legacy_autopark_steering = steering_control_type == 1;  // "ANGLE_CONTROL"
+
+      tesla_legacy_stock_steer_seen = true;
+      tesla_legacy_stock_steer_idle = steering_control_type == 0;  // "NONE"
+      tesla_legacy_stock_steer_counter = msg->data[2] & 0x0FU;
     }
 
     // Never hand the car over mid-drive: openpilot wins while it is engaged, and the stock
@@ -222,6 +247,26 @@ static bool tesla_legacy_tx_hook(const CANPacket_t *msg) {
       // bus at once is worse than neither
       violation = true;
     }
+
+    // Startup handover: while the stock idle frames still own the channel, only the frame that
+    // continues their counter may take it over. Anything else is held back so the EPAS never
+    // hears two counter sequences interleaved.
+    if (!violation && !tesla_legacy_steer_handover_done) {
+      const uint32_t now = microsecond_timer_get();
+      if (!tesla_legacy_steer_handover_started) {
+        tesla_legacy_steer_handover_started = true;
+        tesla_legacy_steer_handover_ts = now;
+      }
+      const unsigned int counter = msg->data[2] & 0x0FU;
+      const bool continues_stock = tesla_legacy_stock_steer_seen && (counter == ((tesla_legacy_stock_steer_counter + 1U) & 0x0FU));
+      const bool timed_out = safety_get_ts_elapsed(now, tesla_legacy_steer_handover_ts) >= TESLA_STEER_HANDOVER_TIMEOUT;
+      const bool stock_busy = tesla_legacy_stock_steer_seen && !tesla_legacy_stock_steer_idle;
+      if (continues_stock || timed_out || stock_busy || controls_allowed) {
+        tesla_legacy_steer_handover_done = true;
+      } else {
+        violation = true;
+      }
+    }
   }
 
   // STW_ACTN_RQ: the cruise stalk, driven to move the cluster's MAX speed.
@@ -314,8 +359,11 @@ static bool tesla_legacy_fwd_hook(int bus_num, int addr) {
       block_msg = true;
     }
 
-    // DAS_steeringControl
-    if (!tesla_external_panda && (addr == 0x488) && !tesla_legacy_stock_lkas) {
+    // DAS_steeringControl. Until openpilot has taken over (see the handover above), the stock
+    // module's idle frames keep reaching the EPAS so it never goes without one.
+    const bool stock_steer_handover = !tesla_legacy_steer_handover_done && !controls_allowed &&
+                                      (!tesla_legacy_stock_steer_seen || tesla_legacy_stock_steer_idle);
+    if (!tesla_external_panda && (addr == 0x488) && !tesla_legacy_stock_lkas && !stock_steer_handover) {
       block_msg = true;
     }
 
@@ -371,6 +419,12 @@ static safety_config tesla_legacy_init(uint16_t param) {
   tesla_legacy_autopark_active = false;
   tesla_legacy_autopark_ts = 0;
   tesla_legacy_autopark_ts_valid = false;
+  tesla_legacy_steer_handover_done = false;
+  tesla_legacy_steer_handover_started = false;
+  tesla_legacy_steer_handover_ts = 0;
+  tesla_legacy_stock_steer_seen = false;
+  tesla_legacy_stock_steer_idle = false;
+  tesla_legacy_stock_steer_counter = 0U;
   chassis_bus = 0U;
   di_torque1_msg = 0x106U;
 

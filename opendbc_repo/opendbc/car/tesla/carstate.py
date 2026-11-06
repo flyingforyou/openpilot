@@ -288,6 +288,8 @@ class CarState(CarStateBase):
     self.high_angle_rate_safety = False
     self.stock_autopark_frames = 0
     self.stock_autopark_offered = False
+    self.stock_steer_counter = None
+    self.cruise_on_under_autopark_mask = False
     self.das_control = None
     # Factory AP-side visualization frames. When IC integration is enabled, carcontroller
     # modifies these and panda forwards only the modified copy to the party bus. Keeping the
@@ -542,7 +544,18 @@ class CarState(CarStateBase):
     # so the car reports cruise enabled the moment the maneuver starts. Taking that at face value
     # made openpilot ask to cancel the cruise the park module was using and try to engage itself
     # in reverse; both came off this one signal.
-    ret.cruiseState.enabled = cruise_enabled and not self.autopark
+    #
+    # The mask covers autopark merely being on offer, which the panda knows nothing about: it
+    # takes the cruise rising edge as it happens. So a cruise that came on under the mask stays
+    # masked until it goes off. Releasing it when the offer ended handed openpilot a rising edge
+    # the panda had already spent minutes before (0246, 11/04): openpilot engaged, the panda never
+    # allowed controls, every steering frame was refused for 270 ms, and it ended in
+    # controlsMismatch. The driver's next cruise press is a rising edge both sides see.
+    if not cruise_enabled:
+      self.cruise_on_under_autopark_mask = False
+    elif self.autopark:
+      self.cruise_on_under_autopark_mask = True
+    ret.cruiseState.enabled = cruise_enabled and not self.autopark and not self.cruise_on_under_autopark_mask
     if speed_units == "KPH":
       ret.cruiseState.speed = max(cp_chassis.vl["DI_state"]["DI_digitalSpeed"] * CV.KPH_TO_MS, 1e-3)
     elif speed_units == "MPH":
@@ -620,6 +633,10 @@ class CarState(CarStateBase):
     # LKAS
     stock_steer_type = int(cp_ap_party.vl["DAS_steeringControl"]["DAS_steeringControlType"])
     ret.stockLkas = stock_steer_type == 2  # LANE_KEEP_ASSIST
+    # The stock module's rolling counter, for carcontroller to continue at the startup handover.
+    # None until a frame has actually arrived, so a missing module is never mistaken for counter 0.
+    stock_steer_seen = cp_ap_party.ts_nanos["DAS_steeringControl"]["DAS_steeringControlCounter"] != 0
+    self.stock_steer_counter = int(cp_ap_party.vl["DAS_steeringControl"]["DAS_steeringControlCounter"]) if stock_steer_seen else None
 
     # Stock Autosteer should be off (includes FSD)
     # ret.invalidLkasSetting = cp_ap_party.vl["DAS_settings"]["DAS_autosteerEnabled"] != 0
