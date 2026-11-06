@@ -1302,6 +1302,12 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   # Which planner produced this message. Both are in the tree and plannerd picks at startup, so a
   # log is otherwise ambiguous about which one was driving -- /shadow reads this to say so.
   plannerSource @50 :PlannerSource;
+  # Upstream CurveSpeed (PR #39242) run in shadow on aTarget: logged, never applied.
+  curveSpeedCorrection @51 :Float32;  # m/s^2 it would take off
+  curveSpeedVMax @52 :Float32;        # m/s, tightest speed it allows over 0.5-6 s; 0 = none
+  curveSpeedATarget @53 :Float32;     # m/s^2 it would have commanded
+  # stopped_lead_early.py's ceiling this frame, m/s^2; 0 = not limiting
+  stoppedLeadCap @54 :Float32;
 
   enum PlannerSource {
     stock @0;

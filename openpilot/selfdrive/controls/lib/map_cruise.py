@@ -363,13 +363,24 @@ class MapCruiseController:
     The cubic's curvature, 2 c2 + 6 c3 x, is linear in x, so its extreme over the window is at
     one end or the other and two evaluations find it exactly.
     """
-    if not self.use_map_curve or nav.curvHealth <= 0 or nav.curvRange <= 0.0:
+    if not self.use_map_curve:
+      return 0.0
+    return max(self._cubic_curvature(nav.curvC2, nav.curvC3, nav.curvRange if nav.curvHealth > 0 else 0.0, v_ego),
+               # The curve-speed-assist cubic (0x2E8) describes the same road with longer reach: against
+               # the curvature later steered it held r 0.42 at 150 m where 0x2C8 fell to 0.05. Replayed
+               # over every drive since 10/31 at 3.4 m/s^2 it bound on 0.16% of engaged >54 km/h frames,
+               # 59 of 63 sampled binds ahead of a real curve (>= 2.0 m/s^2 within 150 m), median 7 km/h.
+               self._cubic_curvature(nav.csaCurvC2, nav.csaCurvC3, nav.csaCurvRange, v_ego))
+
+  @staticmethod
+  def _cubic_curvature(c2: float, c3: float, curv_range: float, v_ego: float) -> float:
+    if curv_range <= 0.0:
       return 0.0
     # Never read past what the message says it describes; beyond that the cubic is extrapolation.
-    far = min(v_ego * CURVE_LOOKAHEAD_T, float(nav.curvRange))
+    far = min(v_ego * CURVE_LOOKAHEAD_T, float(curv_range))
     if far <= MAP_CURVE_NEAR:
       return 0.0
-    c2, c3 = float(nav.curvC2), float(nav.curvC3)
+    c2, c3 = float(c2), float(c3)
     return max(abs(2.0 * c2 + 6.0 * c3 * MAP_CURVE_NEAR), abs(2.0 * c2 + 6.0 * c3 * far))
 
   def update(self, CS, v_ego: float, v_cruise_driver: float, curvature: float = 0.0) -> float:

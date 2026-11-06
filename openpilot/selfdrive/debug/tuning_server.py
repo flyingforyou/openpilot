@@ -474,6 +474,16 @@ CARROT_SETTINGS = {
             "<br><br>닫힌루프 재현(10/01 붕끽 12·출발 12장면, IIDM 끔): FrogPilot 원식은 <b>정지한 앞차가 곧 출발한다고 예측</b>해서 1.1m 앞까지 붙고 앞차보다 먼저 출발했습니다(최소간격 0.9m). 그래서 앞차 2m/s 미만에선 레이더로 돌아가고, 모델이 레이더보다 <b>더 조심스러울 때만</b> 씁니다. 그래도 출발 8초 뒤 속도 37.9→35.2km/h로 답답해져서 기본은 꺼짐. 끽 평균 −3.10→−2.92, 붕 +1.31→+1.10.",
     "options": [(0, "사용 안 함 (기본)"), (1, "사용")],
   },
+  "StoppedLeadEarly": {
+    "label": "정지차 조기 감속 (레이더 전에 모델이 본 정지차)", "type": "bool",
+    "help": "카메라 모델이 멀리(40~120m) 서 있거나 아주 느린 차를 보는데 레이더가 아직 앞차로 잡지 않았을 때, "
+            "미리 약하게 감속합니다(확률 0.5 미만 최대 −1.0, 이상 −1.5 m/s²). 54km/h 이상에서만, 감속 쪽으로만 작동하고, "
+            "레이더가 그 차를 잡으면 바로 플래너에 넘깁니다."
+            "<br><br>근거: 11/4·11/5 FCW 두 번 모두 72km/h에서 정지차를 55m에서야 인식해 −5.8까지 급제동. "
+            "10/31 이후 전체 주행 재생: 정지차 접근 17번 중 13번을 레이더보다 평균 2.7초 먼저 감지, 두 FCW 포함. "
+            "닫힌루프(0245 FCW) 최대 제동 −4.84 → −4.70. 실제 감속이 뒤따르지 않은 헛감속은 약 10시간에 1번(−1.0, 1.2초).",
+    "options": [(1, "사용 (기본)"), (0, "사용 안 함")],
+  },
   "LeadBrakeFollow": {
     "label": "앞차가 밟으면 바로 따라 감속 (끽 줄이기)", "type": "int",
     "help": "레이더가 앞차의 감속(−0.5 이상)을 보는 순간 바로 감속을 시작합니다. 플래너는 원래 간격이 부족해 "
@@ -893,6 +903,10 @@ class State:
             'csaRange': round(cs.navMap.csaCurvRange, 0),
             'freeway': bool(cs.navMap.controlledAccess),
             'exitDist': round(cs.navMap.nextBranchDist, 0) if cs.navMap.nextBranchRightOffRamp else None,
+            # upstream CurveSpeed in shadow (logged, never applied) and the stopped-lead ceiling
+            'csVmax': round(sm['longitudinalPlan'].curveSpeedVMax, 2),
+            'csCorr': round(sm['longitudinalPlan'].curveSpeedCorrection, 2),
+            'slCap': round(sm['longitudinalPlan'].stoppedLeadCap, 2),
             # seconds since each signal last carried a value; None = not once since the page's
             # server started
             'seen': {name: (round(now - map_seen[name], 1) if name in map_seen else None)
@@ -1833,6 +1847,10 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
       <div class="v" style="font-size:13px"><span id="mcsa">–</span></div></div>
     <div style="grid-column:1/-1"><div class="k">다음 오른쪽 출구</div>
       <div class="v" style="font-size:13px"><span id="mexit">–</span></div></div>
+    <div style="grid-column:1/-1"><div class="k">커브 감속 (업스트림 · 관찰만, 적용 안 함)</div>
+      <div class="v" style="font-size:13px"><span id="mcs">–</span></div></div>
+    <div style="grid-column:1/-1"><div class="k">정지차 조기 감속</div>
+      <div class="v" style="font-size:13px"><span id="msl">–</span></div></div>
   </div>
 </div>
 
@@ -1932,6 +1950,11 @@ function updateMap(m){
   // 300 is the field's ceiling, so it only says "at least 300 m".
   $('mexit').textContent = m.exitDist==null || m.exitDist<0 ? (m.freeway?'고속도로 · 출구 정보 없음':'–')
     : (m.exitDist>=300 ? '300m 이상' : `${m.exitDist}m`);
+  // csVmax is the tightest speed it allows ahead; above ~150 mph it is just a straight road
+  $('mcs').textContent = !(m.csVmax>0) ? '–' : (m.csCorr>0.05
+    ? `${mph(m.csVmax)} mph까지 · −${m.csCorr.toFixed(2)} m/s² 줄였을 것`
+    : (m.csVmax*2.23694>150 ? '직선 · 개입 없음' : `${mph(m.csVmax)} mph까지 · 개입 없음`));
+  $('msl').textContent = m.slCap<0 ? `작동 중 · 최대 ${m.slCap.toFixed(2)} m/s²` : '대기';
 }
 
 async function poll(){

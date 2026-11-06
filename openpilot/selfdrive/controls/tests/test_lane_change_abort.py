@@ -5,6 +5,8 @@ which on route 00000087 segment 13 took 5.6 s with no check of any kind in betwe
 narrow window in which the blindspot can now stop it, and -- as much to the point -- that the
 window really is narrow, because reversing out of a change already half made is its own hazard.
 """
+from types import SimpleNamespace
+
 import pytest
 
 from openpilot.cereal import log
@@ -23,7 +25,7 @@ CRUISE = 60 * CV.MPH_TO_MS
 
 class CS:
   def __init__(self, *, right_blinker=False, left_blinker=False, pressed=False, torque=0.0,
-               right_bs=False, left_bs=False, v=CRUISE):
+               right_bs=False, left_bs=False, v=CRUISE, uss_rear=None):
     self.vEgo = v
     self.rightBlinker = right_blinker
     self.leftBlinker = left_blinker
@@ -32,6 +34,8 @@ class CS:
     self.rightBlindspot = right_bs
     self.leftBlindspot = left_bs
     self.brakePressed = False
+    if uss_rear is not None:
+      self.chassisSensors = SimpleNamespace(ussValid=True, ussRear=list(uss_rear))
 
 
 def commit_right(dh, **kw):
@@ -116,3 +120,48 @@ class TestWindow:
     """The justification for aborting at all: at 60mph a change covers 3.6m in 4-5s, so one
     second is about 0.7m and the car has not left its lane."""
     assert LANE_CHANGE_ABORT_S <= 1.0
+
+
+# ussRear is sensors 7..12: [7 right corner, 8 right side, 9, 10, 11 left side, 12 left corner]
+CLEAR = [500] * 6
+
+
+def side(right=500, left=500):
+  r = list(CLEAR)
+  r[1], r[4] = right, left
+  return r
+
+
+class TestUltrasonicSide:
+  def test_something_right_beside_the_rear_quarter_calls_it_off(self):
+    dh = DesireHelper()
+    commit_right(dh, uss_rear=CLEAR)
+    dh.update(CS(right_blinker=True, uss_rear=side(right=120)), True, 1.0)
+    assert dh.lane_change_state == LaneChangeState.preLaneChange
+
+  def test_it_holds_a_start_too(self):
+    dh = DesireHelper()
+    for _ in range(100):
+      dh.update(CS(right_blinker=True, pressed=True, torque=-1.5, uss_rear=side(right=120)), True, 1.0)
+    assert dh.lane_change_state == LaneChangeState.preLaneChange
+
+  @pytest.mark.parametrize("reading", [150, 230, 500, 511, 0, 1])
+  def test_far_no_object_sna_and_codes_do_not(self, reading):
+    dh = DesireHelper()
+    commit_right(dh, uss_rear=CLEAR)
+    dh.update(CS(right_blinker=True, uss_rear=side(right=reading)), True, 1.0)
+    assert dh.lane_change_state == LaneChangeState.laneChangeStarting
+
+  def test_only_the_side_being_moved_into(self):
+    dh = DesireHelper()
+    commit_right(dh, uss_rear=CLEAR)
+    dh.update(CS(right_blinker=True, uss_rear=side(left=100)), True, 1.0)
+    assert dh.lane_change_state == LaneChangeState.laneChangeStarting
+
+  def test_corner_sensors_are_not_used(self):
+    dh = DesireHelper()
+    commit_right(dh, uss_rear=CLEAR)
+    corner = list(CLEAR)
+    corner[0] = 100
+    dh.update(CS(right_blinker=True, uss_rear=corner), True, 1.0)
+    assert dh.lane_change_state == LaneChangeState.laneChangeStarting

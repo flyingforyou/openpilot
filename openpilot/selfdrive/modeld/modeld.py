@@ -460,7 +460,7 @@ def main(demo=False):
   # radarState is here only for the lane change gate's adjacent-lane leads. sm.update(0) is
   # non-blocking, so a service that never appears costs nothing but an empty message.
   sm = SubMaster(["deviceState", "carState", "narrowRoadCameraState", "extrinsicsCalibration", "driverMonitoringState", "carControl",
-                  "lateralDelay", "radarState"])
+                  "controlsState", "lateralDelay", "radarState"])
 
   publish_state = PublishState()
   params = Params()
@@ -620,6 +620,11 @@ def main(demo=False):
       posenet_send = messaging.new_message('cameraOdometry')
 
       lat_smooth_dynamic, _smooth_driver = get_lat_smooth_seconds_dynamic(model_output, lat_smooth_seconds)
+      # Upstream #39091: while lateral is off, seed the smoothed curvature from what the car is
+      # actually doing, so the first command after engaging starts at the wheel instead of at
+      # wherever the smoothing drifted to.
+      if not sm['carControl'].latActive:
+        prev_action.desiredCurvature = sm['controlsState'].curvature
       action = get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego,
                                      lat_smooth_dynamic)
       prev_action = action

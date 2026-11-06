@@ -38,6 +38,9 @@ from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_functions import CarrotPlanner
 from openpilot.selfdrive.controls.lib import carrot_t_follow, research_long
 from openpilot.selfdrive.controls.lib.research_long import JerkLimiter, ResearchLongitudinal, more_binding
+from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeed, MAX_LAT_ACCEL as CURVE_LAT_ACCEL
+from openpilot.selfdrive.controls.lib.stopped_lead_early import StoppedLeadEarly
+from opendbc.car.lateral import AVERAGE_ROAD_ROLL
 
 
 LON_MPC_STEP = 0.2  # first step is 0.2s
@@ -50,6 +53,19 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 RESET_DECEL_RAMP_TIME = 2.0
 TURN_CURVATURE_LOOKAHEAD = 1.0
 TURN_CURVATURE_MIN_SPEED = 3.0
+
+
+def curve_speed_v_max(model, roll):
+  """The tightest speed upstream CurveSpeed would allow over its 0.5-6 s window, m/s; 0 if none."""
+  plan_t, plan_v, yaw_rate = (np.array(x) for x in (model.position.t, model.velocity.x, model.orientationRate.z))
+  if not (len(plan_t) == len(plan_v) == len(yaw_rate)) or len(plan_t) == 0:
+    return 0.0
+  ahead = (plan_t > 0.5) & (plan_t < 6.0)
+  if not ahead.any():
+    return 0.0
+  bank = np.minimum(roll * np.sign(yaw_rate[ahead]), AVERAGE_ROAD_ROLL)
+  curvature = np.abs(yaw_rate[ahead]) / np.maximum(plan_v[ahead], 1.0)
+  return float(np.min(np.sqrt(np.maximum(CURVE_LAT_ACCEL + 9.81 * bank, 0.0) / np.maximum(curvature, 1e-4))))
 
 
 def get_max_accel(v_ego):
@@ -173,6 +189,15 @@ class _CarrotLongitudinalPlannerImpl:
     self.research_mode = 0
     self.research_active = False
     self._research_param_count = -1
+    # Upstream CurveSpeed (PR #39242) in shadow: computed on our final command and logged, never
+    # applied. Upstream hangs it off the e2e accel, which this planner does not use in acc mode.
+    self.curve_speed = CurveSpeed(dt)
+    self.curve_speed_a_target = 0.0
+    self.curve_speed_v_max = 0.0
+    # A model-seen stopped car before the radar has it; see stopped_lead_early.py.
+    self.stopped_lead = StoppedLeadEarly(dt)
+    self.stopped_lead_enabled = True
+    self.stopped_lead_cap = 0.0
 
   @staticmethod
   def parse_model(model_msg):
@@ -364,6 +389,7 @@ class _CarrotLongitudinalPlannerImpl:
       self.research_mode = self.params.get_int("LongResearchMode")
       # radar now + the driving model's predicted change for the matched lead (long_mpc.model_lead_traj)
       self.mpc.lead_model_predict = self.params.get_bool("LeadModelPredict")
+      self.stopped_lead_enabled = self.params.get_bool("StoppedLeadEarly")
       # BrakeOnsetJerk (0.1 m/s^3): how fast braking may build while the nearest lead is >= 3 s / 10 m away
       bj = self.params.get_int("BrakeOnsetJerk")
       self.cutin_mode = self.params.get_int("CutInSoftCap")
@@ -415,6 +441,23 @@ class _CarrotLongitudinalPlannerImpl:
       if self.research_active:
         self.output_should_stop = self.output_should_stop or (v_ego < 0.3 and output_a_target < 0.1)
 
+    # Last word in acc mode, after every lead-following rule: it can only lower the command.
+    cap = None
+    if self.mpc.mode == 'acc' and self.stopped_lead_enabled and not reset_state:
+      cap = self.stopped_lead.update(v_ego, sm['modelV2'], sm['radarState'].leadOne)
+    else:
+      self.stopped_lead.reset()
+    if cap is not None:
+      output_a_target = min(output_a_target, cap)
+    self.stopped_lead_cap = float(cap) if cap is not None else 0.0
+
+    # Shadow only: what upstream CurveSpeed would make of this command. Logged, not applied.
+    if reset_state:
+      self.curve_speed.reset()
+    roll = float(sm['vehicleParameters'].roll)
+    self.curve_speed_a_target = float(self.curve_speed.update(sm['modelV2'], roll, output_a_target))
+    self.curve_speed_v_max = curve_speed_v_max(sm['modelV2'], roll)
+
     self.output_a_target = output_a_target
     self.output_v_target_now = output_v_target_now
     self.output_j_target_now = self.j_desired_trajectory[0]
@@ -426,7 +469,7 @@ class _CarrotLongitudinalPlannerImpl:
 
     longitudinalPlan = plan_send.longitudinalPlan
     longitudinalPlan.modelMonoTime = sm.logMonoTime['modelV2']
-    longitudinalPlan.processingDelay = (plan_send.logMonoTime / 1e9) - sm.logMonoTime['modelV2']
+    longitudinalPlan.processingDelay = (plan_send.logMonoTime - sm.logMonoTime['modelV2']) / 1e9
     longitudinalPlan.solverExecutionTime = self.mpc.solve_time
 
     longitudinalPlan.speeds = self.v_desired_trajectory.tolist()
@@ -436,6 +479,10 @@ class _CarrotLongitudinalPlannerImpl:
     longitudinalPlan.hasLead = sm['radarState'].leadOne.present
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
     longitudinalPlan.plannerSource = 'carrot'
+    longitudinalPlan.curveSpeedCorrection = float(self.curve_speed.correction)
+    longitudinalPlan.curveSpeedVMax = self.curve_speed_v_max
+    longitudinalPlan.curveSpeedATarget = self.curve_speed_a_target
+    longitudinalPlan.stoppedLeadCap = self.stopped_lead_cap
     longitudinalPlan.fcw = self.fcw
 
     longitudinalPlan.aTarget = float(self.output_a_target)

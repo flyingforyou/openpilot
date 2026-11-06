@@ -119,3 +119,22 @@ def target_lane_lead(meta, lead_left, lead_right, lead_two):
   if lead_two is not None and lead_two.present and lead_two.dRel <= target.dRel:
     return None
   return target
+
+
+# The rear side ultrasonics (8 right, 11 left; ussRear[1] and ussRear[4]) look straight out from the
+# rear quarter. Anything inside USS_SIDE_CLOSE_CM there is beside the car, whatever the blindspot
+# flag has decided yet. 1.5 m and the side sensors only: over 140 lane change starts since 10/31,
+# that blocks none of them, where 2.0 m on side + corner sensors would have blocked 3 completed
+# right-hand changes at 120-129 km/h with nothing reported there, and 2.5 m seven. Corner sensors
+# and the front ones are left out for the same reason -- at freeway speed the left ones read
+# 1.5-2.5 m off barriers and ground on 6-10% of frames with no car near.
+USS_SIDE_CLOSE_CM = 150
+USS_MIN_CM = 20  # 0 is "blocked", 1 is a near-field code, neither is a distance
+
+
+def uss_side_close(carstate, left: bool) -> bool:
+  cs = getattr(carstate, 'chassisSensors', None)
+  if cs is None or not cs.ussValid or len(cs.ussRear) < 6:
+    return False
+  reading = int(cs.ussRear[4] if left else cs.ussRear[1])
+  return USS_MIN_CM < reading < USS_SIDE_CLOSE_CM

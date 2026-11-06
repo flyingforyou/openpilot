@@ -1,7 +1,7 @@
 from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.controls.lib.lane_change_guards import lane_exists, side_lead_unsafe
+from openpilot.selfdrive.controls.lib.lane_change_guards import lane_exists, side_lead_unsafe, uss_side_close
 
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
@@ -77,11 +77,12 @@ class DesireHelper:
 
   @staticmethod
   def _occupied(carstate, overtaking, direction) -> bool:
-    """Is that side occupied -- seen by the blindspot, or known to be from an overtake."""
+    """Is that side occupied -- seen by the blindspot, close to a rear side ultrasonic, or known to
+    be from an overtake."""
     if direction == LaneChangeDirection.left:
-      return bool(carstate.leftBlindspot or overtaking[0])
+      return bool(carstate.leftBlindspot or overtaking[0] or uss_side_close(carstate, left=True))
     if direction == LaneChangeDirection.right:
-      return bool(carstate.rightBlindspot or overtaking[1])
+      return bool(carstate.rightBlindspot or overtaking[1] or uss_side_close(carstate, left=False))
     return False
 
   def _reset_auto(self) -> None:

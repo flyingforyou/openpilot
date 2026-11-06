@@ -36,6 +36,9 @@ class FakeNav:
     self.curvC3 = 0.0
     self.curvRange = 0.0
     self.curvHealth = 0
+    self.csaCurvC2 = 0.0
+    self.csaCurvC3 = 0.0
+    self.csaCurvRange = 0.0
 
 
 class FakeCS:

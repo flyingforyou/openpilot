@@ -19,11 +19,14 @@ MPH = CV.MPH_TO_MS
 
 class Nav:
   """Only the fields _map_curvature reads."""
-  def __init__(self, c2=0.0, c3=0.0, rng=252.0, health=3):
+  def __init__(self, c2=0.0, c3=0.0, rng=252.0, health=3, csa_c2=0.0, csa_c3=0.0, csa_rng=0.0):
     self.curvC2 = c2
     self.curvC3 = c3
     self.curvRange = rng
     self.curvHealth = health
+    self.csaCurvC2 = csa_c2
+    self.csaCurvC3 = csa_c3
+    self.csaCurvRange = csa_rng
 
 
 def controller(use_map_curve=True, lat_accel=3.0):
@@ -259,3 +262,29 @@ class TestCurveRelease:
     nav.baseSpeedLimit = nav.mapSpeedLimit = nav.mppSpeedLimit = nav.fusedSpeedLimit = 45 * MPH
     out = self._drive(c, nav, [0.0] * int((mc.RAISE_DWELL_AFTER_CURVE + 0.2) / 0.05))
     assert out[-1] > low + 10                         # taken after the short dwell, not RAISE_DWELL
+
+
+class TestCsaSource:
+  """0x2E8, the curve-speed-assist cubic, read the same way alongside 0x2C8."""
+  def test_csa_alone_is_read(self):
+    nav = Nav(health=0, csa_c2=0.002, csa_rng=200.0)
+    assert controller()._map_curvature(nav, FAST) == pytest.approx(0.004)
+
+  def test_tighter_of_the_two_wins(self):
+    nav = Nav(c2=0.001, csa_c2=0.003, csa_rng=200.0)
+    assert controller()._map_curvature(nav, FAST) == pytest.approx(0.006)
+    nav = Nav(c2=0.004, csa_c2=0.001, csa_rng=200.0)
+    assert controller()._map_curvature(nav, FAST) == pytest.approx(0.008)
+
+  def test_csa_sign_does_not_matter(self):
+    # 0x2E8 runs the opposite sign convention to the steering; only the magnitude caps speed
+    nav = Nav(health=0, csa_c2=-0.002, csa_rng=200.0)
+    assert controller()._map_curvature(nav, FAST) == pytest.approx(0.004)
+
+  def test_csa_says_nothing_inside_the_models_range(self):
+    nav = Nav(health=0, csa_c2=0.01, csa_rng=50.0)
+    assert controller()._map_curvature(nav, FAST) == 0.0
+
+  def test_turning_the_map_curve_off_drops_csa_too(self):
+    nav = Nav(health=0, csa_c2=0.002, csa_rng=200.0)
+    assert controller(use_map_curve=False)._map_curvature(nav, FAST) == 0.0
