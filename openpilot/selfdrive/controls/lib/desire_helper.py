@@ -1,7 +1,8 @@
 from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.controls.lib.lane_change_guards import lane_exists, side_lead_unsafe, uss_side_close
+from openpilot.selfdrive.controls.lib.lane_change_guards import (USS_FRONT_HOLD_S, lane_exists, side_lead_unsafe,
+                                                                  uss_front_corner_close, uss_rear_close)
 
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
@@ -51,6 +52,9 @@ class DesireHelper:
     # staying on. Both clear when the state machine leaves the lane change entirely.
     self.auto_blocked_by_brake = False
     self.auto_already_changed = False
+    # How long each front corner ultrasonic (left, right) has read something close; see
+    # lane_change_guards.USS_FRONT_HOLD_S for why a front corner has to hold before it counts.
+    self.uss_front_close_t = [0.0, 0.0]
     self._param_frame = PARAM_REFRESH_FRAMES
     # Imported here rather than at module scope: Params needs a native library that only exists
     # after a build, and this module is worth being able to import and test without one.
@@ -75,15 +79,15 @@ class DesireHelper:
   def get_lane_change_direction(CS):
     return LaneChangeDirection.left if CS.leftBlinker else LaneChangeDirection.right
 
-  @staticmethod
-  def _occupied(carstate, overtaking, direction) -> bool:
-    """Is that side occupied -- seen by the blindspot, close to a rear side ultrasonic, or known to
-    be from an overtake."""
-    if direction == LaneChangeDirection.left:
-      return bool(carstate.leftBlindspot or overtaking[0] or uss_side_close(carstate, left=True))
-    if direction == LaneChangeDirection.right:
-      return bool(carstate.rightBlindspot or overtaking[1] or uss_side_close(carstate, left=False))
-    return False
+  def _occupied(self, carstate, overtaking, direction) -> bool:
+    """Is that side occupied -- seen by the blindspot, close to the side-looking ultrasonics, or
+    known to be from an overtake."""
+    if direction == LaneChangeDirection.none:
+      return False
+    left = direction == LaneChangeDirection.left
+    blindspot = carstate.leftBlindspot if left else carstate.rightBlindspot
+    uss = uss_rear_close(carstate, left) or self.uss_front_close_t[0 if left else 1] >= USS_FRONT_HOLD_S
+    return bool(blindspot or overtaking[0 if left else 1] or uss)
 
   def _reset_auto(self) -> None:
     self.auto_lane_change_timer = 0.0
@@ -105,6 +109,8 @@ class DesireHelper:
     without either having to learn a second way of being told the lane is occupied.
     """
     self._read_params()
+    for i, left in enumerate((True, False)):
+      self.uss_front_close_t[i] = self.uss_front_close_t[i] + DT_MDL if uss_front_corner_close(carstate, left) else 0.0
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN

@@ -121,20 +121,44 @@ def target_lane_lead(meta, lead_left, lead_right, lead_two):
   return target
 
 
-# The rear side ultrasonics (8 right, 11 left; ussRear[1] and ussRear[4]) look straight out from the
-# rear quarter. Anything inside USS_SIDE_CLOSE_CM there is beside the car, whatever the blindspot
-# flag has decided yet. 1.5 m and the side sensors only: over 140 lane change starts since 10/31,
-# that blocks none of them, where 2.0 m on side + corner sensors would have blocked 3 completed
-# right-hand changes at 120-129 km/h with nothing reported there, and 2.5 m seven. Corner sensors
-# and the front ones are left out for the same reason -- at freeway speed the left ones read
-# 1.5-2.5 m off barriers and ground on 6-10% of frames with no car near.
-USS_SIDE_CLOSE_CM = 150
+# The ultrasonics that look sideways at speed: the rear side pair (8 right, 11 left; ussRear[1] and
+# [4]), the rear corners (7 right, 12 left; ussRear[0] and [5]) and the front corners (6 right,
+# 1 left; ussFront[5] and [0]). The centre ones only ever see anything below ~10 km/h. Anything
+# inside USS_CLOSE_CM on the side being moved into is beside the car, whatever the blindspot flag
+# has decided yet.
+#
+# Replayed over 140 lane change starts since 10/31 (start, and the 1 s abort window after it):
+#   rear side + rear corner at 1.5 m: blocks none; reads "occupied" with no blindspot flag on 0.23%
+#     of engaged >54 km/h frames
+#   + front corner at 1.5 m, instant: blocks 1 -- a single-frame 1.26 m spike on a corner that
+#     otherwise read 3.5-4.9 m (the front corners' road noise floor at speed)
+#   + front corner at 1.5 m held USS_FRONT_HOLD_S: blocks none, 0.35% with no flag
+#   everything at 2.0 m: blocks 4-8 completed changes, ~2% with no flag
+# So the rear ones count at once and a front corner has to stay close for a moment.
+USS_CLOSE_CM = 150
+USS_FRONT_HOLD_S = 0.4
 USS_MIN_CM = 20  # 0 is "blocked", 1 is a near-field code, neither is a distance
 
 
-def uss_side_close(carstate, left: bool) -> bool:
+def _uss(carstate):
   cs = getattr(carstate, 'chassisSensors', None)
-  if cs is None or not cs.ussValid or len(cs.ussRear) < 6:
+  if cs is None or not cs.ussValid or len(cs.ussRear) < 6 or len(cs.ussFront) < 6:
+    return None
+  return cs
+
+
+def _close(reading) -> bool:
+  return USS_MIN_CM < int(reading) < USS_CLOSE_CM
+
+
+def uss_rear_close(carstate, left: bool) -> bool:
+  cs = _uss(carstate)
+  if cs is None:
     return False
-  reading = int(cs.ussRear[4] if left else cs.ussRear[1])
-  return USS_MIN_CM < reading < USS_SIDE_CLOSE_CM
+  side, corner = (cs.ussRear[4], cs.ussRear[5]) if left else (cs.ussRear[1], cs.ussRear[0])
+  return _close(side) or _close(corner)
+
+
+def uss_front_corner_close(carstate, left: bool) -> bool:
+  cs = _uss(carstate)
+  return cs is not None and _close(cs.ussFront[0] if left else cs.ussFront[5])

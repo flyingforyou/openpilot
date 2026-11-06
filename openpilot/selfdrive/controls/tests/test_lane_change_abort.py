@@ -25,7 +25,7 @@ CRUISE = 60 * CV.MPH_TO_MS
 
 class CS:
   def __init__(self, *, right_blinker=False, left_blinker=False, pressed=False, torque=0.0,
-               right_bs=False, left_bs=False, v=CRUISE, uss_rear=None):
+               right_bs=False, left_bs=False, v=CRUISE, uss_rear=None, uss_front=None):
     self.vEgo = v
     self.rightBlinker = right_blinker
     self.leftBlinker = left_blinker
@@ -34,8 +34,9 @@ class CS:
     self.rightBlindspot = right_bs
     self.leftBlindspot = left_bs
     self.brakePressed = False
-    if uss_rear is not None:
-      self.chassisSensors = SimpleNamespace(ussValid=True, ussRear=list(uss_rear))
+    if uss_rear is not None or uss_front is not None:
+      self.chassisSensors = SimpleNamespace(ussValid=True, ussRear=list(uss_rear or [500] * 6),
+                                            ussFront=list(uss_front or [500] * 6))
 
 
 def commit_right(dh, **kw):
@@ -158,10 +159,30 @@ class TestUltrasonicSide:
     dh.update(CS(right_blinker=True, uss_rear=side(left=100)), True, 1.0)
     assert dh.lane_change_state == LaneChangeState.laneChangeStarting
 
-  def test_corner_sensors_are_not_used(self):
+  def test_the_rear_corner_counts_at_once(self):
     dh = DesireHelper()
     commit_right(dh, uss_rear=CLEAR)
     corner = list(CLEAR)
-    corner[0] = 100
+    corner[0] = 100   # sensor 7, right rear corner
     dh.update(CS(right_blinker=True, uss_rear=corner), True, 1.0)
+    assert dh.lane_change_state == LaneChangeState.preLaneChange
+
+  def test_a_front_corner_spike_does_not(self):
+    """The front corners read 3.5-4.9 m of road noise at speed and spike now and then; one
+    such 1.26 m blip mid-change is what the hold is for."""
+    dh = DesireHelper()
+    commit_right(dh, uss_rear=CLEAR)
+    front = [500] * 6
+    front[5] = 126    # sensor 6, right front corner
+    dh.update(CS(right_blinker=True, uss_rear=CLEAR, uss_front=front), True, 1.0)
+    dh.update(CS(right_blinker=True, uss_rear=CLEAR), True, 1.0)
     assert dh.lane_change_state == LaneChangeState.laneChangeStarting
+
+  def test_a_front_corner_that_stays_close_does(self):
+    dh = DesireHelper()
+    commit_right(dh, uss_rear=CLEAR)
+    front = [500] * 6
+    front[5] = 126
+    for _ in range(int(0.4 / DT_MDL) + 1):
+      dh.update(CS(right_blinker=True, uss_rear=CLEAR, uss_front=front), True, 1.0)
+    assert dh.lane_change_state == LaneChangeState.preLaneChange
