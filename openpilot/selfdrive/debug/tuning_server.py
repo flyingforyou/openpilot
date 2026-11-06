@@ -1809,10 +1809,11 @@ font-size:13px;opacity:0;transform:translateY(8px);transition:.2s;pointer-events
     <div><div class="k">바퀴 속도 RL / RR</div><div class="v" style="font-size:14px"><span id="whR">–</span><small>mph</small></div></div>
     <div><div class="k">마찰 제동 앞 L / R</div><div class="v" style="font-size:14px"><span id="btF">–</span><small>Nm</small></div></div>
     <div><div class="k">마찰 제동 뒤 L / R</div><div class="v" style="font-size:14px"><span id="btR">–</span><small>Nm</small></div></div>
-    <div style="grid-column:1/-1"><div class="k">초음파 앞 1–6 (cm, · = 감지 없음)</div>
-      <div class="v" style="font-size:13px;font-family:ui-monospace,monospace;white-space:pre" id="ussF">–</div></div>
-    <div style="grid-column:1/-1"><div class="k">초음파 뒤 7–12</div>
-      <div class="v" style="font-size:13px;font-family:ui-monospace,monospace;white-space:pre" id="ussR">–</div></div>
+    <div style="grid-column:1/-1"><div class="k">초음파 (위가 앞 · 숫자 cm · 빨강 ≤60 · 주황 ≤150 · 초록 감지 · 회색 없음)</div>
+      <svg id="ussCar" viewBox="0 0 240 300" style="width:100%;max-width:300px;display:block;margin:6px auto 0"></svg></div>
+    <div style="grid-column:1/-1"><div class="k">초음파 앞 1–6 / 뒤 7–12 (· = 감지 없음)</div>
+      <div class="v" style="font-size:12px;font-family:ui-monospace,monospace;white-space:pre" id="ussF">–</div>
+      <div class="v" style="font-size:12px;font-family:ui-monospace,monospace;white-space:pre" id="ussR">–</div></div>
   </div>
 </div>
 
@@ -1972,6 +1973,35 @@ function updateChassis(c){
   const uss=a=>a?a.map(v=>v===500?'  · ':v===511?'  - ':v===0?' 막힘':String(v).padStart(4)).join(' '):'–';
   $('ussF').textContent=uss(c.ussFront);
   $('ussR').textContent=uss(c.ussRear);
+  drawUss(c.ussFront, c.ussRear);
+}
+
+// Sensor positions from the 2026-11-04 lane-change survey: 1/6 front corners, 2-5 front centre
+// (left to right, which only see anything at walking pace), 7/12 rear corners, 8/11 rear sides.
+// 9/10's left-right order is not measured yet. [id, x, y, label dx, label dy]
+const USS_POS=[[1,70,62,-24,-6],[2,90,50,-6,-10],[3,110,46,0,-10],[4,130,46,0,-10],[5,150,50,6,-10],[6,170,62,24,-6],
+  [11,62,222,-26,0],[12,72,246,-22,10],[10,104,254,-4,16],[9,136,254,4,16],[7,168,246,22,10],[8,178,222,26,0]];
+function drawUss(front, rear){
+  const svg=$('ussCar'); if(!svg) return;
+  if(!svg.firstChild){
+    svg.innerHTML='<rect x="70" y="52" width="100" height="200" rx="26" fill="none" stroke="var(--dim)" stroke-width="2"/>'
+      +'<path d="M84 100 h72 M84 205 h72" stroke="var(--line)" stroke-width="2"/>'
+      +USS_POS.map(([i,x,y,dx,dy])=>`<circle id="usc${i}" cx="${x}" cy="${y}" r="7" stroke-width="2"/>`
+        +`<text id="ust${i}" x="${x+dx}" y="${y+dy+4}" text-anchor="middle" font-size="11" font-family="ui-monospace,monospace"></text>`).join('');
+  }
+  const vals={};
+  (front||[]).forEach((v,k)=>vals[k+1]=v); (rear||[]).forEach((v,k)=>vals[k+7]=v);
+  USS_POS.forEach(([i])=>{
+    const v=vals[i], dot=$('usc'+i), t=$('ust'+i);
+    let fill='none', stroke='var(--line)', txt='';
+    if(v==null){ stroke='var(--line)'; }
+    else if(v===511){ stroke='var(--dim)'; txt='-'; }
+    else if(v===0){ fill='var(--mut)'; stroke='var(--mut)'; txt='막힘'; }
+    else if(v>=500){ fill='var(--line)'; stroke='var(--line)'; }
+    else { const col=v<=60?'var(--bad)':v<=150?'var(--vision)':'var(--ok)'; fill=col; stroke=col; txt=String(v); }
+    dot.setAttribute('fill',fill); dot.setAttribute('stroke',stroke);
+    t.textContent=txt; t.setAttribute('fill', v!=null&&v<500&&v>0 ? 'var(--tx)' : 'var(--mut)');
+  });
 }
 
 // Driving model selection. Applied at the next modeld start rather than swapped under a
