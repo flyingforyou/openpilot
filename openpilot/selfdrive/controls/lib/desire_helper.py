@@ -1,8 +1,8 @@
 from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.controls.lib.lane_change_guards import (USS_FRONT_HOLD_S, lane_exists, side_lead_unsafe,
-                                                                  uss_front_corner_close, uss_rear_close)
+from openpilot.selfdrive.controls.lib.lane_change_guards import (USS_FRONT_HOLD_S, USS_OCCUPIED_HOLD_S, lane_exists,
+                                                                  side_lead_unsafe, uss_front_corner_close, uss_rear_close)
 
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
@@ -55,6 +55,9 @@ class DesireHelper:
     # How long each front corner ultrasonic (left, right) has read something close; see
     # lane_change_guards.USS_FRONT_HOLD_S for why a front corner has to hold before it counts.
     self.uss_front_close_t = [0.0, 0.0]
+    # Seconds since that side's ultrasonics last saw something beside the car; held for
+    # USS_OCCUPIED_HOLD_S across the gap between the rear sensors and the front corner.
+    self.uss_since_t = [USS_OCCUPIED_HOLD_S, USS_OCCUPIED_HOLD_S]
     self._param_frame = PARAM_REFRESH_FRAMES
     # Imported here rather than at module scope: Params needs a native library that only exists
     # after a build, and this module is worth being able to import and test without one.
@@ -86,7 +89,7 @@ class DesireHelper:
       return False
     left = direction == LaneChangeDirection.left
     blindspot = carstate.leftBlindspot if left else carstate.rightBlindspot
-    uss = uss_rear_close(carstate, left) or self.uss_front_close_t[0 if left else 1] >= USS_FRONT_HOLD_S
+    uss = self.uss_since_t[0 if left else 1] < USS_OCCUPIED_HOLD_S
     return bool(blindspot or overtaking[0 if left else 1] or uss)
 
   def _reset_auto(self) -> None:
@@ -111,6 +114,8 @@ class DesireHelper:
     self._read_params()
     for i, left in enumerate((True, False)):
       self.uss_front_close_t[i] = self.uss_front_close_t[i] + DT_MDL if uss_front_corner_close(carstate, left) else 0.0
+      seen = uss_rear_close(carstate, left) or self.uss_front_close_t[i] >= USS_FRONT_HOLD_S
+      self.uss_since_t[i] = 0.0 if seen else min(self.uss_since_t[i] + DT_MDL, USS_OCCUPIED_HOLD_S)
     v_ego = carstate.vEgo
     one_blinker = carstate.leftBlinker != carstate.rightBlinker
     below_lane_change_speed = v_ego < LANE_CHANGE_SPEED_MIN

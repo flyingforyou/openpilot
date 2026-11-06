@@ -137,6 +137,12 @@ def target_lane_lead(meta, lead_left, lead_right, lead_two):
 # So the rear ones count at once and a front corner has to stay close for a moment.
 USS_CLOSE_CM = 150
 USS_FRONT_HOLD_S = 0.4
+# A car passing alongside crosses a stretch no sensor covers, between the rear side/corner and the
+# front corner. Over 11 highway drives the hand-off left nothing detected for a median 0.1-0.75 s,
+# a quarter of the time over 0.85-3.1 s (it scales with how slowly the car passes), and the
+# blindspot flag covered a median 0-12% of that hole. So a side stays occupied this long after the
+# last ultrasonic detection. 140 logged lane change starts: 1.0-2.0 s blocks none, 3.0 s one.
+USS_OCCUPIED_HOLD_S = 2.0
 USS_MIN_CM = 20  # 0 is "blocked", 1 is a near-field code, neither is a distance
 
 

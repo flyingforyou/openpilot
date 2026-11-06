@@ -146,6 +146,22 @@ class TestUltrasonicSide:
       dh.update(CS(right_blinker=True, pressed=True, torque=-1.5, uss_rear=side(right=120)), True, 1.0)
     assert dh.lane_change_state == LaneChangeState.preLaneChange
 
+  def test_the_side_stays_occupied_through_the_gap_between_sensors(self):
+    """A car passing alongside drops out between the rear sensors and the front corner; the
+    side is held occupied for USS_OCCUPIED_HOLD_S after the last detection."""
+    dh = DesireHelper()
+    dh.update(CS(right_blinker=True, uss_rear=side(right=120)), True, 1.0)
+    for _ in range(int(1.5 / DT_MDL)):
+      dh.update(CS(right_blinker=True, pressed=True, torque=-1.5, uss_rear=CLEAR), True, 1.0)
+    assert dh.lane_change_state == LaneChangeState.preLaneChange
+
+  def test_and_frees_up_after_the_hold(self):
+    dh = DesireHelper()
+    dh.update(CS(right_blinker=True, uss_rear=side(right=120)), True, 1.0)
+    for _ in range(int(2.5 / DT_MDL)):
+      dh.update(CS(right_blinker=True, pressed=True, torque=-1.5, uss_rear=CLEAR), True, 1.0)
+    assert dh.lane_change_state == LaneChangeState.laneChangeStarting
+
   @pytest.mark.parametrize("reading", [150, 230, 500, 511, 0, 1])
   def test_far_no_object_sna_and_codes_do_not(self, reading):
     dh = DesireHelper()
