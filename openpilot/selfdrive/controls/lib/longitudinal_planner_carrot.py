@@ -41,6 +41,7 @@ from openpilot.selfdrive.controls.lib.research_long import JerkLimiter, Research
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeed, MAX_LAT_ACCEL as CURVE_LAT_ACCEL
 from openpilot.selfdrive.controls.lib.stopped_lead_early import StoppedLeadEarly
 from openpilot.selfdrive.controls.lib.lane_change_accel import LaneChangeAccel
+from openpilot.selfdrive.controls.lib.turn_load_guard import TurnLoadGuard, required_decel
 from openpilot.cereal import log as _log
 from opendbc.car.lateral import AVERAGE_ROAD_ROLL
 
@@ -203,6 +204,9 @@ class _CarrotLongitudinalPlannerImpl:
     # Accelerate out from behind a car during a lane change; see lane_change_accel.py.
     self.lc_accel = LaneChangeAccel(dt)
     self.lc_accel_enabled = True
+    # Tight turns kept under the load that latches EPAS faults; see turn_load_guard.py.
+    self.turn_guard = TurnLoadGuard(dt)
+    self.turn_guard_enabled = True
 
   @staticmethod
   def parse_model(model_msg):
@@ -396,6 +400,7 @@ class _CarrotLongitudinalPlannerImpl:
       self.mpc.lead_model_predict = self.params.get_bool("LeadModelPredict")
       self.stopped_lead_enabled = self.params.get_bool("StoppedLeadEarly")
       self.lc_accel_enabled = self.params.get_bool("LaneChangeAccel")
+      self.turn_guard_enabled = self.params.get_bool("TurnLoadGuard")
       # BrakeOnsetJerk (0.1 m/s^3): how fast braking may build while the nearest lead is >= 3 s / 10 m away
       bj = self.params.get_int("BrakeOnsetJerk")
       self.cutin_mode = self.params.get_int("CutInSoftCap")
@@ -454,6 +459,15 @@ class _CarrotLongitudinalPlannerImpl:
     output_a_target = self.lc_accel.update(output_a_target, changing, not carrot.laneChangeSideBlocked,
                                            v_ego, v_cruise, a_max_free, sm['radarState'].leadOne, side_lead)
 
+    # Only ever lowers the command, so it sits after everything that might raise it.
+    if self.mpc.mode == 'acc' and self.turn_guard_enabled and not reset_state:
+      md = sm['modelV2']
+      need = required_decel(T_IDXS_MPC, self.mpc.v_solution, self.mpc.x_sol[:, 0],
+                            md.position.x, md.velocity.x, md.orientationRate.z, float(sm['vehicleParameters'].roll))
+      output_a_target = self.turn_guard.update(output_a_target, need)
+    else:
+      self.turn_guard.reset()
+
     # Last word in acc mode, after every lead-following rule: it can only lower the command.
     cap = None
     if self.mpc.mode == 'acc' and self.stopped_lead_enabled and not reset_state:
@@ -497,6 +511,7 @@ class _CarrotLongitudinalPlannerImpl:
     longitudinalPlan.curveSpeedATarget = self.curve_speed_a_target
     longitudinalPlan.stoppedLeadCap = self.stopped_lead_cap
     longitudinalPlan.laneChangeAccelWeight = float(self.lc_accel.weight)
+    longitudinalPlan.turnLoadCorrection = float(self.turn_guard.correction)
     longitudinalPlan.fcw = self.fcw
 
     longitudinalPlan.aTarget = float(self.output_a_target)

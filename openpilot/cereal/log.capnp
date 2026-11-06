@@ -1310,6 +1310,8 @@ struct LongitudinalPlan @0xe00b5b3eba12876c {
   stoppedLeadCap @54 :Float32;
   # lane_change_accel.py's blend toward free-road accel during a lane change, 0..1
   laneChangeAccelWeight @55 :Float32;
+  # turn_load_guard.py's deceleration taken off the command, m/s^2
+  turnLoadCorrection @56 :Float32;
 
   enum PlannerSource {
     stock @0;
