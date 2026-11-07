@@ -39,6 +39,7 @@ from openpilot.selfdrive.controls.lib.carrot_functions import CarrotPlanner
 from openpilot.selfdrive.controls.lib import carrot_t_follow, research_long
 from openpilot.selfdrive.controls.lib.research_long import JerkLimiter, ResearchLongitudinal, more_binding
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeed, MAX_LAT_ACCEL as CURVE_LAT_ACCEL
+from openpilot.selfdrive.controls.lib.map_cruise import RAMP_OFF
 from openpilot.selfdrive.controls.lib.stopped_lead_early import StoppedLeadEarly
 from openpilot.selfdrive.controls.lib.lane_change_accel import LaneChangeAccel
 from openpilot.selfdrive.controls.lib.turn_load_guard import TurnLoadGuard, required_decel
@@ -471,7 +472,9 @@ class _CarrotLongitudinalPlannerImpl:
     # Last word in acc mode, after every lead-following rule: it can only lower the command.
     cap = None
     if self.mpc.mode == 'acc' and self.stopped_lead_enabled and not reset_state:
-      cap = self.stopped_lead.update(v_ego, sm['modelV2'], sm['radarState'].leadOne)
+      nav = sm['carState'].navMap
+      on_ramp = nav.valid and int(nav.rampType) == RAMP_OFF
+      cap = self.stopped_lead.update(v_ego, sm['modelV2'], sm['radarState'].leadOne, on_ramp)
     else:
       self.stopped_lead.reset()
     if cap is not None:

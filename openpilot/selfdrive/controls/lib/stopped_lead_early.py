@@ -24,6 +24,18 @@ it with a highway phantom brake nobody should have to feel.
 
 The lead's lateral position is taken against the model's own path at that distance, not against
 straight ahead: both FCW cars sat 8-9 m to the side of our heading at 100 m, in our lane, on a bend.
+
+Off-ramps get looser limits. A queue at the end of a ramp is met at 45-55 km/h, under MIN_V_EGO, and
+around the bend neither sensor has it early: over the 10 ramp approaches to a slower lead since
+10/31 the radar reported the stopped cars only ~1 s before they became the lead, at 37-48 m, and the
+model held P 0.1-0.3 until the same moment. In 0235 the car even accelerated at +1.0 toward the
+queue for those seconds. Closed loop, peak braking and closest gap on the four late ones:
+  0235  -3.48 / 2.1 m -> -2.14 / 4.5 m      022e  -3.41 / 3.1 m -> -2.85 / 3.5 m
+  024d  -3.37 / 3.3 m -> -3.06 / 3.6 m      024b  -3.35 / 4.9 m -> -3.27 / 5.1 m
+and no change on the other six. Lowering only the speed floor did nothing; nearly all of this comes
+from RAMP_MIN_PROB. Replayed over all 7.9 min of engaged ramp driving: no false episode, where a
+ratio of 0.8 starts to produce them. That is a small sample, so it stays on ramps, where a slow
+car ahead is expected, and the highway limits above are unchanged.
 """
 import numpy as np
 
@@ -41,12 +53,18 @@ CAP_HIGH_PROB = -1.5      # m/s^2, prob >= 0.5
 ONSET_JERK = 2.0          # m/s^3
 RELEASE_RATE = 2.0        # m/s^3
 HOLD_S = 0.6
+RAMP_MIN_V_EGO = 10.0     # m/s
+RAMP_MIN_PROB = 0.1
+RAMP_SLOW_LEAD_RATIO = 0.6
+RAMP_MIN_X = 30.0         # m
 
 
-def fires(v_ego, prob, x, v_lead, y_lead, path_x, path_y, radar_present, radar_d):
-  if v_ego < MIN_V_EGO or prob < MIN_PROB:
+def fires(v_ego, prob, x, v_lead, y_lead, path_x, path_y, radar_present, radar_d, on_ramp=False):
+  min_v, min_prob = (RAMP_MIN_V_EGO, RAMP_MIN_PROB) if on_ramp else (MIN_V_EGO, MIN_PROB)
+  ratio, min_x = (RAMP_SLOW_LEAD_RATIO, RAMP_MIN_X) if on_ramp else (SLOW_LEAD_RATIO, X_RANGE[0])
+  if v_ego < min_v or prob < min_prob:
     return False
-  if v_lead >= max(SLOW_LEAD_V, SLOW_LEAD_RATIO * v_ego) or not (X_RANGE[0] <= x <= X_RANGE[1]):
+  if v_lead >= max(SLOW_LEAD_V, ratio * v_ego) or not (min_x <= x <= X_RANGE[1]):
     return False
   path_y_at = float(np.interp(x, path_x, path_y)) if len(path_x) else 0.0
   if abs(y_lead - path_y_at) >= MAX_PATH_OFFSET:
@@ -67,7 +85,7 @@ class StoppedLeadEarly:
     self.hold = 0.0
     self.active = False
 
-  def update(self, v_ego, model, radar_lead):
+  def update(self, v_ego, model, radar_lead, on_ramp=False):
     """Returns the accel ceiling to apply this frame, or None."""
     fired = False
     if len(model.leadsV3):
@@ -75,7 +93,7 @@ class StoppedLeadEarly:
       if len(lead.x) and len(lead.v) and len(lead.y):
         x, v_lead, y_lead = float(lead.x[0]), max(float(lead.v[0]), 0.0), float(lead.y[0])
         fired = fires(v_ego, float(lead.prob), x, v_lead, y_lead, model.position.x, model.position.y,
-                      bool(radar_lead.present), float(radar_lead.dRel))
+                      bool(radar_lead.present), float(radar_lead.dRel), on_ramp)
         if fired:
           need = (v_ego - v_lead) ** 2 / (2.0 * max(x - STOP_BUFFER, 10.0))
           floor = CAP_HIGH_PROB if lead.prob >= 0.5 else CAP_LOW_PROB
