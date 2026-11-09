@@ -166,3 +166,49 @@ def test_ac_compressor_is_heard_while_driving():
   # THC 0x20A is only on the diag port: the panda's 0x20A is another message
   assert 0x20A in tesla_pt.HEATER_IDS
   assert {s.msg for s in tesla_pt.LIVE_SIGS if s.key == 'compCooling'} == {0x20A}
+
+
+class _Elm:
+  def __init__(self):
+    self.calls = []
+    self.stats = {'windows': 0, 'frames': 0, 'bufferFull': 0, 'errors': 0, 'unparsed': 0}
+
+  def sniff(self, seconds, protocol, max_frames=0):
+    self.calls.append('sniff')
+    return [(0.0, 0x508, b'5YJXCAE2'), (0.01, 0x376, bytes(8)), (0.02, 0x102, bytes(8))], True, 0
+
+  def monitor(self, msg_id, dwell, max_frames=4):
+    self.calls.append(msg_id)
+    return [(msg_id, bytes(8))]
+
+
+def _daemon(tmp_path, monkeypatch):
+  from openpilot.system.btobd import rxstats, vlog
+  from openpilot.system.btobd.tesla_sx import TeslaSXState
+  monkeypatch.setattr(btobdd, '_take_cmd', lambda: None)
+  monkeypatch.setattr(btobdd, '_onroad', lambda: False)
+  d = btobdd.Daemon.__new__(btobdd.Daemon)
+  d.vlog, d.rx, d.car, d.elm = vlog.VehicleLog(str(tmp_path)), rxstats.RxStats(), TeslaSXState(), _Elm()
+  d.watch, d.cycle, d.raw, d.rx_written = WATCH_IDS, 0, {}, 0.0
+  d.power = type('P', (), {'motion': lambda self: ({}, {})})()
+  return d
+
+
+def test_sweep_runs_every_other_cycle_ahead_of_the_cycle_ids(tmp_path, monkeypatch):
+  d = _daemon(tmp_path, monkeypatch)
+  sweeps = []
+  for _ in range(4):
+    d.elm.calls = []
+    d.poll_once()
+    sweeps.append(d.elm.calls.count('sniff'))
+    if sweeps[-1]:
+      assert d.elm.calls[0] == 'sniff' and d.elm.calls[-1] == 0x102
+  assert sweeps == [0, 1, 0, 1]
+  assert 0x376 in d.raw
+
+
+def test_sweep_never_logs_the_vin(tmp_path, monkeypatch):
+  d = _daemon(tmp_path, monkeypatch)
+  for _ in range(2):
+    d.poll_once()
+  assert not btobdd.VIN_IDS & set(d.raw)

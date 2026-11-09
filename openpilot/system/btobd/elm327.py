@@ -47,6 +47,7 @@ class Elm327:
     self.protocol = ''
     self.silent = False
     self.sniff_filter: str | None = None   # how the last sniff split the ID space: 'cra', 'mask' or None
+    self.sniff_methods = ['cra', 'mask']   # 11-bit split methods not yet caught leaking on this dongle
     # monitor() data-quality counters since connect; the logger turns them into per-session rates
     self.stats = {'windows': 0, 'frames': 0, 'bufferFull': 0, 'errors': 0, 'unparsed': 0}
     self._buf = b''
@@ -150,8 +151,9 @@ class Elm327:
     id_chars = 8 if protocol in (7, 9) else 3
     # How to split the ID space, best first. An 'OK' is not proof: the car's v1.5 clone answered OK
     # to ATCRA0XX and then passed the whole bus in every bucket (2026-10-27 capture), so each bucket
-    # is checked against what it actually let through and a leaking method is dropped for the next.
-    methods: list[str | None] = ['cra', 'mask'] if id_chars == 3 else []
+    # is checked against what it actually let through and a leaking method is dropped for the next --
+    # and for every later sniff on this connection, which the drive sweep runs every other cycle.
+    methods: list[str | None] = list(self.sniff_methods) if id_chars == 3 else []
     methods.append(None)
     self.sniff_filter = None
     frames: list = []
@@ -163,7 +165,7 @@ class Elm327:
       method = methods[0]
       h = i % 8
       if method is not None and not self._set_bucket(method, h):
-        methods.pop(0)
+        self._drop_method(methods)
         continue
       if method is None and not cleared:
         self._clear_filter()
@@ -182,12 +184,17 @@ class Elm327:
       heard = frames[start:]
       leaked = sum(1 for f in heard if f[1] >> 8 != h)
       if method is not None and leaked > max(3, len(heard) // 5):
-        methods.pop(0)                     # the frames are real, just unfiltered; keep them
+        self._drop_method(methods)         # the frames are real, just unfiltered; keep them
     self._buf = b''
     if self.sniff_filter is not None:
       self._clear_filter()
     self.cmd('ATSP6')
     return frames, buffer_full, unparsed
+
+  def _drop_method(self, methods: list) -> None:
+    m = methods.pop(0)
+    if m in self.sniff_methods:
+      self.sniff_methods.remove(m)
 
   def _set_bucket(self, method: str, h: int) -> bool:
     """Receive only 11-bit IDs whose first hex digit is h. False if the adapter refused it."""

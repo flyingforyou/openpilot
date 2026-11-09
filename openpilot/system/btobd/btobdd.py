@@ -65,6 +65,15 @@ GEARS = {'park': 'P', 'drive': 'D', 'reverse': 'R', 'neutral': 'N'}
 THC_UNKNOWN = [0x31A, 0x34A, 0x35A, 0x38A, 0x3AA, 0x3BA, 0x3CA, 0x3EA, 0x48A, 0x49A, 0x4AA, 0x4BA, 0x51A,
                0x62A, 0x64A, 0x65A, 0x66A]   # 0x53A rotates while driving (tesla_pt.HEATER_IDS)
 DISCOVERY = [0x3F8, 0x388, 0x246, 0x528, 0x467, 0x252, 0x3F2, 0x51F, 0x21C, 0x37A, 0x33A, 0x39A] + THC_UNKNOWN
+# The sweep: every SWEEP_EVERY cycles, SWEEP_S of unfiltered listening (Elm327.sniff, listen-only) ahead of
+# the cycle's own IDs, so whatever the car broadcasts while awake -- drive unit temperatures, oil pump
+# state, anything no table names -- builds up in raw over the days instead of needing a capture run by
+# hand. This dongle overflows on the whole bus in a fraction of a second, so each sweep keeps only what
+# it caught between restarts: a sample, not a record. CORE still comes last, so power stays as fresh
+# as before; a drive cycle goes from ~4.0 s to ~4.75 s on average.
+SWEEP_S = 1.5
+SWEEP_EVERY = 2
+VIN_IDS = {0x508, 0x538, 0x718}   # never logged: the repo is public and raw captures travel
 RETRY_S = 15.0
 DWELL = 0.15
 # ~1 Hz messages: 0.15 s caught 0x382 about 30 times an hour while charging. Wait for one frame.
@@ -329,6 +338,11 @@ class Daemon:
     ids = cycle_ids(mode, self.cycle, self.watch, tesla_pt.LIVE_IDS, motion=bool(self.power.motion()[0]))
     self.cycle += 1
     start, nframes, heard, learnt = time.monotonic(), 0, set(), set()
+    if SWEEP_EVERY and self.cycle % SWEEP_EVERY == 0:
+      frames, _, _ = self.elm.sniff(SWEEP_S, 6, max_frames=4000)
+      frames = [(fid, data) for _, fid, data in frames if fid not in VIN_IDS]
+      self._take(frames, f'{self.cycle}:ALL', time.monotonic(), time.time(), heard, learnt)
+      nframes += len(frames)
     for msg_id in ids:
       cell = msg_id == 0x6F2
       if cell:
@@ -336,20 +350,8 @@ class Daemon:
       else:
         frames = self.elm.monitor(msg_id, SLOW_IDS.get(msg_id, DWELL), max_frames=1 if msg_id in SLOW_IDS else 4)
       now, wall = time.monotonic(), time.time()
-      window = f'{self.cycle}:{msg_id:03X}'
       self.rx.poll(msg_id, sum(1 for fid, _ in frames if fid == msg_id), wall, now)
-      for fid, data in frames:
-        self.car.feed(fid, data, now)
-        if fid in tesla_pt.LIVE_IDS:
-          tesla_pt.feed_live(self.car, fid, data, now)
-        if fid not in learnt:
-          learnt.add(fid)
-          self.rx.learn(fid, [k for k, t in self.car.stamp.items() if t == now])
-        self.vlog.frame(wall, now, fid, data, window)
-        r = self.raw.setdefault(fid, {'n': 0})
-        r.update(data=data.hex(' ').upper(), len=len(data), t=wall)
-        r['n'] += 1
-        heard.add(fid)
+      self._take(frames, f'{self.cycle}:{msg_id:03X}', now, wall, heard, learnt)
       nframes += len(frames)
       self._handle_cmd()
       if self.elm is None:
@@ -373,6 +375,21 @@ class Daemon:
       self.rx_written = now
       from openpilot.system.btobd import vlog
       rxstats.write(self.vlog.dir, self.rx.summary(wall, now, snap['age'], vlog.max_age), hour_lines)
+
+  def _take(self, frames, window: str, now: float, wall: float, heard: set, learnt: set) -> None:
+    from openpilot.system.btobd import tesla_pt
+    for fid, data in frames:
+      self.car.feed(fid, data, now)
+      if fid in tesla_pt.LIVE_IDS:
+        tesla_pt.feed_live(self.car, fid, data, now)
+      if fid not in learnt:
+        learnt.add(fid)
+        self.rx.learn(fid, [k for k, t in self.car.stamp.items() if t == now])
+      self.vlog.frame(wall, now, fid, data, window)
+      r = self.raw.setdefault(fid, {'n': 0})
+      r.update(data=data.hex(' ').upper(), len=len(data), t=wall)
+      r['n'] += 1
+      heard.add(fid)
 
   # --- page ------------------------------------------------------------------------------------
   def _handle_cmd(self) -> None:

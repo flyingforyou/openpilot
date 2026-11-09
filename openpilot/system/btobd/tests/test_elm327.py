@@ -127,3 +127,13 @@ def test_init_resets_a_dongle_left_monitoring():
   e.init()
   assert e.version == 'ELM327 v1.5'
   assert d.sent.count('ATZ') == 2
+
+
+def test_a_leaking_split_method_is_not_retried():
+  from openpilot.system.btobd.elm327 import Elm327
+  e = Elm327(None)
+  methods = list(e.sniff_methods) + [None]
+  e._drop_method(methods)
+  assert methods == ['mask', None] and e.sniff_methods == ['mask']
+  e._drop_method(methods)
+  assert methods == [None] and e.sniff_methods == []
