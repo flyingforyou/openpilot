@@ -463,7 +463,7 @@ class _CarrotLongitudinalPlannerImpl:
     # Only ever lowers the command, so it sits after everything that might raise it.
     if self.mpc.mode == 'acc' and self.turn_guard_enabled and not reset_state:
       md = sm['modelV2']
-      need = required_decel(T_IDXS_MPC, self.mpc.v_solution, self.mpc.x_sol[:, 0],
+      need = required_decel(T_IDXS_MPC, self.mpc.v_solution, v_ego, output_a_target,
                             md.position.x, md.velocity.x, md.orientationRate.z, float(sm['vehicleParameters'].roll))
       output_a_target = self.turn_guard.update(output_a_target, need)
     else:
