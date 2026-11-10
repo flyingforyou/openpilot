@@ -12,6 +12,13 @@ from opendbc.car.values import BRANDS
 from opendbc.car.vin import get_vin, is_valid_vin, VIN_UNKNOWN
 
 FRAME_FINGERPRINT = 100  # 1s
+# Asking again when the FW query found no single car. Right after the car wakes, the Tesla HW1 EPS
+# answers the presence check and then can miss all three of its brand's 0.1 s FW windows, while
+# answering the identical 0x22 F188 request sent next under the mazda and ford brands. Those replies
+# are not credited to Tesla, so the car came up as MOCK (dashcam) until the device was replugged:
+# 5 of the last 60 drives (11/06 18:11, 11/10 07:06, ...), each with fw_count 2 and 5.4 s of queries.
+# Only the same read-only queries the startup already sends are repeated.
+FW_QUERY_RETRIES = 2
 
 
 def load_interfaces(brand_names):
@@ -105,6 +112,11 @@ def fingerprint(can_recv: CanRecvCallable, can_send: CanSendCallable, set_obd_mu
       vin_rx_addr, vin_rx_bus, vin = get_vin(can_recv, can_send, (0, 1))
       ecu_rx_addrs = get_present_ecus(can_recv, can_send, set_obd_multiplexing, num_pandas=num_pandas)
       car_fw = get_fw_versions_ordered(can_recv, can_send, set_obd_multiplexing, vin, ecu_rx_addrs, num_pandas=num_pandas)
+      for attempt in range(FW_QUERY_RETRIES):
+        if not ecu_rx_addrs or len(match_fw_to_car(car_fw, vin, log=False)[1]) == 1:
+          break
+        carlog.warning({"event": "FW query retry", "attempt": attempt + 1, "fw_count": len(car_fw)})
+        car_fw = get_fw_versions_ordered(can_recv, can_send, set_obd_multiplexing, vin, ecu_rx_addrs, num_pandas=num_pandas)
       cached = False
 
     exact_fw_match, fw_candidates = match_fw_to_car(car_fw, vin)
