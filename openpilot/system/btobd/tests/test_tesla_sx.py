@@ -124,6 +124,24 @@ def test_0x154_and_0x1d4_measured_torque():
   assert t.front_torque_measured(b('00 03 00 00 08 62 E1 23'))['frontTorqueMeasured'] == pytest.approx(88.5)
 
 
+def test_0x115_front_rpm_and_torque():
+  # 2026-11-10 07:2x, 106.8 km/h on the front motor alone
+  r = t.front_drive_info(b('B1 00 B0 80 1E 1C 31'))
+  assert r['frontMotorRpm'] == 7198 and r['frontTorqueMotor'] == pytest.approx(44.0)
+  assert t.front_drive_info(b('FA 3F FB 9F DC FE C3'))['frontMotorRpm'] == -292   # reversing
+
+
+def test_0x305_front_and_0x306_rear_temps():
+  # 2026-11-09 18:48, end of a 27 min drive: the front (0x305) far warmer than the rear
+  f = t.front_drive_temps(bytes([78, 69, 99, 72, 76, 0, 98, 63]))
+  r = t.drive_temps(bytes([71, 68, 79, 67, 72, 0, 96, 63]))
+  assert (f['frontInverterTemp'], f['frontMotorTemp']) == (29, 59)
+  assert (r['inverterTemp'], r['motorTemp']) == (28, 39)
+  s = t.TeslaSXState()
+  s.feed(0x305, bytes([78, 69, 99, 72, 76, 0, 98, 63]), 0.0)
+  assert s.values['frontMotorTemp'] == 59 and 'motorTemp' not in s.values
+
+
 def test_0x210_dcdc():
   r = t.dcdc(b('00 00 D6 1B 1E 8A 00'))
   assert r['dcdcInputPower'] == pytest.approx(432)

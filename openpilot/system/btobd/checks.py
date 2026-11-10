@@ -127,7 +127,8 @@ def evaluate(values: dict, cells_v: list, cells_t: list, age: dict, pack_new_kwh
                        '단자만 뜨거우면 접촉 저항이 의심됩니다' if d > TERMINAL_VS_MODULES_C[0] else ''))
   else:
     out.append(_item('module_spread', G, '모듈 온도 편차', NA, '–', '모듈 온도를 받아야 판정'))
-  for key, label in (('inverterTemp', '인버터 온도'), ('motorTemp', '모터 온도')):
+  for key, label in (('frontInverterTemp', '앞 인버터 온도'), ('frontMotorTemp', '앞 모터 온도'),
+                     ('inverterTemp', '뒤 인버터 온도'), ('motorTemp', '뒤 모터 온도')):
     t = V.get(key)
     if t is not None:
       out.append(_item(key, G, label, _grade(t, DRIVE_TEMP_C[0], DRIVE_TEMP_C[1]), f'{t:.0f} °C',

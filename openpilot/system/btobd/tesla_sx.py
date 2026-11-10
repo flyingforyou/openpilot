@@ -175,8 +175,27 @@ def battery_odometer(d: bytes) -> dict:
 
 
 def drive_temps(d: bytes) -> dict:
-  """0x306 inverter and motor temperature (OVMS). degC."""
+  """0x306 rear drive unit inverter and motor temperature (OVMS layout). degC.
+
+  Rear, not just "the" drive unit: 0x305 has the same layout and is the front's. On 2026-11-09/10 the
+  front carried 100% of cruise (0x115 vs 0x106 below) and 0x305's motor byte rose 26 -> 61 degC over a
+  27 min drive while this one went 23 -> 39 degC; the morning drive 40 -> 56 against 27 -> 29."""
   return {'inverterTemp': d[1] - 40, 'motorTemp': d[2] - 40}
+
+
+def front_drive_temps(d: bytes) -> dict:
+  """0x305 front drive unit inverter and motor temperature, 0x306's layout. degC."""
+  return {'frontInverterTemp': d[1] - 40, 'frontMotorTemp': d[2] - 40}
+
+
+def front_drive_info(d: bytes) -> dict:
+  """0x115 front drive inverter, DI_torque1 layout (as 0x106 for the rear). Nm, rpm.
+
+  Front by behaviour, on the 2026-11-09/10 drives joined to carState by monotonic time: in turns over
+  90 deg of steering the front wheels ran 4.3-4.9 % faster than the rear; 0x115's rpm kept its ratio to
+  the front axle (243 rpm per m/s) while 0x106's kept its ratio to the rear (241). Its torque x rpm
+  matches 0x2E5's mechanical power (r 0.95; 0x266 follows 0x106 at r 0.95)."""
+  return {'frontTorqueMotor': _s(d[2] | (d[3] & 0x1F) << 8, 13) * 0.25, 'frontMotorRpm': _s(d[4] | d[5] << 8, 16)}
 
 
 def range_status(d: bytes) -> dict:
@@ -208,10 +227,12 @@ DECODERS = {
   0x266: rear_power, 0x2E5: front_power, 0x116: rear_torque_status, 0x106: rear_drive_info,
   0x154: rear_torque_measured, 0x1D4: front_torque_measured, 0x210: dcdc, 0x3D2: lifetime_energy,
   0x562: battery_odometer, 0x306: drive_temps, 0x338: range_status,
+  0x305: front_drive_temps, 0x115: front_drive_info,
 }
 # Minimum frame length each decoder reads; shorter frames are kept raw but not decoded.
 MIN_LEN = {0x102: 2, 0x302: 3, 0x382: 8, 0x232: 4, 0x266: 8, 0x2E5: 7, 0x116: 4, 0x106: 7, 0x154: 7,
-           0x1D4: 7, 0x210: 6, 0x3D2: 8, 0x562: 4, 0x306: 3, 0x338: 6}
+           0x1D4: 7, 0x210: 6, 0x3D2: 8, 0x562: 4, 0x306: 3, 0x338: 6,
+           0x305: 3, 0x115: 6}
 CELL_ID = 0x6F2
 TEMP_SNA = 0x2000     # 14-bit most negative (-99.9 C): a module temperature slot with no value
 WATCH_IDS = sorted(DECODERS) + [CELL_ID]
