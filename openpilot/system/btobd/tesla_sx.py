@@ -180,12 +180,19 @@ def drive_temps(d: bytes) -> dict:
   Rear, not just "the" drive unit: 0x305 has the same layout and is the front's. On 2026-11-09/10 the
   front carried 100% of cruise (0x115 vs 0x106 below) and 0x305's motor byte rose 26 -> 61 degC over a
   27 min drive while this one went 23 -> 39 degC; the morning drive 40 -> 56 against 27 -> 29."""
-  return {'inverterTemp': d[1] - 40, 'motorTemp': d[2] - 40}
+  return {'inverterTemp': d[1] - 40, 'motorTemp': d[2] - 40, **_du_extra(d, 'rear')}
 
 
 def front_drive_temps(d: bytes) -> dict:
   """0x305 front drive unit inverter and motor temperature, 0x306's layout. degC."""
-  return {'frontInverterTemp': d[1] - 40, 'frontMotorTemp': d[2] - 40}
+  return {'frontInverterTemp': d[1] - 40, 'frontMotorTemp': d[2] - 40, **_du_extra(d, 'front')}
+
+
+def _du_extra(d: bytes, unit: str) -> dict:
+  """Bytes 0 and 6 of 0x305/0x306, -40, not named by OVMS. Byte 0 warms per unit but slower than the
+  motor (front 26 -> 38, rear 23 -> 31 on 11/09); byte 6 reads nearly the same front and rear (53 -> 58,
+  52 -> 56), a shared coolant loop perhaps. Logged to find out; nothing judges them."""
+  return {f'{unit}TempB0': d[0] - 40, f'{unit}TempB6': d[6] - 40} if len(d) >= 7 else {}
 
 
 def front_drive_info(d: bytes) -> dict:

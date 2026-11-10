@@ -76,7 +76,8 @@ THRESHOLDS = {
 SERIES_KEYS = ('packVoltage', 'packCurrent', 'packPower', 'socUI', 'socDisplay', 'nominalEnergyRemaining',
                'vehicleSpeedMph', 'gear', 'rearMechPower', 'frontMechPower', 'rearTorqueMeasured', 'frontTorqueMeasured',
                'rearMotorRpm', 'maxDischargePower', 'maxRegenPower', 'moduleTempMin', 'moduleTempMax', 'cellMin',
-               'cellMax', 'cellDelta', 'cellSync', 'dcdcOutputVoltage', 'inverterTemp', 'motorTemp', 'frontInverterTemp', 'frontMotorTemp', 'bmsState',
+               'cellMax', 'cellDelta', 'cellSync', 'dcdcOutputVoltage', 'inverterTemp', 'motorTemp', 'frontInverterTemp', 'frontMotorTemp', 'frontTempB0', 'frontTempB6', 'rearTempB0',
+               'rearTempB6', 'packCoolantA', 'packCoolantB', 'bmsState',
                'pilot', 'acVolts1', 'acVolts2', 'acVolts3', 'heaterState', 'pump1', 'refrigPressure',
                'compCooling')
 

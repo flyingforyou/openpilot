@@ -80,6 +80,10 @@ THERMAL = [
   Sig('dischargeTemp', '냉매 토출 온도', 0x33A, 0, 11, 0.125, -40, '°C', sna=2047, min_len=2),
   Sig('suctionTemp', '냉매 흡입 온도', 0x33A, 16, 8, 0.5, -40, '°C', sna=255, min_len=3),
   Sig('suctionPressure', '냉매 흡입 압력', 0x33A, 24, 7, 0.125, unit='bar', sna=127, min_len=4),
+  # 0x3F2 bytes 1 and 2, x0.5 - 40: on the 2026-11-09/10 drives both followed the 0x6F2 module temperatures
+  # 1-3 degC below them (19 -> 23.5 and 17.5 -> 21.5 against 21 -> 25). Coolant in/out is a guess, hence the '?'.
+  Sig('packCoolantA', '배터리 냉각수? A (0x3F2)', 0x3F2, 8, 8, 0.5, -40, '°C', sna=255, min_len=2),
+  Sig('packCoolantB', '배터리 냉각수? B (0x3F2)', 0x3F2, 16, 8, 0.5, -40, '°C', sna=255, min_len=3),
 ]
 
 # 0x202 and 0x332, decoded 2026-10-30 from this car's own frames (no Model S table had them). 0x202's
@@ -106,14 +110,16 @@ BMS_LIMIT_IDS = sorted({s.msg for s in BMS_LIMITS})
 # 0x53A (muxed by byte 0, not in the public tables) followed the 2026-11-03 HI/26/24/22/20/off test
 # where the 2-minute discovery round caught it; 0x268 is the old Model S "climate" ID from Instructables.
 # Both rotate while driving so the next drives have them densely, raw only until decoded.
-HEATER_IDS = [0x26A, 0x32A, 0x20A, 0x53A, 0x268]
+HEATER_IDS = [0x26A, 0x32A, 0x20A, 0x53A, 0x268, 0x3F2]
 
-# Seen on 2026-10-27 with plausible scales but no second source yet.
+# Seen on 2026-10-27 with plausible scales but no second source yet. 0x3F8 kept its tpms keys (history)
+# but is not tyre pressure: on 11/10 it went 33 -> 69 in 7 min of town driving and back to 47-53 on the
+# highway, the front pair above the rear at the peak -- four per-wheel heat estimates, perhaps (brakes).
 CANDIDATES = [
-  Sig('tpms1', '타이어 공기압? 1', 0x3F8, 0, 16, 1 / 16, unit='psi', min_len=2),
-  Sig('tpms2', '타이어 공기압? 2', 0x3F8, 16, 16, 1 / 16, unit='psi', min_len=4),
-  Sig('tpms3', '타이어 공기압? 3', 0x3F8, 32, 16, 1 / 16, unit='psi', min_len=6),
-  Sig('tpms4', '타이어 공기압? 4', 0x3F8, 48, 16, 1 / 16, unit='psi', min_len=8),
+  Sig('tpms1', '바퀴별 값? 1 (0x3F8, 공기압 아님)', 0x3F8, 0, 16, 1 / 16, min_len=2),
+  Sig('tpms2', '바퀴별 값? 2 (0x3F8, 공기압 아님)', 0x3F8, 16, 16, 1 / 16, min_len=4),
+  Sig('tpms3', '바퀴별 값? 3 (0x3F8, 공기압 아님)', 0x3F8, 32, 16, 1 / 16, min_len=6),
+  Sig('tpms4', '바퀴별 값? 4 (0x3F8, 공기압 아님)', 0x3F8, 48, 16, 1 / 16, min_len=8),
   Sig('temp467', '온도? (0x467)', 0x467, 0, 16, 0.01, unit='°C', min_len=2),
   Sig('temp469', '온도? (0x469)', 0x469, 0, 16, 0.01, unit='°C', min_len=2),
   Sig('temp46B', '온도? (0x46B)', 0x46B, 0, 16, 0.01, unit='°C', min_len=2),
@@ -279,7 +285,7 @@ def summarize(frames: list[tuple[float, int, bytes]], meta: dict | None = None) 
     {'key': 'where', 'title': '방향 · 태양', 'rows': where,
      'note': '차 화면이 위치로 계산해 내보내는 값입니다. 차 방향은 주차 중에도 나옵니다. 태양 고도가 음수면 해가 진 뒤입니다.'},
     {'key': 'candidate', 'title': '후보 (확인 필요)', 'rows': rows(CANDIDATES),
-     'note': '0x3F8은 계기판 타이어 공기압 화면과, 0x467~0x46B는 실내/외기 온도와 한 번 대조하면 확정됩니다.'},
+     'note': '0x3F8은 공기압이 아닙니다(주행 중 33→69로 움직임). 바퀴별 열 추정값 후보입니다. 0x467은 며칠째 24.3 고정이라 설정값으로 보입니다.'},
   ]
   for g in groups:
     g['heard'] = sum(r['status'] != 'na' for r in g['rows'])

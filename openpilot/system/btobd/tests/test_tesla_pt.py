@@ -117,3 +117,12 @@ def test_bms_limits_from_real_frames():
   driving = '03 5F 39 9D C4 09 3F 23'                                   # 0x232 said 97.9 kW regen / 349 kW at 363 V
   assert dec('bmsMaxChargeA', driving) * 363 / 1000 == pytest.approx(97.9 * 0.93, rel=0.05)
   assert dec('bmsMaxDischargeA', driving) * 363 / 1000 == pytest.approx(349 * 0.94, rel=0.05)
+
+
+def test_0x3f2_pack_coolant_candidates():
+  # 2026-11-09 18:47: modules ~25 degC, these 1-3 below
+  from openpilot.system.btobd.tesla_sx import TeslaSXState
+  s = TeslaSXState()
+  p.feed_live(s, 0x3F2, bytes([228, 127, 123, 255, 255, 81, 0, 24]), 1.0)
+  assert s.values['packCoolantA'] == 23.5 and s.values['packCoolantB'] == 21.5
+  assert 0x3F2 in p.HEATER_IDS   # rotates while driving

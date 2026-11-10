@@ -140,6 +140,7 @@ def test_0x305_front_and_0x306_rear_temps():
   s = t.TeslaSXState()
   s.feed(0x305, bytes([78, 69, 99, 72, 76, 0, 98, 63]), 0.0)
   assert s.values['frontMotorTemp'] == 59 and 'motorTemp' not in s.values
+  assert (f['frontTempB0'], f['frontTempB6'], r['rearTempB0'], r['rearTempB6']) == (38, 58, 31, 56)
 
 
 def test_0x210_dcdc():
