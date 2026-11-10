@@ -29,6 +29,7 @@ so they cannot be piped.
 
 | script | question |
 |---|---|
+| `disengage_review.py <route>...` | Every disengagement with its cause, sorted into driver_turn / driver_lane_change (not problems), problem (fault or alert) and review. Read only the review ones |
 | `analyze_fail.py <seg>...` | Broad first look: which feature flags were actually on, EPAS histograms, onroad events, and every state transition in order |
 | `window.py <from> <to> <seg>...` | Everything that happened between two timestamps, in order. The workhorse for pinning down a 0.1s cause |
 | `who_sends.py <from> <to> <route>` | Which module put which frames on which bus. Finds two masters writing one arbitration id |
