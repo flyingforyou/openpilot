@@ -50,9 +50,10 @@ CORE_IDS = {
 }
 ROTATE_N = 4
 # Gear and speed come from openpilot's carState while card runs (onroad): the panda reads them off
-# the car's own bus at 100 Hz. The diagnostic port is a different bus -- of the 43 IDs polled here
-# only 0x20A/0x20B/0x20E/0x246/0x388/0x3F8/0x209 reach the panda, and its 0x302/0x382 are other
-# messages under the same numbers (rlog 00000231--5) -- so the battery and charge set stays on
+# the car's own bus at 100 Hz. The diagnostic port is a different bus: compared byte for byte at the
+# same instant on the 2026-11-09/10 drives, only 0x246 (and 0x00E/0x185/0x206/0x728, not polled) are
+# the same message on the panda; 0x20A/0x20E/0x3F8/0x302/0x382/0x332/0x338 are other messages under the
+# same numbers, and 151 of the 233 IDs heard here never reach it -- so the battery and charge set stays on
 # Bluetooth and 0x116 is polled only when carState is not there.
 CARSTATE_FRESH_S = 1.0
 GEARS = {'park': 'P', 'drive': 'D', 'reverse': 'R', 'neutral': 'N'}
