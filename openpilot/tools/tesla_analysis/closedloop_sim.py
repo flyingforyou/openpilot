@@ -20,6 +20,7 @@ d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.
       "sle.<CONST>": value (a stopped_lead_early.py module constant)
       "lca.<CONST>": value (a lane_change_accel.py module constant)
       "tlg.<CONST>": value (a turn_load_guard.py module constant)
+      "ctf.<CONST>": value (a carrot_t_follow.py module constant; the ones the planner sets from params are overwritten)
   SIMRADARD=1   rerun today's radard over the recorded radarTracks (lead hold, radar accel, cut-in)
                 instead of trusting the radarState recorded at the time
   SIMENGAGED=1  stay engaged past a driver takeover in the recording (what would the car have done?)
@@ -131,7 +132,11 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
     import openpilot.selfdrive.controls.lib.turn_load_guard as _tlg
     if not hasattr(_tlg, '_defaults'): _tlg._defaults = {kk: getattr(_tlg, kk) for kk in dir(_tlg) if kk.isupper()}
     for k, v in _tlg._defaults.items(): setattr(_tlg, k, v)
+    import openpilot.selfdrive.controls.lib.carrot_t_follow as _ctf
+    if not hasattr(_ctf, '_defaults'): _ctf._defaults = {kk: getattr(_ctf, kk) for kk in dir(_ctf) if kk.isupper()}
+    for k, v in _ctf._defaults.items(): setattr(_ctf, k, v)
     for k, v in (ovr or {}).items():
+        if k.startswith('ctf.'): setattr(_ctf, k[4:], tuple(v) if isinstance(v, list) else v)
         if k.startswith('rl.'): setattr(_rl, k[3:], v)
         if k.startswith('ct.'): setattr(_ct, k[3:], v)
         if k.startswith('mpc.'): setattr(_mpc, k[4:], v)
