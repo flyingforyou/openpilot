@@ -665,3 +665,48 @@ class TestExitPreDecel:
     for _ in range(40):
       out = c2.update(cs, 33.0, 75 * MPH)
     assert out < c2.v_ceiling - 3.0
+
+
+class TestHoldTakesTheFleet:
+  """Off a ramp onto a class-5 road whose limit read 45 mph for 8 s (over the class's 35, so rejected):
+  the target stayed at the ramp's last 28 km/h with the fleet at 65-68 (022e seg 18, 0256 seg 20)."""
+  KPH = 1 / 3.6
+
+  def _after_ramp(self, c, fleet_kph=67.0, road_class=5, posted_mph=45, n=200):
+    ramp = FakeNav(65, 4)
+    ramp.baseSpeedLimit = 0.0
+    ramp.rampType = 2
+    ramp.fleetSplineSpeed = 28 * self.KPH
+    cs = FakeCS(ramp)
+    for _ in range(100):
+      c.update(cs, 28 * self.KPH, 28 * self.KPH)
+    road = FakeNav(posted_mph, road_class)
+    road.fleetSplineSpeed = fleet_kph * self.KPH
+    cs = FakeCS(road)
+    for _ in range(n):
+      out = c.update(cs, 28 * self.KPH, 28 * self.KPH)
+    return out / self.KPH
+
+  def test_raised_to_the_class_ceiling(self):
+    c = make()
+    assert self._after_ramp(c) == pytest.approx(40 * MPH / self.KPH, abs=0.5)    # 35 + 5, what an honest 35 gets
+    assert c.source in ('stale', 'hold')
+
+  def test_never_past_the_fleet(self):
+    assert self._after_ramp(make(), fleet_kph=45.0) == pytest.approx(45.0, abs=0.5)
+
+  def test_waits_out_the_dwell(self):
+    assert self._after_ramp(make(), n=10) == pytest.approx(28.0, abs=0.5)
+
+  def test_no_fleet_or_a_slower_fleet_holds_as_before(self):
+    assert self._after_ramp(make(), fleet_kph=0.0) == pytest.approx(28.0, abs=0.5)
+    assert self._after_ramp(make(), fleet_kph=20.0) == pytest.approx(28.0, abs=0.5)
+
+  def test_switch_off_is_the_old_hold(self, monkeypatch):
+    import openpilot.selfdrive.controls.lib.map_cruise as mc
+    monkeypatch.setattr(mc, 'HOLD_FLEET_RAISE', False)
+    assert self._after_ramp(make()) == pytest.approx(28.0, abs=0.5)
+
+  def test_an_honest_limit_is_untouched(self):
+    # 35 on a class-5 road is believed: mapped, not held, and the fleet above it changes nothing
+    assert self._after_ramp(make(), posted_mph=35, fleet_kph=80.0) == pytest.approx(40 * MPH / self.KPH, abs=0.5)

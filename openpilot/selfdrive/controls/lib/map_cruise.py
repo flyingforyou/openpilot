@@ -97,6 +97,15 @@ RAMP_OFF = 2
 # ramp (024a seg 18, 024c seg 19) the lead decides and the speed differs by under 1 km/h.
 RAMP_ON_FLEET_CAP = True
 
+# What is held on a road with no usable limit is whatever the target last was, and after an off-ramp
+# that is the ramp's last, slowest fleet speed. 10/31 and 11/08 (022e seg 18, 0256 seg 20, the same
+# exit): off the ramp, a right turn onto a class-5 road whose limit read 45 mph for 8 s -- over the
+# class's 35, so rejected as the road behind -- and the target stayed at the ramp's 28 km/h with the
+# fleet at 65-68; the driver took the pedal from 28 to 65 both times. The hold could only ever keep or
+# lower. With this the fleet's speed here may raise it, under the same class ceiling (and offset) an
+# honest limit would get, and after the usual dwell.
+HOLD_FLEET_RAISE = True
+
 # Slowing for an exit before the ramp flag. rampType turns to 2 at the gore and the fleet's speed
 # steps down with it -- 120 -> 85-99 km/h in one frame -- so the car reached the ramp at motorway
 # speed and braked there: over the motorway exits of routes 0201-0263 taken engaged with nothing
@@ -537,6 +546,8 @@ class MapCruiseController:
       held = self.v_output if CURVE_CAP_DWELL else (self.v_road_output or self.v_output)
       target = held if held > 0.0 else v_cruise_driver
       if ceiling > 0.0:
+        if HOLD_FLEET_RAISE and fleet > target:
+          target = fleet
         target = min(target, self._with_offset(ceiling))
 
     # Curve deceleration, from what the fleet actually drives here.
