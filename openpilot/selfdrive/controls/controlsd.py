@@ -14,6 +14,7 @@ from opendbc.car.car_helpers import interfaces
 from opendbc.car.vehicle_model import VehicleModel
 from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature
 from openpilot.selfdrive.controls.lib.lane_centering import LaneCenteringController
+from openpilot.selfdrive.controls.lib.lane_change_boost import LaneChangeBoost
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.latcontrol_pid import LatControlPID
 from openpilot.selfdrive.controls.lib.latcontrol_angle import LatControlAngle, STEER_ANGLE_SATURATION_THRESHOLD
@@ -64,6 +65,9 @@ class Controls:
     self._lane_centering_pause_on_signal = True
     self._lane_center_offset = 0.0
     self._lane_centering_e2e_authority = 0.5
+    self._lane_centering_curve_hold = False
+    self.lane_change_boost = LaneChangeBoost()
+    self._lane_change_boost_gain = 0.0
 
     self.pose_calibrator = PoseCalibrator()
     self.calibrated_pose: Pose | None = None
@@ -146,6 +150,8 @@ class Controls:
       # percent of the model's intent to honour, and centimetres of deliberate offset
       self._lane_centering_e2e_authority = _p("LaneCenteringE2EAuthority", 50) * 0.01
       self._lane_center_offset = _p("LaneCenterOffset", 0) * 0.01
+      self._lane_centering_curve_hold = self.params.get_bool("LaneCenteringCurveHold")
+      self._lane_change_boost_gain = _p("LaneChangeBoost", 0) * 0.01
       if self._carrot_long:
         self._stopping_accel = _p("StoppingAccel", 0) * 0.01
         # carrot's own scaling: Kp and Kf in hundredths, Ki in thousandths.
@@ -173,7 +179,10 @@ class Controls:
         self._lane_centering, self._lane_center_offset, self._lane_centering_e2e_authority,
         CC.latActive, self.sm.all_checks(['modelV2']),
         self._lane_centering_pause_on_signal,
-        bool(CS.leftBlinker or CS.rightBlinker))
+        bool(CS.leftBlinker or CS.rightBlinker), self._lane_centering_curve_hold)
+      # A firmer start to a lane change; also above clip_curvature.
+      new_desired_curvature += self.lane_change_boost.update(
+        model_v2.action.desiredCurvature, model_v2, CS.vEgo, CC.latActive, self._lane_change_boost_gain)
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
     lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 

@@ -51,15 +51,68 @@ E2E_BREAK_IN_START = 0.15
 E2E_BREAK_IN_FULL = 0.50
 
 
+# The trim above looks one lookahead down the model's path, and in a bend that point is on the centre
+# while the car is not: over routes 0240-0263, with the trim on, the car sat toward the inside of every
+# bend -- 0.14 m at 0.5-1.0 m/s^2, 0.20 at 1.0-1.5, 0.26 at 1.5-2.5 (a third of that time more than
+# 0.3 m in), never toward the outside, and with no curvature error: it is the line the model picks. A
+# fraction of an error that the model's plan does not show cannot remove it.
+#
+# So the car's own place between the lines (at x = 0) gets a trim of its own: proportional, plus a
+# slow integral for what the proportional part leaves. It is bounded by a share of the bend's own
+# curvature plus a small floor, so it can only exist while there is a bend and leaves with it, and by
+# HOLD_MAX_LAT outright.
+#
+# How hard the model steers back to its own line decides what this achieves, and that is measurable
+# where a lane change ends: over 117 of them the offset left at the end (0.42 m median) is gone like
+# a critically damped spring of 2.0 rad/s -- 0.12 m after 1 s, 0.05 after 1.5. Holding the car 0.1 m
+# off the model's line therefore costs 0.4 m/s^2, which is why the 0.07 m/s^2 the trim above can
+# reach moves nothing. Against that spring (test_lane_centering_hold.py, 12 s of a 1.5 m/s^2 bend) the
+# car goes from 0.215 m inside to 0.12 m and swings under 0.05 m the other way as the bend ends; with
+# springs of 1 to 3 rad/s it is 0.09 to 0.16 m and 0.07 to 0.03. Not driven yet.
+HOLD_KP_LAT = 2.0           # m/s^2 per metre beside the car, as curvature at the car's speed
+HOLD_KI = 0.0005            # 1/m of curvature per metre of offset per second
+HOLD_BEND_SHARE = 0.30      # of the bend's curvature
+HOLD_FLOOR_LAT = 0.08       # m/s^2 allowed with no bend at all
+HOLD_MAX_LAT = 0.60         # m/s^2
+HOLD_RELEASE_TAU = 0.5      # s, when the lines go or the driver signals
+HOLD_ROAD_TAU = 1.0         # s, low-pass on the model's curvature that stands for the bend
+
+
 class LaneCenteringController:
   def __init__(self) -> None:
     self._correction = 0.0
+    self._hold = 0.0          # what is being added
+    self._hold_i = 0.0        # its integral part
+    self._road_curvature = 0.0
+    self._near_error = None
 
   def reset(self) -> None:
     self._correction = 0.0
+    self._hold = 0.0
+    self._hold_i = 0.0
+
+  def _hold_update(self, model_curvature: float, v_ego: float, enabled: bool, valid: bool) -> float:
+    """The integrated trim. `valid` says the lines can be trusted this frame."""
+    self._road_curvature += (model_curvature - self._road_curvature) * DT_CTRL / HOLD_ROAD_TAU
+    if not enabled or not valid or self._near_error is None:
+      self._hold = float(smooth_value(0.0, self._hold, HOLD_RELEASE_TAU, dt=DT_CTRL))
+      self._hold_i = float(smooth_value(0.0, self._hold_i, HOLD_RELEASE_TAU, dt=DT_CTRL))
+      return self._hold
+    error = self._near_error
+    error = 0.0 if abs(error) <= CENTER_ERROR_DEADBAND else float(np.copysign(abs(error) - CENTER_ERROR_DEADBAND, error))
+    v2 = max(v_ego, MIN_V_EGO) ** 2
+    limit = min(HOLD_MAX_LAT / v2, HOLD_BEND_SHARE * abs(self._road_curvature) + HOLD_FLOOR_LAT / v2)
+    # the integral gets no floor: on a straight it has to be gone, or what is left sits inside the
+    # deadband where nothing would ever take it out
+    limit_i = min(HOLD_MAX_LAT / v2, HOLD_BEND_SHARE * abs(self._road_curvature))
+    self._hold_i = float(np.clip(self._hold_i + HOLD_KI * error * DT_CTRL, -limit_i, limit_i))
+    target = float(np.clip(self._hold_i + HOLD_KP_LAT / v2 * error, -limit, limit))
+    # the lines' own frame-to-frame noise is not steering input
+    self._hold = float(smooth_value(target, self._hold, SMOOTH_TAU, dt=DT_CTRL))
+    return self._hold
 
   def update(self, model_curvature, model_v2, v_ego, enabled, offset, e2e_authority, lat_active,
-             model_valid, pause_on_signal=False, turn_signal_active=False) -> float:
+             model_valid, pause_on_signal=False, turn_signal_active=False, curve_hold=False) -> float:
     """Return the model's curvature with the centring trim added, or unchanged."""
     model_curvature = float(model_curvature)
 
@@ -83,7 +136,7 @@ class LaneCenteringController:
     # fighting it, and keep the faded value so the release is smooth on both sides.
     if pause_on_signal and turn_signal_active:
       self._correction = float(smooth_value(0.0, self._correction, SIGNAL_RELEASE_TAU, dt=DT_CTRL))
-      return model_curvature + self._correction
+      return model_curvature + self._correction + self._hold_update(model_curvature, v_ego, False, False)
 
     try:
       if model_v2.meta.laneChangeState != log.LaneChangeState.off:
@@ -93,19 +146,21 @@ class LaneCenteringController:
       self.reset()
       return model_curvature
 
+    self._near_error = None
     valid, raw_correction = self._raw_correction(
       model_v2,
       v_ego,
       float(np.clip(offset, -MAX_OFFSET, MAX_OFFSET)),
       float(np.clip(e2e_authority, 0.0, 1.0)),
     )
+    hold = self._hold_update(model_curvature, v_ego, bool(curve_hold), valid)
     if not valid:
       self._correction = float(smooth_value(0.0, self._correction, CONFIDENCE_RELEASE_TAU, dt=DT_CTRL))
-      return model_curvature + self._correction
+      return model_curvature + self._correction + hold
 
     target = float(np.clip(raw_correction, -MAX_RAW_CORRECTION, MAX_RAW_CORRECTION)) * MAX_GAIN
     self._correction = float(smooth_value(target, self._correction, SMOOTH_TAU, dt=DT_CTRL))
-    return model_curvature + self._correction
+    return model_curvature + self._correction + hold
 
   @staticmethod
   def _valid_path(x, y) -> bool:
@@ -156,6 +211,8 @@ class LaneCenteringController:
       # so asking for 30cm in a narrow lane quietly gives back less.
       max_safe_offset = min(MAX_OFFSET, max(0.0, width * 0.5 - MIN_CENTER_TO_LINE))
       target_y = 0.5 * (left + right) + float(np.clip(offset, -max_safe_offset, max_safe_offset))
+      # Where the same target is beside the car now (the model's frame has the car at y = 0).
+      self._near_error = 0.5 * float(left_y[0] + right_y[0]) + float(np.clip(offset, -max_safe_offset, max_safe_offset))
       model_y = float(np.interp(lookahead, pos_x, pos_y))
       error = target_y - model_y
       error_abs = abs(error)
