@@ -453,6 +453,69 @@ class TestAcceleratorOverride:
     assert out <= 60 + 1e-6
 
 
+class TestOnRampOldLimit:
+  """On most on-ramps the posted limit is still the road being left (33 of 51 over routes 0201-0263),
+  and the posted cap held the car to it: 11/04 and 11/10, posted 35, the car sat at 40 mph down the
+  acceleration lane with the fleet at 49-53 mph. The fleet's speed outranks that cap on an on-ramp."""
+
+  @staticmethod
+  def _nav(posted_mph=35, fleet_mph=53, ramp=1):
+    nav = FakeNav(posted_mph, road_class_for(posted_mph))
+    nav.baseSpeedLimit = 0.0                 # base goes to 0 on the ramp; map/mpp/fused keep the old road
+    nav.rampType = ramp
+    nav.fleetSplineSpeed = fleet_mph * MPH
+    return nav
+
+  @staticmethod
+  def _out(c, nav, v_ego_mph=40, curvature=0.0, n=60):
+    cs = FakeCS(nav)
+    for _ in range(n):
+      out = c.update(cs, v_ego_mph * MPH, 40 * MPH, curvature)
+    return out / MPH
+
+  def test_follows_the_fleet_past_the_old_limit(self):
+    assert self._out(make(), self._nav()) == pytest.approx(53.0, abs=0.5)
+
+  def test_switch_off_is_the_old_cap(self, monkeypatch):
+    import openpilot.selfdrive.controls.lib.map_cruise as mc
+    monkeypatch.setattr(mc, 'RAMP_ON_FLEET_CAP', False)
+    assert self._out(make(), self._nav()) == pytest.approx(40.0, abs=0.5)
+
+  def test_no_wait_to_raise(self):
+    c = make()
+    self._out(c, self._nav(fleet_mph=38), n=60)
+    assert self._out(c, self._nav(fleet_mph=53), n=1) == pytest.approx(53.0, abs=0.5)
+
+  def test_off_ramp_keeps_the_cap(self):
+    assert self._out(make(), self._nav(ramp=2)) <= 40.5
+
+  def test_ordinary_road_keeps_the_cap(self):
+    assert self._out(make(), self._nav(ramp=0)) <= 40.5
+
+  def test_configured_max_still_binds(self):
+    assert self._out(make(v_max_mph=45), self._nav()) <= 45.01
+
+  def test_curve_cap_still_binds(self):
+    c = MapCruiseController()
+    c.set_config(enabled=True, offset_ratio=1.0, v_max=90 * MPH, use_curve=True, sync_cluster=True, curve_lat_accel=3.0)
+    assert self._out(c, self._nav(), curvature=1.0 / 31) < 30.0
+
+  def test_fleet_under_the_cap_is_unchanged(self):
+    assert self._out(make(), self._nav(posted_mph=65, fleet_mph=70), v_ego_mph=50) == pytest.approx(70.0, abs=0.5)
+
+  def test_ramp_end_hands_back_to_the_posted_limit(self):
+    c = make()
+    self._out(c, self._nav())
+    after = FakeNav(65, 1)
+    assert self._out(c, after, v_ego_mph=53, n=100) == pytest.approx(75.0, abs=0.5)
+
+  def test_ramp_end_with_the_old_limit_still_posted_is_capped_again(self):
+    # nothing new after the ramp: 10 s after each of the 50 replayed ramps the output is identical
+    c = make()
+    self._out(c, self._nav())
+    assert self._out(c, self._nav(ramp=0), v_ego_mph=53, n=100) <= 40.5
+
+
 class TestDeadConfidenceField:
   """The 2026-10-17 car firmware stopped filling UI_splineLocConfidence and baseMapSpeedLimit
   (both read 0 forever) while mapSpeedLimit/mpp/fused kept working. A dead 0 must not reject

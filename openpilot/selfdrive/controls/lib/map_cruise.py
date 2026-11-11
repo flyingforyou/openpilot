@@ -81,6 +81,21 @@ CLASS_CEILING = {
 
 RAMP_ON = 1
 RAMP_OFF = 2
+# On an on-ramp the posted limit is usually still the road being left, and the cap at the end of
+# update() -- "the posted limit has the last word" -- held the car to it. The ramp branch already
+# targets the fleet's speed at this point of the ramp; the cap then took it back. 11/04 and 11/10
+# (0244 seg 16, 0261 seg 14, the same ramp: posted 35, cap 40 mph): the car reached 64 km/h and sat
+# there for 6-7 s of the acceleration lane with the fleet at 79-86 km/h and the freeway at 105, and
+# the driver took the pedal both times.
+#
+# With this the fleet's speed is allowed past the posted cap while the on-ramp flag is set; the
+# configured ceiling, the curve cap and the lead still apply. Replayed over the 50 on-ramps of routes
+# 0201-0263 (driver's own speed, so the target only): 35 get a higher target, for a median 11.9 s and
+# by up to a median 21 km/h; on the other 15 the map already shows the freeway's limit and the fleet
+# sits under its cap. In the 10 s after every ramp the output is identical. Closed loop on the two
+# above: 64 -> 85 km/h where the driver stepped in, the turn onto the ramp unchanged; in a queue on the
+# ramp (024a seg 18, 024c seg 19) the lead decides and the speed differs by under 1 km/h.
+RAMP_ON_FLEET_CAP = True
 
 # A higher target has to hold this long before the setpoint takes it. Covers the case
 # where the map hands over to the next road a beat before the car is on it -- entering that
@@ -514,22 +529,24 @@ class MapCruiseController:
     # cluster's own MAX gets moved. Treating a press as a standing override is what pinned MAX
     # to the last number dialled and stopped it following the road at all.
 
+    # What the last word may not cap below while merging: the car's own speed, and the fleet's at
+    # this point of the ramp (RAMP_ON_FLEET_CAP).
+    merge_floor = max(v_ego, fleet if RAMP_ON_FLEET_CAP else 0.0) if ramp == RAMP_ON else 0.0
+
     # Last word. Everything above this line can be walked somewhere the road does not support --
     # a stale hold, a ramp's fleet speed carried past the merge -- and the posted limit is the
     # only number here that comes from the road rather than from the loop. Same ladder as the
     # target's own offset, so the cap cannot be looser than what the map would have asked for.
     if posted > 0.0:
-      cap = posted + self._limit_offset(posted)
-      if ramp == RAMP_ON:
-        # the merge guard outranks it: the posted limit on an on-ramp is the road being left, and
-        # with +5 up to 45 a 45 arterial's cap (50) would otherwise hold a merge below the car's speed
-        cap = max(cap, v_ego)
+      # the merge guard outranks it: the posted limit on an on-ramp is the road being left, and
+      # with +5 up to 45 a 45 arterial's cap (50) would otherwise hold a merge below the car's speed
+      cap = max(posted + self._limit_offset(posted), merge_floor)
       if self.v_target > cap:
         self.v_target = float(max(MIN_TARGET, cap))
         self.source = 'capped'
     road_target = float(np.clip(road_target, MIN_TARGET, self.v_max))
     if posted > 0.0:
-      road_target = float(max(MIN_TARGET, min(road_target, posted + self._limit_offset(posted))))
+      road_target = float(max(MIN_TARGET, min(road_target, max(posted + self._limit_offset(posted), merge_floor if RAMP_ON_FLEET_CAP else 0.0))))
 
     # Everything above has had its say; what is left is the ceiling for this stretch of road.
     # Deliberately taken before the slew: the slew is how the car gets there, not how fast the
