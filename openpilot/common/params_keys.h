@@ -200,6 +200,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LeadCreditCap", {PERSISTENT, BOOL, "0"}},
     {"LeadModelPredict", {PERSISTENT, BOOL, "0"}},
     {"StoppedLeadEarly", {PERSISTENT, BOOL, "1"}},
+    {"RadarStoppedAhead", {PERSISTENT, BOOL, "1"}},
     {"LaneChangeAccel", {PERSISTENT, BOOL, "1"}},
     {"TurnLoadGuard", {PERSISTENT, BOOL, "1"}},
     {"LeadAccelSlope", {PERSISTENT, BOOL, "1"}},

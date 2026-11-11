@@ -14,6 +14,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.common.simple_kalman import KF1D
 from openpilot.selfdrive.controls.lib.cut_in import DEFAULT_HALF_WIDTH, VEHICLE_HALF_WIDTH, CutInDetector
 from openpilot.selfdrive.controls.lib.lane_change_guards import target_lane_lead
+from openpilot.selfdrive.controls.lib import stopped_ahead
 from openpilot.selfdrive.controls.lib.radar_lead_hold import RADAR_LEAD_HOLD_DEFAULT_MS, LeadSpeedSlope, RadarLeadHold, radar_lead_accel
 
 
@@ -103,6 +104,11 @@ class Track:
     # how long it has been the chosen match (see match_vision_to_track)
     self.is_stopped_car_count = 0
     self.selected_count = 0
+    # evidence that this is a stopped car in our path the model is only starting to see
+    # (lib/stopped_ahead.py), and its offset from the model's own path at its distance
+    self.stopped_ahead_count = 0
+    self.stopped_ahead = False
+    self.pathOffset = 1e3
 
     # Lane-relative position, from CarrotPilot. yRel is measured along a straight line out of
     # the bumper, so on a curve a roadside object reads as very nearly ahead while the lane it
@@ -179,6 +185,11 @@ class Track:
 
     self.dPath, self.in_lane_prob, self.lane_half_width = interp_at(self.dRel, self.yRel)
 
+  def path_offset(self, path_x, path_y) -> None:
+    """Offset from the model's planned path at this track's distance. The lane lines dPath uses
+    fade out with distance on a bend; the path is what the model expects us to drive."""
+    self.pathOffset = float(-self.yRel - np.interp(self.dRel + RADAR_TO_CAMERA, path_x, path_y)) if len(path_x) else 1e3
+
   def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float, measured: float,
              j_lead: float = 0.0, yv_rel: float = 0.0, a_lead: float = 0.0,
              reaction_factor: float = 1.0, vehicle_class=None, class_prob: float = 0.0,
@@ -212,6 +223,8 @@ class Track:
     if not self.measured or discontinuous:
       self.is_stopped_car_count = 0
       self.selected_count = 0
+      self.stopped_ahead_count = 0
+      self.stopped_ahead = False
 
     # computed velocity and accelerations
     if self.cnt > 0:
@@ -479,7 +492,7 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, low_speed_override: bool = True,
              update_counters: bool = True,
-             hold: RadarLeadHold | None = None) -> dict[str, Any]:
+             hold: RadarLeadHold | None = None, stopped_ahead_enabled: bool = False) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_msg.prob > .5:
     track = match_vision_to_track(v_ego, lead_msg, tracks, update_counters)
@@ -499,6 +512,14 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
     if held is not None:
       lead_dict = held.get_RadarState(lead_msg.prob)
       hold.used = True
+
+  # A stopped car the radar has and the model is only starting to see; see lib/stopped_ahead.py.
+  # The evidence is counted every frame, used only while nothing has matched a radar track.
+  if stopped_ahead_enabled and ready and len(lead_msg.x) and len(lead_msg.v):
+    stopped = stopped_ahead.update(v_ego, float(lead_msg.prob), float(lead_msg.x[0]) - RADAR_TO_CAMERA,
+                                   float(lead_msg.v[0]), tracks, update_counters)
+    if stopped is not None and not (lead_dict['present'] and lead_dict.get('radar')):
+      lead_dict = stopped.get_RadarState(lead_msg.prob)
 
   if low_speed_override:
     low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
@@ -527,6 +548,7 @@ class RadarD:
     self.lead_hold = RadarLeadHold()
     self.cut_in = CutInDetector()
     self.cut_in_enabled = True
+    self.stopped_ahead_enabled = True
     # The yaw estimate is noisy frame to frame and it scales a correction applied out to 50m,
     # so it is smoothed before anything is projected with it.
     self.yaw_rate_filter = FirstOrderFilter(0.0, 0.20, DT_MDL)
@@ -566,6 +588,7 @@ class RadarD:
     self.radar_lead_accel = bool(self.params.get("RadarLeadAccel", return_default=True))
     self.lead_accel_slope = bool(self.params.get("LeadAccelSlope", return_default=True))
     self.cut_in_enabled = bool(self.params.get("TeslaCutInLead", return_default=True))
+    self.stopped_ahead_enabled = bool(self.params.get("RadarStoppedAhead", return_default=True))
     if not self.cut_in_enabled:
       self.cut_in.reset()
 
@@ -604,6 +627,10 @@ class RadarD:
       yaw_rate = float(sm['modelV2'].orientationRate.z[0])
     yaw_rate = float(self.yaw_rate_filter.update(yaw_rate))
 
+    position = sm['modelV2'].position if self.ready else None
+    path_x = np.array(position.x) if position is not None else np.empty(0)
+    path_y = np.array(position.y) if position is not None else np.empty(0)
+
     # *** compute the tracks ***
     for ids in ar_pts:
       pt = ar_pts[ids]
@@ -635,6 +662,7 @@ class RadarD:
         track.dRel_future = track.dRel + v_rel_future * self.radar_lat_factor
         track.yRel_future = track.yRel + yv_rel_future * self.radar_lat_factor
         track.d_path(sm['modelV2'])
+        track.path_offset(path_x, path_y)
 
     # *** publish radarState ***
     self.radar_state_valid = sm.all_checks()
@@ -649,7 +677,8 @@ class RadarD:
     leads_v3 = sm['modelV2'].leadsV3
     if len(leads_v3) > 1:
       lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
-                          low_speed_override=True, hold=self.lead_hold)
+                          low_speed_override=True, hold=self.lead_hold,
+                          stopped_ahead_enabled=self.stopped_ahead_enabled)
       # The hold only applies to the lead we follow; leadTwo stays purely vision-gated.
       self.lead_hold.observe(lead_one)
       self.radar_state.leadOne = lead_one

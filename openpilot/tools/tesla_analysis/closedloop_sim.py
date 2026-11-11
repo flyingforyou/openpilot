@@ -22,6 +22,7 @@ d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.
       "tlg.<CONST>": value (a turn_load_guard.py module constant)
   SIMRADARD=1   rerun today's radard over the recorded radarTracks (lead hold, radar accel, cut-in)
                 instead of trusting the radarState recorded at the time
+  SIMENGAGED=1  stay engaged past a driver takeover in the recording (what would the car have done?)
   SIMLEAD2=1    keep leadTwo (cut-ins, the target lane's lead) instead of dropping it
   SIMJERK=<m/s^3>  cap how fast the simulated car builds braking (TeslaBrakeJerk/Max authority)
   SIMTRACE=1    print frames where the command moves;  SIMDUMP=<file.json>  per-frame traces
@@ -46,6 +47,7 @@ route, seg, T0, T1 = sys.argv[1], int(sys.argv[2]), float(sys.argv[3]), float(sy
 import os, json
 LOC = bool(os.environ.get('SIMLOC'))
 NOLEAD = bool(os.environ.get('SIMNOLEAD'))
+ENGAGED = bool(os.environ.get('SIMENGAGED'))
 # SIMWARMUP: seconds before T0 the sim car just follows the recording (planner running, state building)
 WARMUP = float(os.environ.get('SIMWARMUP', 3.0))
 SYN = json.loads(os.environ['SIMSYNTH']) if os.environ.get('SIMSYNTH') else None
@@ -162,6 +164,7 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             rd.params.get = lambda key, *a, _g=_rg, **k: ovr[key] if key in ovr else _g(key, *a, **k)
             rd.refresh_tuning()
     sm = _ReplaySM(); planner = None; pts = {}; t0 = None
+    engaged_keep = None
     kp = KalmanParams(DT); kf = None
     xe = ve = ae = None; x_rec = 0.0; last_t = None
     cmd_hist = collections.deque([0.0] * int(round(DELAY / DT) + 1), maxlen=int(round(DELAY / DT) + 1))
@@ -274,6 +277,15 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             else:
                 L2.present = False
         state['d'] = float(x_lead - xe); state['ve'] = float(ve)
+        if ENGAGED:
+            # past a driver takeover the recording says disengaged and the planner would reset; keep
+            # the last engaged controlsState/selfdriveState and cruise setting instead
+            if sm.data['selfdriveState'].enabled and str(sm.data['controlsState'].longControlState) != 'off':
+                engaged_keep = (sm.data['controlsState'], sm.data['selfdriveState'], rec_cs.vCruise, rec_cs.vCruiseCluster, rec_cs.cruiseState.speed)
+            elif engaged_keep is not None:
+                sm.data['controlsState'], sm.data['selfdriveState'] = engaged_keep[0], engaged_keep[1]
+                cs.vCruise, cs.vCruiseCluster, cs.cruiseState.speed = engaged_keep[2], engaged_keep[3], engaged_keep[4]
+                cs.cruiseState.enabled = True
         sm.data['carState'] = cs; sm.data['radarState'] = rs
         model_rec = None
         if NOLEAD and not os.environ.get('SIMNOMODELSHIFT') and xe is not None and abs(x_rec - xe) > 0.05:
