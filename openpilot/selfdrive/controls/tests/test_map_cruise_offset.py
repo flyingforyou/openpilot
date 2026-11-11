@@ -39,6 +39,8 @@ class FakeNav:
     self.csaCurvC2 = 0.0
     self.csaCurvC3 = 0.0
     self.csaCurvRange = 0.0
+    self.nextBranchDist = 300.0              # "300 m or more": not counting down to a branch
+    self.nextBranchRightOffRamp = False
 
 
 class FakeCS:
@@ -47,6 +49,8 @@ class FakeCS:
     # the pedals: the real carState always carries them, and the override reads both
     self.gasPressed = gas
     self.brakePressed = brake
+    self.leftBlinker = False
+    self.rightBlinker = False
 
 
 def make(v_max_mph=90, use_curve=False):
@@ -542,3 +546,122 @@ class TestDeadConfidenceField:
     for _ in range(40):
       c.update(FakeCS(nav), 40 * MPH, 30 * MPH)
     assert c.source != 'map'
+
+
+class TestExitPreDecel:
+  """rampType turns to 2 at the gore and the fleet's speed steps 120 -> 85-99 km/h with it, so the car
+  arrived at motorway speed and braked on the ramp. UI_nextBranchDist counts the last 300 m to it;
+  with the driver's right blinker before it, the output comes down ahead of the gore."""
+  KPH = 1 / 3.6
+
+  @staticmethod
+  def _nav(dist=300.0, right_off=True, road_class=1):
+    nav = FakeNav(65, road_class)
+    nav.nextBranchDist = dist
+    nav.nextBranchRightOffRamp = right_off
+    return nav
+
+  def _drive(self, c, blinker_s=3.0, gap_s=5.0, v0_kph=120.0, left_after=False, gas=False, nav_kw=None, pass_by=False):
+    """Blinker, a pause, then the 300 m countdown at the car's own speed. Returns the outputs (km/h)
+    during the countdown and for 3 s after it."""
+    v = v0_kph * self.KPH
+    cs = FakeCS(self._nav(**(nav_kw or {})))
+    cs.navMap.nextBranchDist = 300.0
+    for _ in range(100):                      # settle on the road's own target
+      c.update(cs, v, 75 * MPH)
+    cs.rightBlinker = True
+    for _ in range(int(blinker_s / DT_MDL)):
+      c.update(cs, v, 75 * MPH)
+    cs.rightBlinker = False
+    cs.leftBlinker = left_after
+    for _ in range(int(gap_s / DT_MDL)):
+      c.update(cs, v, 75 * MPH)
+    cs.leftBlinker = False
+    cs.gasPressed = gas
+    d = 299.0
+    outs = []
+    while d > 0.0:
+      cs.navMap.nextBranchDist = 10.0 * int(d / 10.0)
+      out = c.update(cs, v, 75 * MPH)
+      outs.append(out / self.KPH)
+      v = min(v, out) if out < v else v      # the car follows a lower target at once (worst case for the cap)
+      d -= v * DT_MDL
+    after = []
+    cs.navMap.nextBranchDist = 300.0
+    if not pass_by:
+      cs.navMap.rampType = 2
+      cs.navMap.fleetSplineSpeed = 93 * self.KPH
+    for _ in range(int(3.0 / DT_MDL)):
+      after.append(c.update(cs, v, 75 * MPH) / self.KPH)
+    return outs, after
+
+  def test_slows_to_the_gore_speed(self):
+    outs, after = self._drive(make())
+    assert outs[0] > 119.0                               # 300 m out the profile is still above the car
+    assert outs[-1] == pytest.approx(100.0, abs=2.5)      # and at the gore it is the driver's own speed there
+    assert after[-1] == pytest.approx(93.0, abs=0.5)      # then the ramp's fleet speed, a small step
+
+  def test_profile_is_gentle(self):
+    outs, _ = self._drive(make())
+    v = [o * self.KPH for o in outs]
+    worst = min((b - a) / DT_MDL for a, b in zip(v, v[1:]))
+    # the field moves in 10 m steps, so single frames step; over any second it is the profile's 0.7
+    per_s = min((v[i + 20] - v[i]) for i in range(len(v) - 20))
+    assert per_s > -1.0 and worst > -8.0
+
+  def test_no_blinker_no_slowing(self):
+    outs, _ = self._drive(make(), blinker_s=0.0)
+    assert min(outs) > 119.0
+
+  def test_old_blinker_does_not_count(self):
+    outs, _ = self._drive(make(), gap_s=40.0)
+    assert min(outs) > 119.0
+
+  def test_left_blinker_takes_it_back(self):
+    outs, _ = self._drive(make(), left_after=True)
+    assert min(outs) > 119.0
+
+  def test_seen_through_once_taken_up(self):
+    # 26 s after the blinker when the count starts: still an exit 9 s later, when the blinker is 35 s old
+    outs, _ = self._drive(make(), gap_s=26.0)
+    assert outs[-1] == pytest.approx(100.0, abs=2.5)
+
+  def test_not_for_a_left_branch_or_another_road(self):
+    assert min(self._drive(make(), nav_kw={'right_off': False})[0]) > 119.0
+    c = make()
+    outs, _ = self._drive(c, v0_kph=70.0, nav_kw={'road_class': 4})
+    assert c.exit_cap == 0.0
+
+  def test_passing_the_exit_gives_the_speed_back(self):
+    outs, after = self._drive(make(), pass_by=True)
+    assert after[-1] > 119.0
+
+  def test_pedal_outranks_it(self):
+    outs, _ = self._drive(make(), gas=True)
+    assert min(outs) > 119.0
+
+  def test_never_raises(self):
+    outs, _ = self._drive(make(), v0_kph=85.0)
+    assert max(outs) <= 75 * MPH / self.KPH + 0.01
+
+  def test_switches(self, monkeypatch):
+    import openpilot.selfdrive.controls.lib.map_cruise as mc
+    c = make()
+    c.exit_decel = False
+    assert min(self._drive(c)[0]) > 119.0
+    monkeypatch.setattr(mc, 'EXIT_PREDECEL', False)
+    assert min(self._drive(make())[0]) > 119.0
+
+  def test_cluster_max_is_left_alone(self):
+    c = make()
+    self._drive(c)
+    # v_ceiling is what the cluster's MAX is synced to; the profile must not walk it down
+    c2 = make()
+    cs = FakeCS(self._nav())
+    for _ in range(100):
+      c2.update(cs, 33.0, 75 * MPH)
+    cs.rightBlinker = True
+    cs.navMap.nextBranchDist = 50.0
+    for _ in range(40):
+      out = c2.update(cs, 33.0, 75 * MPH)
+    assert out < c2.v_ceiling - 3.0

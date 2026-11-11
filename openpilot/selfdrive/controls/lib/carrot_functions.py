@@ -329,7 +329,8 @@ class CarrotPlanner:
                                  self.mapAutoSpeedMax * CV.KPH_TO_MS,
                                  self.mapAutoSpeedCurve, self.syncClusterSpeed,
                                  self.mapCurveLatAccel, self.mapCurveUseMap,
-                                 self.mapSpeedOffset * CV.MPH_TO_MS)
+                                 self.mapSpeedOffset * CV.MPH_TO_MS,
+                                 self.params.get_bool("TeslaMapExitDecel"))
     elif self.params_count >= 100:
 
       self.params_count = 0

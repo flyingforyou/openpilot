@@ -170,6 +170,8 @@ class FullNav(Nav):
     self.splineConfidence = 99.0
     self.gpsRoadMatch = 1
     self.fleetSplineSpeed = self.fleetTopQuartileSpeed = self.fleetMedianSpeed = 0.0
+    self.nextBranchDist = 300.0
+    self.nextBranchRightOffRamp = False
 
 
 class CS:
@@ -178,6 +180,8 @@ class CS:
     # the real carState always carries the pedals; the override reads both
     self.gasPressed = False
     self.brakePressed = False
+    self.leftBlinker = False
+    self.rightBlinker = False
 
 
 def settle(c, nav, v_ego=FAST, model_k=0.0, n=200):

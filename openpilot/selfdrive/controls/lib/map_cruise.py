@@ -97,6 +97,25 @@ RAMP_OFF = 2
 # ramp (024a seg 18, 024c seg 19) the lead decides and the speed differs by under 1 km/h.
 RAMP_ON_FLEET_CAP = True
 
+# Slowing for an exit before the ramp flag. rampType turns to 2 at the gore and the fleet's speed
+# steps down with it -- 120 -> 85-99 km/h in one frame -- so the car reached the ramp at motorway
+# speed and braked there: over the motorway exits of routes 0201-0263 taken engaged with nothing
+# ahead (11), it crossed the gore a median 22.6 km/h above the fleet and braked past -2.5 m/s^2 on 4;
+# driving them himself the driver crosses it 9.5 above, and on 6 of 26 he braked before the flag.
+#
+# UI_nextBranchDist counts the last 300 m to the next branch and reaches 0 where the flag turns
+# (8 exits of routes 0253-0263, every one). It counts for exits that are passed too -- 52 of 60 --
+# so the driver's right blinker in the EXIT_BLINKER_S before is what says this one is being taken
+# (5 of the 8 taken, 3 of the 52 passed; a left blinker after it takes it back). Then the output is
+# held under the speed from which EXIT_DECEL reaches EXIT_GORE_SPEED at the gore. The cluster's MAX
+# (v_ceiling) is left alone: it is a profile, not a setpoint. Passing after all, the count returns to
+# 300 and the cap goes with it.
+EXIT_PREDECEL = True
+EXIT_GORE_SPEED = 100.0 / 3.6   # the driver's own gore speed: the fleet's ~93 km/h there + 9.5
+EXIT_DECEL = 0.7                # m/s^2 of the profile; the driver's early braking is 0.5-1.0
+EXIT_BLINKER_S = 30.0
+EXIT_BRANCH_FAR = 300.0         # UI_nextBranchDist at or above this is "not counting"
+
 # A higher target has to hold this long before the setpoint takes it. Covers the case
 # where the map hands over to the next road a beat before the car is on it -- entering that
 # freeway, the posted limit went 25 -> 65 mph while the car was still at 18 mph on the on-ramp.
@@ -253,12 +272,18 @@ class MapCruiseController:
     # Has UI_splineLocConfidence ever been non-zero? Not cleared by reset(): it is a property of
     # the car's firmware, not of the drive. See MIN_CONFIDENCE.
     self.confidence_alive = False
+    self.exit_decel = True          # TeslaMapExitDecel
+    self.exit_blinker_t = 1e3       # s since the right blinker was last on
+    self.exit_branch_raw = -1.0     # last UI_nextBranchDist seen
+    self.exit_dist = -1.0           # m to the branch, dead-reckoned between its 10 m steps
+    self.exit_latched = False       # this countdown is an exit being taken
+    self.exit_cap = 0.0             # m/s the output is held under, 0 = not slowing for an exit
 
 
   def set_config(self, enabled: bool, offset_ratio: float,
                  v_max: float, use_curve: bool = True, sync_cluster: bool = False,
                  curve_lat_accel: float = 0.0, use_map_curve: bool = True,
-                 offset_max: float = OFFSET_ABOVE) -> None:
+                 offset_max: float = OFFSET_ABOVE, exit_decel: bool = True) -> None:
     if not enabled and self.enabled:
       self.reset()
     self.enabled = enabled
@@ -269,6 +294,7 @@ class MapCruiseController:
     self.curve_lat_accel = curve_lat_accel
     self.use_map_curve = use_map_curve
     self.v_max = v_max
+    self.exit_decel = exit_decel
 
   def reset(self) -> None:
     self.v_ceiling = 0.0
@@ -283,6 +309,42 @@ class MapCruiseController:
     self.curve_from_map = False
     self.v_override = 0.0
     self.override_timer = 0.0
+    self.exit_branch_raw = -1.0
+    self.exit_dist = -1.0
+    self.exit_latched = False
+    self.exit_cap = 0.0
+
+  def _exit_cap(self, CS, nav, ramp: int, v_ego: float) -> float:
+    """Speed to be under now so as to reach the gore at EXIT_GORE_SPEED, or 0.0 when no exit is being taken."""
+    if CS.rightBlinker:
+      self.exit_blinker_t = 0.0
+    elif CS.leftBlinker:
+      self.exit_blinker_t = 1e3
+    else:
+      self.exit_blinker_t = min(self.exit_blinker_t + DT_MDL, 1e3)
+
+    raw = float(nav.nextBranchDist)
+    counting = bool(nav.nextBranchRightOffRamp) and 0.0 <= raw < EXIT_BRANCH_FAR and ramp == 0 and int(nav.roadClass) == 1
+    if not counting:
+      self.exit_branch_raw = -1.0
+      self.exit_dist = -1.0
+      self.exit_latched = False
+      return 0.0
+    if raw != self.exit_branch_raw:
+      self.exit_branch_raw = raw
+      self.exit_dist = raw
+    else:
+      # the field steps 10 m about once a second; in between the car keeps moving
+      self.exit_dist = max(self.exit_dist - v_ego * DT_MDL, max(raw - 10.0, 0.0))
+    # Once a countdown has been taken up it is seen through: the blinker's age is asked once, when
+    # the count is first seen with it, not again 2 s before the gore.
+    if self.exit_blinker_t < EXIT_BLINKER_S:
+      self.exit_latched = True
+    elif CS.leftBlinker:
+      self.exit_latched = False
+    if not (EXIT_PREDECEL and self.exit_decel) or not self.exit_latched:
+      return 0.0
+    return float(np.sqrt(EXIT_GORE_SPEED ** 2 + 2.0 * EXIT_DECEL * self.exit_dist))
 
   def _posted_limit(self, nav) -> tuple[float, str]:
     """Best posted limit available, and where it came from. 0.0 if none is trustworthy.
@@ -610,4 +672,9 @@ class MapCruiseController:
     # configured ceiling -- the pedal may outrank the map, but not the number the driver set as
     # the most this should ever ask for.
     out = max(self.v_output, self.v_override) if self.v_override > 0.0 else self.v_output
+    # The exit profile only ever lowers, never below the gore speed, and the pedal outranks it.
+    self.exit_cap = self._exit_cap(CS, nav, ramp, v_ego)
+    if self.exit_cap > 0.0 and self.v_override <= 0.0 and out > self.exit_cap:
+      out = self.exit_cap
+      self.source = 'exit'
     return float(np.clip(out, MIN_TARGET, self.v_max))

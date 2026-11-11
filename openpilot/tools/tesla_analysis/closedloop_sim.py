@@ -26,6 +26,8 @@ d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.
   SIMENGAGED=1  stay engaged past a driver takeover in the recording (what would the car have done?)
   SIMLEAD2=1    keep leadTwo (cut-ins, the target lane's lead) instead of dropping it
   SIMJERK=<m/s^3>  cap how fast the simulated car builds braking (TeslaBrakeJerk/Max authority)
+  SIMEXIT=1     synthesize UI_nextBranchDist before each off-ramp flag in the recording (the field was not
+                decoded before route 0253): the distance left to where rampType turned 2, as the car sends it
   SIMTRACE=1    print frames where the command moves;  SIMDUMP=<file.json>  per-frame traces
 
 The lead is exogenous: its recorded absolute position and speed. The planner gets a synthetic
@@ -97,6 +99,18 @@ if CP is None:
     CP = log.Event.from_bytes(open('/data/params/d/CarParamsPersistent','rb').read()) if False else None
     from openpilot.cereal import car
     CP = car.CarParams.from_bytes(open(os.environ['SIMCP'], 'rb').read() if os.environ.get('SIMCP') else Params().get("CarParamsPersistent"))
+
+# SIMEXIT: where (in metres travelled by the recorded car, as run() counts them) each off-ramp flag rose
+EXIT_X = []
+if os.environ.get('SIMEXIT'):
+    _x = 0.0; _lt = None; _pr = 0
+    for _e in evts:
+        if _e.which() != 'carState': continue
+        _t = _e.logMonoTime / 1e9
+        if _lt is not None: _x += _e.carState.vEgo * (_t - _lt)
+        _lt = _t; _r = int(_e.carState.navMap.rampType)
+        if _r == 2 and _pr == 0: EXIT_X.append(_x)
+        _pr = _r
 
 def _sstar(planner, v, v_lead):
     """The IIDM path's dynamic target gap s* for the current frame (research_long, mode 0)."""
@@ -263,6 +277,10 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
                 a_lead = float(ld.aLeadK)   # radard's own value (radar accel when the lead is a radar track)
             cs = rec_cs.as_builder(); cs.vEgo = cs.vEgoRaw = cs.vEgoCluster = float(max(ve, 0.0)); cs.aEgo = float(ae)
             cs.standstill = ve < 0.1; cs.gasPressed = False; cs.brakePressed = False
+        if EXIT_X and xe is not None:
+            _d = next((xf - xe for xf in EXIT_X if xf - xe > 0.0), None)
+            cs.navMap.nextBranchRightOffRamp = _d is not None
+            cs.navMap.nextBranchDist = float(min(300.0, 10.0 * math.floor(_d / 10.0))) if _d is not None else 300.0
         if gap:
             cs.cruiseState.gapAdjust = int(gap)
             sd = sm.data['selfdriveState']; sd = sd.as_builder() if hasattr(sd, 'as_builder') else sd
