@@ -10,7 +10,12 @@ with LeadBrakeFollow, ApproachCoast and LeadAheadBrake off, so aTarget there is 
   steady_*     14 one-minute windows of engaged following, 8 above 85 km/h
   leadbrake_*  10 sixteen-second windows around a lead braking past 1 m/s^2
 columns: vEgo, aTarget, lead(present, radar, dRel, vLead, aLeadK), leadTwo(same), tFollow, desiredDistance
-The 11/12 build fails these (onsets +0.9 a minute, jerk x1.58); the 11/11 build fails them harder.
+The metrics are lib/ride_quality.py's vector, the same one tools/tesla_analysis/commit_quality.py
+scores whole commits with (closed loop, morning-commute minutes). Each limit is "no worse than the
+planner alone" by a margin, and each has a configuration that has actually shipped and fails it:
+  11/11 evening  brake applications +4.6 a minute
+  11/12 morning  brake applications +0.94, command jerk x1.58  ("busier", "a tug from behind")
+  11/12 evening  throttle applications +0.31 a minute, jerk x1.09 (ApproachCoast giving back at 1 m/s^3)
 """
 import os
 from types import SimpleNamespace as NS
@@ -22,16 +27,22 @@ from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib import carrot_t_follow as ctf
 from openpilot.selfdrive.controls.lib import follow_shaping as fs
 from openpilot.selfdrive.controls.lib import lead_ahead as la
+from openpilot.selfdrive.controls.lib import ride_quality as rq
 
 DT = 0.05
 FIXTURES = os.path.join(os.path.dirname(__file__), 'data', 'follow_quality.npz')
 STOP_DISTANCE = 5.5
 COMFORT_BRAKE_2 = 2.37
 
-# What following may cost on top of the planner's own output.
-MAX_ADDED_ONSETS = 0.2      # brake applications (crossing -0.3 m/s^2) a minute
-MAX_ADDED_REVERSALS = 0.3   # accel <-> brake reversals (+-0.15 m/s^2 hysteresis) a minute
-MAX_JERK_RATIO = 1.15       # RMS jerk of the command
+# What following may cost on top of the planner's own output (ride_quality vector).
+LIMITS = {
+  'brake_on': ('+', 0.2),      # brake applications a minute
+  'ubon': ('+', 0.1),          # ... of them with the lead not braking or closing
+  'accel_on': ('+', 0.15),     # throttle applications a minute
+  'rev': ('+', 0.3),           # accel <-> brake reversals a minute
+  'cmd_jerk': ('x', 1.06),     # RMS command jerk
+  'calm_brake': ('+', 0.5),    # % of calm time spent braking
+}
 
 
 def defaults() -> dict:
@@ -63,40 +74,31 @@ def replay(rows, cfg):
                              cb, COMFORT_BRAKE_2) for r in rows])
 
 
-def onsets(a):
-  return int(np.sum((a[1:] < -0.3) & (a[:-1] >= -0.3)))
-
-
-def reversals(a):
-  st, n = 0, 0
-  for x in a:
-    s = 1 if x > 0.15 else (-1 if x < -0.15 else 0)
-    if s and st and s != st:
-      n += 1
-    if s:
-      st = s
-  return n
-
-
-def jerk_rms(arrs):
-  return float(np.sqrt(np.mean(np.concatenate([np.diff(a) / DT for a in arrs]) ** 2)))
-
-
 def load(prefix):
   data = np.load(FIXTURES)
   return {k: data[k] for k in data.files if k.startswith(prefix)}
 
 
+def parts(fx, cmds):
+  return [rq.components(c, r[:, 0], r[:, 4], r[:, 5], r[:, 6], DT) for r, c in zip(fx.values(), cmds, strict=True)]
+
+
 def steady_quality(chain_cfg):
+  """(planner vector, chain vector) over the steady-following fixtures."""
   fx = load('steady_')
   ins = [rows[:, 1].astype(float) for rows in fx.values()]
   outs = [replay(rows, chain_cfg) for rows in fx.values()]
-  minutes = sum(len(a) for a in ins) * DT / 60
-  return dict(
-    added_onsets=(sum(map(onsets, outs)) - sum(map(onsets, ins))) / minutes,
-    added_reversals=(sum(map(reversals, outs)) - sum(map(reversals, ins))) / minutes,
-    jerk_ratio=jerk_rms(outs) / jerk_rms(ins),
-  )
+  return rq.vector(parts(fx, ins)), rq.vector(parts(fx, outs))
+
+
+def violations(chain_cfg) -> dict:
+  base, out = steady_quality(chain_cfg)
+  bad = {}
+  for k, (kind, lim) in LIMITS.items():
+    worse = out[k] - base[k] if kind == '+' else out[k] / max(base[k], 1e-9)
+    if worse > lim:
+      bad[k] = (round(base[k], 3), round(out[k], 3))
+  return bad
 
 
 def test_fixtures_are_what_the_docstring_says():
@@ -107,23 +109,31 @@ def test_fixtures_are_what_the_docstring_says():
 
 
 def test_steady_following_is_no_busier_than_the_planner(chain):
-  q = steady_quality(chain())
-  assert q['added_onsets'] <= MAX_ADDED_ONSETS, q
-  assert q['added_reversals'] <= MAX_ADDED_REVERSALS, q
-  assert q['jerk_ratio'] <= MAX_JERK_RATIO, q
+  assert violations(chain()) == {}
 
 
-@pytest.mark.parametrize("engage, release, rate", [
-  ((-0.7, -0.2), True, 2.0),     # 11/11 evening build
-  ((-1.2, -0.6), True, 2.0),     # 11/12 morning drive
+@pytest.mark.parametrize("name, engage, release, rate, broken", [
+  ("11/11 evening", (-0.7, -0.2), True, 2.0, 'brake_on'),
+  ("11/12 morning", (-1.2, -0.6), True, 2.0, 'cmd_jerk'),
+  ("11/12 evening", (-2.5, -1.5), False, 1.0, 'accel_on'),
 ])
-def test_the_builds_that_felt_busy_fail(chain, monkeypatch, engage, release, rate):
-  """The gate has to be able to fail: the configurations the driver called out do."""
+def test_the_builds_that_felt_busy_fail(chain, monkeypatch, name, engage, release, rate, broken):
+  """The gate has to be able to fail: every configuration the driver called out, or that the
+  commit comparison showed busier, fails it on the metric that moved."""
   monkeypatch.setattr(ctf, 'BF_ENGAGE', engage)
   monkeypatch.setattr(ctf, 'RELEASE_WITH_BUFFER', release)
   monkeypatch.setattr(ctf, 'APPROACH_RATE', rate)
-  q = steady_quality(chain({"LeadBrakeFollow": 1, "ApproachCoast": 1}))
-  assert q['added_onsets'] > MAX_ADDED_ONSETS or q['jerk_ratio'] > MAX_JERK_RATIO, q
+  assert broken in violations(chain({"LeadBrakeFollow": 1, "ApproachCoast": 1})), name
+
+
+def test_the_vector_counts_what_it_says():
+  a = np.array([0.0, 0.5, 0.0, -0.5, 0.0, 0.5, -0.5])
+  v = rq.vector([rq.components(a, [20.0] * 7, [30.0] * 7, [20.0] * 7, [0.0] * 7, 10.0)])
+  assert v['minutes'] == pytest.approx(70 / 60)
+  assert v['brake_on'] * v['minutes'] == 2 and v['accel_on'] * v['minutes'] == 2 and v['rev'] * v['minutes'] == 3
+  assert v['ubon'] * v['minutes'] == 2          # the lead never braked
+  braking_lead = rq.components(a, [20.0] * 7, [30.0] * 7, [20.0] * 7, [-1.0] * 7, 10.0)
+  assert braking_lead['ubon'] == 0 and braking_lead['calm'] == 0
 
 
 def test_lead_brake_scenes_are_not_softened(chain):
