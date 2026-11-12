@@ -115,12 +115,15 @@ LEAD_BRAKE_BUFFER = None
 # -2.70 -> -2.59 with fewer zig-zags (10.0 -> 8.6/min) and unchanged launches; lead-stops maneuvers
 # braked less (3 m/s^2 lead -2.98 -> -2.81) at the same 4.6-5.0 m stopping gap.
 BF_ALEAD_TAU = 0.1                 # s, low-pass on the lead's acceleration (0.2: p5 -2.59; 0.1: -2.56, same jerk; 0: plan jerk 0.99 -> 1.19)
-# Engage band moved from (-0.7, -0.2) on 11/11: at the old band the radar's ordinary accel ripple behind
-# a steady lead kept dipping into it, and 36 whole minutes of following showed 7.0 shallow brake
-# applications a minute against 2.6 with brake-follow off. (-1.2, -0.6): 3.4 a minute, and the lead-stops
-# maneuvers keep their 4.6-4.9 m standstill gap (off: 1.9-2.4 m). Later bands (-1.5/-0.8, -1.2/-0.9)
-# save 0.4 more a minute but turn the 1 m/s^2 lead stop into a -2.4..-2.65 brake.
-BF_ENGAGE = (-1.2, -0.6)           # aLead (filtered): fully engaged .. not engaged
+# Engage band. (-0.7, -0.2) -> (-1.2, -0.6) on 11/11 -> (-2.5, -1.5) on 11/12, after the 11/12 morning
+# drive felt busier than before: replayed over the 21 following minutes of that drive, brake-follow at
+# (-1.2, -0.6) took brake applications 2.6 -> 4.5 a minute and jerk RMS 0.31 -> 0.48 against the same
+# drive with it off -- ordinary lead speed ripple, and LeadAheadBrake's expected deceleration (floor
+# -1.5), kept reaching into the band. At (-2.5, -1.5) it is a hard-braking aid only: smoothness is the
+# same as off (2.9 applications a minute, jerk 0.36 over 107 minutes of 0250-026b) and the 2 and 3
+# m/s^2 lead stops still end 4.8 m back (off: 2.0-2.5 m). The 1 m/s^2 lead stop is the planner's again.
+# tests/test_follow_quality.py holds this.
+BF_ENGAGE = (-2.5, -1.5)           # aLead (filtered): fully engaged .. not engaged
 BF_RATE_IN = 3.0                   # m/s^3, how fast the follow command may deepen (5: onset jerk 5.8, above the 4.5 of the plain planner; 3: 4.6, peak decel within 0.06; slower forces a harder peak later -- 1.5: lead-stops maneuver -2.79 -> -3.60)
 BF_RATE_OUT = 1.5                  # m/s^3, how fast it may let go
 
@@ -216,8 +219,10 @@ class BrakeFollow:
 APPROACH_COAST = None
 APPROACH_COAST_ON = (12.0, 3.0, 2.0)  # what the ApproachCoast param switches on
 APPROACH_MIN_V = 5.0               # m/s
-APPROACH_RATE = 2.0                # m/s^3: how fast acceleration is taken away and given back. Unlimited, a lead
-                                   # appearing dropped +1.2 to zero in one frame (brake-onset jerk 5.1 -> 7.2 m/s^3)
+APPROACH_RATE = 1.0                # m/s^3: how fast acceleration is taken away and given back. Unlimited, a lead
+                                   # appearing dropped +1.2 to zero in one frame (brake-onset jerk 5.1 -> 7.2 m/s^3);
+                                   # 2.0 still added jerk in plain following (0.33 -> 0.36), 1.0 keeps -1.69 of
+                                   # the -1.68 benefit on the accelerate-then-brake scenes at 0.34
 
 
 def approach_accel_cap(a: float, lead_present: bool, d_rel: float, a_lead: float, v_ego: float, v_lead: float,
@@ -306,6 +311,9 @@ class BrakeOnsetLimiter:
 #   gained nothing measurable: the lead's easing off is not known reliably sooner than the gap opening.
 #   None = off; on with LeadBrakeFollow's buffer mode.
 RELEASE_ON_OPENING = None
+RELEASE_WITH_BUFFER = False        # LeadBrakeFollow=1 no longer switches RELEASE_ON_OPENING on: letting the
+                                   # brake off fast and the planner putting it back was 0.34 of the extra 1.6
+                                   # applications a minute and most of the jerk on the 11/12 drive
 
 
 class ReleaseOnOpening:

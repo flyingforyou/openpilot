@@ -68,11 +68,11 @@ class TestApproachCoastRate:
   def test_takes_acceleration_away_gradually_and_gives_it_back_gradually(self):
     f = ctf.ApproachCoast(0.05)
     slow = [(30.0, 0.0, 15.0, 20.0, 20.0)]
-    outs = [f.update(1.2, slow) for _ in range(20)]
+    outs = [f.update(1.2, slow) for _ in range(40)]
     assert outs[0] == pytest.approx(1.2 - ctf.APPROACH_RATE * 0.05)
     assert all(a - b <= ctf.APPROACH_RATE * 0.05 + 1e-9 for a, b in zip(outs, outs[1:], strict=False))
     assert outs[-1] == 0.0
-    back = [f.update(1.2, []) for _ in range(20)]
+    back = [f.update(1.2, []) for _ in range(40)]
     assert all(b - a <= ctf.APPROACH_RATE * 0.05 + 1e-9 for a, b in zip(back, back[1:], strict=False))
     assert back[-1] == pytest.approx(1.2)
 

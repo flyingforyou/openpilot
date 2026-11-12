@@ -37,6 +37,8 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.carrot_params import TypedParams
 from openpilot.selfdrive.controls.lib.carrot_functions import CarrotPlanner
 from openpilot.selfdrive.controls.lib import carrot_t_follow, research_long
+from openpilot.selfdrive.controls.lib import follow_shaping
+from openpilot.selfdrive.controls.lib.follow_shaping import FollowShaping
 from openpilot.selfdrive.controls.lib.research_long import JerkLimiter, ResearchLongitudinal, more_binding
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeed, MAX_LAT_ACCEL as CURVE_LAT_ACCEL
 from openpilot.selfdrive.controls.lib.map_cruise import RAMP_OFF
@@ -184,10 +186,7 @@ class _CarrotLongitudinalPlannerImpl:
     self.research = ResearchLongitudinal(DT_MDL)
     self.research_two = ResearchLongitudinal(DT_MDL)   # leadTwo: cut-ins and the target lane's lead
     self.research_jerk = JerkLimiter(DT_MDL)
-    self.brake_follow = carrot_t_follow.BrakeFollow(DT_MDL)
-    self.brake_onset = carrot_t_follow.BrakeOnsetLimiter(DT_MDL)
-    self.release_open = carrot_t_follow.ReleaseOnOpening(DT_MDL)
-    self.approach_coast = carrot_t_follow.ApproachCoast(DT_MDL)
+    self.follow_shaping = FollowShaping(DT_MDL)
     self.cutin_cap = carrot_t_follow.CutInSoftCap(DT_MDL)
     self.cutin_mode = 0
     self.research_enabled = False
@@ -360,35 +359,9 @@ class _CarrotLongitudinalPlannerImpl:
 
     if self.mpc.mode == 'acc':
       lead = sm['radarState'].leadOne
-      output_a_target = carrot_t_follow.lead_brake_accel_cap(output_a_target_mpc, bool(lead.present),
-                                                              float(lead.dRel), float(lead.aLeadK))
-      output_a_target = self.brake_follow.update(output_a_target, bool(lead.present), float(lead.dRel),
-                                                 float(lead.aLeadK), v_ego, float(lead.vLead))
-      output_a_target = self.release_open.update(output_a_target, bool(lead.present), float(lead.dRel), v_ego,
-                                                 float(lead.vLead), float(self.mpc.desired_distance))
-      # time to contact with the nearer of leadOne / leadTwo, for BrakeOnsetLimiter's gate
-      ttc_min, d_min = 99.0, 999.0
-      for ld in (lead, sm['radarState'].leadTwo):
-        if ld.present:
-          d_min = min(d_min, float(ld.dRel))
-          closing = v_ego - float(ld.vLead)
-          if closing > 0.5:
-            ttc_min = min(ttc_min, float(ld.dRel) / closing)
-      output_a_target = self.brake_onset.update(output_a_target, bool(lead.present), float(lead.dRel),
-                                                float(lead.aLeadK), v_ego, float(lead.vLead), float(carrot.stop_distance),
-                                                ttc_min, d_min)
-      # leadTwo too when a radar track backs it: that is the car merging in (cut_in.py) or the one
-      # ahead in the lane being entered (target_lane_lead) -- neither is worth accelerating into.
-      near = []
-      if carrot_t_follow.APPROACH_COAST is not None:
-        lead_two = sm['radarState'].leadTwo
-        for ld in (lead, lead_two):
-          if ld.present and (ld is lead or ld.radar):
-            v_l = float(ld.vLead)
-            near.append((float(ld.dRel), float(ld.aLeadK), v_l,
-                         float(desired_follow_distance(v_l, v_l, carrot.comfort_brake, carrot.stop_distance,
-                                                       self.mpc.t_follow, carrot.comfort_brake_2)), v_ego))
-      output_a_target = self.approach_coast.update(output_a_target, near)
+      output_a_target = self.follow_shaping.update(output_a_target_mpc, lead, sm['radarState'].leadTwo, v_ego,
+                                                   float(carrot.stop_distance), float(self.mpc.desired_distance),
+                                                   float(self.mpc.t_follow), carrot.comfort_brake, carrot.comfort_brake_2)
       output_a_target = self.cutin_cap.update(output_a_target, self.cutin_mode, getattr(sm['carState'], 'dasObjects', None),
                                               bool(lead.present), float(lead.dRel), v_ego)
       output_v_target_now = output_v_target_mpc
@@ -415,19 +388,9 @@ class _CarrotLongitudinalPlannerImpl:
       self.stopped_lead_enabled = self.params.get_bool("StoppedLeadEarly")
       self.lc_accel_enabled = self.params.get_bool("LaneChangeAccel")
       self.turn_guard_enabled = self.params.get_bool("TurnLoadGuard")
-      # BrakeOnsetJerk (0.1 m/s^3): how fast braking may build while the nearest lead is >= 3 s / 10 m away
-      bj = self.params.get_int("BrakeOnsetJerk")
+      # BrakeOnsetJerk, LeadBrakeFollow, LeadBrakeBufferCm, ApproachCoast -> follow_shaping
       self.cutin_mode = self.params.get_int("CutInSoftCap")
-      carrot_t_follow.BRAKE_ONSET_JERK = bj / 10.0 if bj > 0 else None
-      # Start braking when the lead does (carrot_t_follow.lead_brake_follow). 1 = sized to the buffer,
-      # 2..100 = a fixed share of the lead's deceleration, 0 = off.
-      k = self.params.get_int("LeadBrakeFollow")
-      # the gap left after the lead stops: LeadBrakeBufferCm when set, otherwise the stop distance
-      keep = self.params.get_int("LeadBrakeBufferCm") / 100.0
-      carrot_t_follow.LEAD_BRAKE_BUFFER = (-0.5, keep if keep > 0 else float(carrot.stop_distance), 0.25, 60.0) if k == 1 else None
-      carrot_t_follow.LEAD_BRAKE_FOLLOW = (k / 100.0, -0.5, 40.0) if k > 1 else None
-      carrot_t_follow.RELEASE_ON_OPENING = (0.3, 4.0, 0.0) if k == 1 else None
-      carrot_t_follow.APPROACH_COAST = carrot_t_follow.APPROACH_COAST_ON if self.params.get_bool("ApproachCoast") else None
+      follow_shaping.configure(self.params.get_int, self.params.get_bool, float(carrot.stop_distance))
     if self.research_enabled:
       a_res = None
       if self.mpc.mode == 'acc' and int(carrot.xState.value) in (0, 1, 2):
