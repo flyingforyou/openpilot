@@ -15,6 +15,7 @@ from openpilot.common.simple_kalman import KF1D
 from openpilot.selfdrive.controls.lib.cut_in import DEFAULT_HALF_WIDTH, VEHICLE_HALF_WIDTH, CutInDetector
 from openpilot.selfdrive.controls.lib.lane_change_guards import target_lane_lead
 from openpilot.selfdrive.controls.lib import stopped_ahead
+from openpilot.selfdrive.controls.lib.lead_ahead import LeadAhead
 from openpilot.selfdrive.controls.lib.radar_lead_hold import RADAR_LEAD_HOLD_DEFAULT_MS, LeadSpeedSlope, RadarLeadHold, radar_lead_accel
 
 
@@ -547,6 +548,8 @@ class RadarD:
     self.params = Params()
     self.lead_hold = RadarLeadHold()
     self.cut_in = CutInDetector()
+    self.lead_ahead = LeadAhead(DT_MDL)
+    self.lead_ahead_enabled = False
     self.cut_in_enabled = True
     self.stopped_ahead_enabled = True
     # The yaw estimate is noisy frame to frame and it scales a correction applied out to 50m,
@@ -589,6 +592,9 @@ class RadarD:
     self.lead_accel_slope = bool(self.params.get("LeadAccelSlope", return_default=True))
     self.cut_in_enabled = bool(self.params.get("TeslaCutInLead", return_default=True))
     self.stopped_ahead_enabled = bool(self.params.get("RadarStoppedAhead", return_default=True))
+    self.lead_ahead_enabled = bool(self.params.get("LeadAheadBrake", return_default=True))
+    if not self.lead_ahead_enabled:
+      self.lead_ahead.reset()
     if not self.cut_in_enabled:
       self.cut_in.reset()
 
@@ -681,6 +687,11 @@ class RadarD:
                           stopped_ahead_enabled=self.stopped_ahead_enabled)
       # The hold only applies to the lead we follow; leadTwo stays purely vision-gated.
       self.lead_hold.observe(lead_one)
+      # The car beyond the lead slowing means the lead is about to (lib/lead_ahead.py).
+      if self.lead_ahead_enabled:
+        a_expected = self.lead_ahead.update(self.tracks, lead_one)
+        if a_expected is not None:
+          lead_one["aLeadK"] = a_expected
       self.radar_state.leadOne = lead_one
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, low_speed_override=False,
                                                  update_counters=False)

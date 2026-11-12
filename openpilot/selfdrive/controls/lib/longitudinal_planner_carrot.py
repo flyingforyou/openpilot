@@ -187,6 +187,7 @@ class _CarrotLongitudinalPlannerImpl:
     self.brake_follow = carrot_t_follow.BrakeFollow(DT_MDL)
     self.brake_onset = carrot_t_follow.BrakeOnsetLimiter(DT_MDL)
     self.release_open = carrot_t_follow.ReleaseOnOpening(DT_MDL)
+    self.approach_coast = carrot_t_follow.ApproachCoast(DT_MDL)
     self.cutin_cap = carrot_t_follow.CutInSoftCap(DT_MDL)
     self.cutin_mode = 0
     self.research_enabled = False
@@ -376,6 +377,18 @@ class _CarrotLongitudinalPlannerImpl:
       output_a_target = self.brake_onset.update(output_a_target, bool(lead.present), float(lead.dRel),
                                                 float(lead.aLeadK), v_ego, float(lead.vLead), float(carrot.stop_distance),
                                                 ttc_min, d_min)
+      # leadTwo too when a radar track backs it: that is the car merging in (cut_in.py) or the one
+      # ahead in the lane being entered (target_lane_lead) -- neither is worth accelerating into.
+      near = []
+      if carrot_t_follow.APPROACH_COAST is not None:
+        lead_two = sm['radarState'].leadTwo
+        for ld in (lead, lead_two):
+          if ld.present and (ld is lead or ld.radar):
+            v_l = float(ld.vLead)
+            near.append((float(ld.dRel), float(ld.aLeadK), v_l,
+                         float(desired_follow_distance(v_l, v_l, carrot.comfort_brake, carrot.stop_distance,
+                                                       self.mpc.t_follow, carrot.comfort_brake_2)), v_ego))
+      output_a_target = self.approach_coast.update(output_a_target, near)
       output_a_target = self.cutin_cap.update(output_a_target, self.cutin_mode, getattr(sm['carState'], 'dasObjects', None),
                                               bool(lead.present), float(lead.dRel), v_ego)
       output_v_target_now = output_v_target_mpc
@@ -414,6 +427,7 @@ class _CarrotLongitudinalPlannerImpl:
       carrot_t_follow.LEAD_BRAKE_BUFFER = (-0.5, keep if keep > 0 else float(carrot.stop_distance), 0.25, 60.0) if k == 1 else None
       carrot_t_follow.LEAD_BRAKE_FOLLOW = (k / 100.0, -0.5, 40.0) if k > 1 else None
       carrot_t_follow.RELEASE_ON_OPENING = (0.3, 4.0, 0.0) if k == 1 else None
+      carrot_t_follow.APPROACH_COAST = carrot_t_follow.APPROACH_COAST_ON if self.params.get_bool("ApproachCoast") else None
     if self.research_enabled:
       a_res = None
       if self.mpc.mode == 'acc' and int(carrot.xState.value) in (0, 1, 2):

@@ -20,6 +20,7 @@ d=0.15 s / tau=0.10 s is the actuator response fitted by actuator_lag.py (RMS 0.
       "sle.<CONST>": value (a stopped_lead_early.py module constant)
       "lca.<CONST>": value (a lane_change_accel.py module constant)
       "tlg.<CONST>": value (a turn_load_guard.py module constant)
+      "lah.<CONST>": value (a lead_ahead.py module constant)
       "ctf.<CONST>": value (a carrot_t_follow.py module constant; the ones the planner sets from params are overwritten)
   SIMRADARD=1   rerun today's radard over the recorded radarTracks (lead hold, radar accel, cut-in)
                 instead of trusting the radarState recorded at the time
@@ -146,6 +147,9 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
     import openpilot.selfdrive.controls.lib.turn_load_guard as _tlg
     if not hasattr(_tlg, '_defaults'): _tlg._defaults = {kk: getattr(_tlg, kk) for kk in dir(_tlg) if kk.isupper()}
     for k, v in _tlg._defaults.items(): setattr(_tlg, k, v)
+    import openpilot.selfdrive.controls.lib.lead_ahead as _lah
+    if not hasattr(_lah, '_defaults'): _lah._defaults = {kk: getattr(_lah, kk) for kk in dir(_lah) if kk.isupper()}
+    for k, v in _lah._defaults.items(): setattr(_lah, k, v)
     import openpilot.selfdrive.controls.lib.carrot_t_follow as _ctf
     if not hasattr(_ctf, '_defaults'): _ctf._defaults = {kk: getattr(_ctf, kk) for kk in dir(_ctf) if kk.isupper()}
     for k, v in _ctf._defaults.items(): setattr(_ctf, k, v)
@@ -165,6 +169,7 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
         if k.startswith('sle.'): setattr(_sle, k[4:], v)
         if k.startswith('lca.'): setattr(_lca, k[4:], v)
         if k.startswith('tlg.'): setattr(_tlg, k[4:], v)
+        if k.startswith('lah.'): setattr(_lah, k[4:], tuple(v) if isinstance(v, list) else v)
         if k.startswith('rdd.'):
             import openpilot.selfdrive.controls.radard as _rdd
             if not hasattr(_rdd, '_defaults'): _rdd._defaults = {kk: getattr(_rdd, kk) for kk in dir(_rdd) if kk.isupper()}
@@ -182,6 +187,14 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             _rg = rd.params.get
             rd.params.get = lambda key, *a, _g=_rg, **k: ovr[key] if key in ovr else _g(key, *a, **k)
             rd.refresh_tuning()
+    if rd is not None and os.environ.get('SIMCUTDBG'):   # how often, and when, the cut-in detector names a track
+        _cu = rd.cut_in.update; rd._cut_log = []
+        def _cut_dbg(tracks, t, *a, _u=_cu, **k):
+            tid = _u(tracks, t, *a, **k)
+            if tid >= 0: rd._cut_log.append((round(t, 2), tid, round(tracks[tid].dRel, 1), round(tracks[tid].dPath, 2)))
+            return tid
+        rd.cut_in.update = _cut_dbg
+        import atexit; atexit.register(lambda r=rd: print('CUTDBG', len(r._cut_log), r._cut_log[:1], r._cut_log[-1:], file=sys.stderr))
     sm = _ReplaySM(); planner = None; pts = {}; t0 = None
     engaged_keep = None
     kp = KalmanParams(DT); kf = None

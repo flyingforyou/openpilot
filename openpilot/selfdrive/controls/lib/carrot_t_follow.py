@@ -201,6 +201,60 @@ class BrakeFollow:
     return f
 
 
+# APPROACH_COAST -- (T_app s, T_pred s, tau s): do not accelerate into a slower car.
+#   While the lead is still far the cruise target is the binding one, so the car pulls at up to +1.3
+#   towards a lead that is slower and often slowing, overshoots its speed by 10-18 km/h and then has
+#   to brake for it (0240-0263: 8 an hour, 19 of 30 ending past -1.0 m/s^2; 0244 seg 24: 45 -> 57 km/h
+#   behind a car doing 40 -> 31, then -1.14). A driver eases off as soon as the car ahead is seen to
+#   be slower.
+#   The closing speed worth having is the one that takes T_app seconds to use up the room above the
+#   following gap; the lead's speed is taken T_pred seconds ahead when it is braking. Acceleration is
+#   capped at what reaches that closing speed in tau seconds, never below zero -- it only ever takes
+#   acceleration away, the braking is left to the planner. Fades in over the first 1 m/s of closing,
+#   so a lead pulling away (every launch) is untouched.
+#   None = off.
+APPROACH_COAST = None
+APPROACH_COAST_ON = (12.0, 3.0, 2.0)  # what the ApproachCoast param switches on
+APPROACH_MIN_V = 5.0               # m/s
+APPROACH_RATE = 2.0                # m/s^3: how fast acceleration is taken away and given back. Unlimited, a lead
+                                   # appearing dropped +1.2 to zero in one frame (brake-onset jerk 5.1 -> 7.2 m/s^3)
+
+
+def approach_accel_cap(a: float, lead_present: bool, d_rel: float, a_lead: float, v_ego: float, v_lead: float,
+                       gap_target: float) -> float:
+  if APPROACH_COAST is None or not lead_present or a <= 0.0 or v_ego < APPROACH_MIN_V:
+    return a
+  t_app, t_pred, tau = APPROACH_COAST
+  closing = v_ego - max(v_lead + min(a_lead, 0.0) * t_pred, 0.0)
+  w = min(max(closing, 0.0), 1.0)
+  if w <= 0.0:
+    return a
+  allowed = max(d_rel - gap_target, 0.0) / t_app
+  cap = max((allowed - closing) / tau, 0.0)
+  return a + w * (min(a, cap) - a)
+
+
+class ApproachCoast:
+  """approach_accel_cap over any number of leads, with the amount it removes rate-limited both ways."""
+  def __init__(self, dt: float):
+    self.dt = dt
+    self.cut = 0.0
+
+  def reset(self):
+    self.cut = 0.0
+
+  def update(self, a: float, leads: list) -> float:
+    """leads: (d_rel, a_lead, v_lead, gap_target) for each lead worth not accelerating into."""
+    want = a
+    for d_rel, a_lead, v_lead, gap_target, v_ego in leads:
+      want = min(want, approach_accel_cap(a, True, d_rel, a_lead, v_ego, v_lead, gap_target))
+    step = APPROACH_RATE * self.dt
+    self.cut = min(max(a - want, self.cut - step), self.cut + step)
+    # the cut is never allowed to turn an acceleration into braking
+    self.cut = max(min(self.cut, max(a, 0.0)), 0.0)
+    return a - self.cut
+
+
 # BRAKE_ONSET_JERK -- m/s^3: how fast braking may deepen in the final command. What a passenger feels
 #   as a "grab" is mostly how abruptly the brake comes on, not how deep it goes. Never limits below the
 #   deceleration that still stops the standstill gap behind the lead (buffer_brake_accel with the lead's
