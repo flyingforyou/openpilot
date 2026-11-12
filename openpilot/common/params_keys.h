@@ -231,7 +231,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // A lower value assumes the car can only brake gently, so it demands more room and brakes
     // earlier and harder for the same closing speed. Measured over a drive, this term was 60%
     // of the whole follow distance.
-    {"ComfortBrake", {PERSISTENT, INT, "216"}},
+    {"ComfortBrake", {PERSISTENT, INT, "225"}},
     {"ComfortBrake2", {PERSISTENT, INT, "237"}},
     {"StopDistanceCarrot", {PERSISTENT, INT, "550"}},
     // Stopping accel: the car must already be braking at least this hard before the controller

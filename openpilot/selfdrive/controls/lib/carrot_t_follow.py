@@ -115,7 +115,12 @@ LEAD_BRAKE_BUFFER = None
 # -2.70 -> -2.59 with fewer zig-zags (10.0 -> 8.6/min) and unchanged launches; lead-stops maneuvers
 # braked less (3 m/s^2 lead -2.98 -> -2.81) at the same 4.6-5.0 m stopping gap.
 BF_ALEAD_TAU = 0.1                 # s, low-pass on the lead's acceleration (0.2: p5 -2.59; 0.1: -2.56, same jerk; 0: plan jerk 0.99 -> 1.19)
-BF_ENGAGE = (-0.7, -0.2)           # aLead (filtered): fully engaged .. not engaged
+# Engage band moved from (-0.7, -0.2) on 11/11: at the old band the radar's ordinary accel ripple behind
+# a steady lead kept dipping into it, and 36 whole minutes of following showed 7.0 shallow brake
+# applications a minute against 2.6 with brake-follow off. (-1.2, -0.6): 3.4 a minute, and the lead-stops
+# maneuvers keep their 4.6-4.9 m standstill gap (off: 1.9-2.4 m). Later bands (-1.5/-0.8, -1.2/-0.9)
+# save 0.4 more a minute but turn the 1 m/s^2 lead stop into a -2.4..-2.65 brake.
+BF_ENGAGE = (-1.2, -0.6)           # aLead (filtered): fully engaged .. not engaged
 BF_RATE_IN = 3.0                   # m/s^3, how fast the follow command may deepen (5: onset jerk 5.8, above the 4.5 of the plain planner; 3: 4.6, peak decel within 0.06; slower forces a harder peak later -- 1.5: lead-stops maneuver -2.79 -> -3.60)
 BF_RATE_OUT = 1.5                  # m/s^3, how fast it may let go
 
