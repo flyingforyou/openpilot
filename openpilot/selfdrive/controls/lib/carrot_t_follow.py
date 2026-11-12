@@ -217,14 +217,19 @@ class BrakeFollow:
 #   so a lead pulling away (every launch) is untouched.
 #   None = off.
 APPROACH_COAST = None
-APPROACH_COAST_ON = (12.0, 3.0, 2.0)  # what the ApproachCoast param switches on
+APPROACH_COAST_ON = (12.0, 0.0, 2.0)  # what the ApproachCoast param switches on
 APPROACH_MIN_V = 5.0               # m/s
-APPROACH_RATE = 0.5                # m/s^3: how fast acceleration is taken away and given back. Unlimited, a lead
+APPROACH_RATE = 0.25               # m/s^3: how fast acceleration is taken away and given back. Unlimited, a lead
                                    # appearing dropped +1.2 to zero in one frame (brake-onset jerk 5.1 -> 7.2 m/s^3);
                                    # 2.0 still added jerk in plain following (0.33 -> 0.36). 1.0 (11/12) still
                                    # turned each cut-and-give-back into an extra throttle application: over 40
                                    # morning-commute minutes 1.75 -> 2.19 a minute, command jerk 0.30 -> 0.32.
                                    # 0.5: 1.88 and 0.30, braking-in-calm share 8.0 -> 4.5 % kept
+                                   # Searched on 7.6 h of morning commutes (commit_quality.py): 0.25 with no
+                                   # braking-lead prediction (APPROACH_COAST_ON T_pred 3 -> 0) is the first
+                                   # setting at or under the pre-11/11 build on throttle applications (2.10
+                                   # vs 2.17), command jerk (0.316 vs 0.325) and car jerk (0.250 vs 0.252);
+                                   # the 30 accelerate-then-brake scenes keep -2.03 -> -1.87 of the benefit
 
 
 def approach_accel_cap(a: float, lead_present: bool, d_rel: float, a_lead: float, v_ego: float, v_lead: float,

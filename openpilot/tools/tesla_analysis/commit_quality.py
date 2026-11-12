@@ -93,7 +93,7 @@ def run(job):
   tree, r, s, variants, tag = job
   dump = os.path.join(WT, 'out', f"{tag}_{r[:8]}_{s}.json")
   env = dict(os.environ, SIMRADARD='1', SIMLEAD2='1', SIMLOC='1', SIMDUMP=dump, SIMROOT=f"{ROOT}/op-logs", SIMDELAY='0.15',
-             SIMTAU='0.10', PYTHONPATH=f"{tree}:{ROOT}/opendbc_repo", VARIANTS=json.dumps(variants),
+             SIMTAU='0.10', OMP_NUM_THREADS='1', OPENBLAS_NUM_THREADS='1', MKL_NUM_THREADS='1', PYTHONPATH=f"{tree}:{ROOT}/opendbc_repo", VARIANTS=json.dumps(variants),
              LD_LIBRARY_PATH=':'.join(LIBS + [os.environ.get('LD_LIBRARY_PATH', '')]))
   if os.environ.get('SIMCP'):
     env['SIMCP'] = os.environ['SIMCP']
@@ -144,7 +144,7 @@ def main():
     P['LongitudinalPersonality'] = GAP
     variants = [['c', P]] + [[n, {**P, **o}] for n, o in extra]
     tree = worktree(c)
-    with Pool(14) as pool:
+    with Pool(int(os.environ.get('QJOBS', os.cpu_count()))) as pool:
       res = pool.map(run, [(tree, r, s, variants, c) for r, s in W])
     for name, _ in variants:
       dumps = [d[name] for d in res if d and name in d]

@@ -16,6 +16,7 @@ planner alone" by a margin, and each has a configuration that has actually shipp
   11/11 evening  brake applications +4.6 a minute
   11/12 morning  brake applications +0.94, command jerk x1.58  ("busier", "a tug from behind")
   11/12 evening  throttle applications +0.31 a minute, jerk x1.09 (ApproachCoast giving back at 1 m/s^3)
+  (11/12 late: rate 0.25 and no braking-lead prediction -- found by commit_quality.py on 7.6 h of commutes)
 """
 import os
 from types import SimpleNamespace as NS
@@ -118,6 +119,7 @@ def test_steady_following_is_no_busier_than_the_planner(chain):
   ("11/12 evening", (-2.5, -1.5), False, 1.0, 'accel_on'),
 ])
 def test_the_builds_that_felt_busy_fail(chain, monkeypatch, name, engage, release, rate, broken):
+  monkeypatch.setattr(ctf, 'APPROACH_COAST_ON', (12.0, 3.0, 2.0))   # all three predicted a braking lead 3 s ahead
   """The gate has to be able to fail: every configuration the driver called out, or that the
   commit comparison showed busier, fails it on the metric that moved."""
   monkeypatch.setattr(ctf, 'BF_ENGAGE', engage)
