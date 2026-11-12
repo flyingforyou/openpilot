@@ -194,7 +194,7 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             if tid >= 0: rd._cut_log.append((round(t, 2), tid, round(tracks[tid].dRel, 1), round(tracks[tid].dPath, 2)))
             return tid
         rd.cut_in.update = _cut_dbg
-        import atexit; atexit.register(lambda r=rd: print('CUTDBG', len(r._cut_log), r._cut_log[:1], r._cut_log[-1:], file=sys.stderr))
+        import atexit; atexit.register(lambda r=rd: json.dump(r._cut_log, open(os.environ['SIMCUTDBG'], 'w')))
     sm = _ReplaySM(); planner = None; pts = {}; t0 = None
     engaged_keep = None
     kp = KalmanParams(DT); kf = None
