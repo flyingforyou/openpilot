@@ -13,8 +13,8 @@ from openpilot.selfdrive.controls.radard import RADAR_TO_CAMERA, KalmanParams, T
 V_EGO = 15.8   # 57 km/h
 
 
-def _track(d_rel=84.5, v_lead=0.3, path_offset=0.9, cnt=78, measured=True):
-  return SimpleNamespace(dRel=d_rel, vLead=v_lead, pathOffset=path_offset, cnt=cnt, measured=measured,
+def _track(d_rel=84.5, v_lead=0.3, path_offset=0.9, cnt=78, measured=True, v_lead_max=0.0):
+  return SimpleNamespace(dRel=d_rel, vLead=v_lead, pathOffset=path_offset, cnt=cnt, measured=measured, vLeadMax=v_lead_max,
                          stopped_ahead_count=0, stopped_ahead=False)
 
 
@@ -61,6 +61,54 @@ class TestCorroborated:
 
   def test_not_at_walking_pace(self):
     assert not _ok(_track(d_rel=20.0), v_ego=3.0, vision_dist=20.0, vision_v=0.0)
+
+
+class TestSlowingToAStop:
+  """0270 seg 14 (11/13): 72 km/h round a bend, a car slowing from 29 km/h ahead. The radar had it on the
+  path from 145 m; the model stayed under 0.25 until 82 m and the car braked at -3.9."""
+  V = 20.1
+
+  def slowing(self, **kw):
+    # 21.8 s: 123 m, 17.7 km/h, seen at 29; the model: 0.08, 113 m, 12.7 m/s
+    return _track(**{**dict(d_rel=123.0, v_lead=4.9, path_offset=-0.5, cnt=12, v_lead_max=8.1), **kw})
+
+  def ok(self, track=None, prob=0.08, vision_dist=113.0, vision_v=12.7):
+    return corroborated(self.V, prob, vision_dist, vision_v, track or self.slowing())
+
+  def test_the_0270_car_counts_at_123_m(self):
+    assert self.ok()
+
+  def test_a_slow_track_never_seen_moving_does_not(self):
+    # nothing says it is a vehicle: bridges and signs read a few km/h under braking too
+    assert not self.ok(self.slowing(v_lead_max=2.5))
+
+  def test_not_one_keeping_up_with_half_our_speed(self):
+    assert not self.ok(self.slowing(v_lead=10.5, v_lead_max=20.0))
+
+  def test_the_model_still_has_to_see_something_slow_about_there(self):
+    assert not self.ok(prob=0.02)
+    assert not self.ok(vision_dist=60.0)
+    assert not self.ok(vision_v=15.0)
+
+  def test_not_off_the_path_and_not_beyond_150_m(self):
+    assert not self.ok(self.slowing(path_offset=2.4))
+    assert not self.ok(self.slowing(d_rel=155.0), vision_dist=150.0)
+
+  def test_a_standing_track_keeps_the_stricter_rule(self):
+    # stationary and never seen moving: 0.08 from the model is not enough, and 120 m is the limit
+    assert not _ok(_track(), prob=0.08)
+    assert not _ok(_track(d_rel=130.0), vision_dist=125.0)
+
+  def test_the_radar_track_remembers_its_fastest_and_forgets_on_a_jump(self):
+    t = Track(1, 8.0, KalmanParams(DT_MDL))
+    for v in (8.0, 6.0, 4.0):
+      t.update(120.0, 0.0, v - self.V, v, True)
+    assert t.vLeadMax == 8.0
+    t.update(119.0, 0.0, 9.5 - self.V, 9.5, False)        # an unmeasured reading does not count
+    assert t.vLeadMax == 8.0
+    t.update(118.0, 0.0, 4.0 - self.V, 4.0, True)
+    t.update(60.0, 0.0, 0.0 - self.V, 0.0, True)           # the id now belongs to something else
+    assert t.vLeadMax == 0.0
 
 
 class TestLatch:

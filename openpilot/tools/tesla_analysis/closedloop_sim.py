@@ -141,6 +141,9 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
     import openpilot.selfdrive.controls.lib.stopped_lead_early as _sle
     if not hasattr(_sle, '_defaults'): _sle._defaults = {kk: getattr(_sle, kk) for kk in dir(_sle) if kk.isupper()}
     for k, v in _sle._defaults.items(): setattr(_sle, k, v)
+    import openpilot.selfdrive.controls.lib.stopped_ahead as _sa
+    if not hasattr(_sa, '_defaults'): _sa._defaults = {kk: getattr(_sa, kk) for kk in dir(_sa) if kk.isupper()}
+    for k, v in _sa._defaults.items(): setattr(_sa, k, tuple(v) if isinstance(v, list) else v)
     import openpilot.selfdrive.controls.lib.lane_change_accel as _lca
     if not hasattr(_lca, '_defaults'): _lca._defaults = {kk: getattr(_lca, kk) for kk in dir(_lca) if kk.isupper()}
     for k, v in _lca._defaults.items(): setattr(_lca, k, v)
@@ -167,6 +170,7 @@ def run(mode, cap=0.0, credit_cap=False, ovr=None):
             if not hasattr(_mc, '_defaults'): _mc._defaults = {kk: getattr(_mc, kk) for kk in dir(_mc) if kk.isupper()}
             setattr(_mc, k[3:], v)
         if k.startswith('sle.'): setattr(_sle, k[4:], v)
+        if k.startswith('sa.'): setattr(_sa, k[3:], tuple(v) if isinstance(v, list) else v)
         if k.startswith('lca.'): setattr(_lca, k[4:], v)
         if k.startswith('tlg.'): setattr(_tlg, k[4:], v)
         if k.startswith('lah.'): setattr(_lah, k[4:], tuple(v) if isinstance(v, list) else v)

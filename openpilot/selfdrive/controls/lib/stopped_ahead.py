@@ -20,6 +20,16 @@ the car from those is the model saying, however unsurely, that something slow is
     and a wrong pick would be a hard brake rather than an early one (0235 seg 13: a stationary
     return 1.7 m beside the path at 30 m, on a ramp bend, with the real queue 13 m behind it)
 
+A car still rolling to a stop is the same case with a clue the standing one lacks: the radar has
+watched it move, which no bridge or sign ever does. On 11/13 (0270 seg 14) a car slowing from 29 to
+8 km/h round a bend sat on the model's path from 145 m, with the model at 0.02-0.25, reading it slow
+and about there; it became the lead at 82 m and the car braked at -3.9. So a track seen at MOVED_V or
+more, now under SLOW_FRAC of our speed, needs only MIN_PROB_MOVED from the model and may be as far
+as RANGE_MOVED. Over routes 0201-0270 (31.5 h engaged) that is 23 episodes, none followed by nothing
+(12 became the lead by the ordinary match up to 2.55 s later -- that one from 123 m -- and in the
+other 11 the car or driver slowed within 6 s). Without the model's distance and speed agreeing it
+is 44 with 5 followed by nothing, so those stay.
+
 Three such frames latch the track; it is then the lead until the evidence has been gone as long as it
 was there (at most COUNT_MAX frames), by which time the ordinary match has it.
 
@@ -47,17 +57,27 @@ MIN_CNT = 4               # frames the track has existed
 MIN_GAP_S = 2.5           # s of travel to the track
 RANGE = (15.0, 120.0)     # m
 MIN_V_EGO = 4.0           # m/s; below it radard's low-speed override already stops for what is ahead
+MOVED_V = 3.0             # m/s the radar has seen the track do: a vehicle, not a structure
+SLOW_FRAC = 0.5           # of our speed: a track that has moved counts while slower than this
+MIN_PROB_MOVED = 0.05     # the model's lead probability for a track that has moved
+RANGE_MOVED = 150.0       # m, the far limit for one
 COMMIT = 3                # frames of evidence to latch
 COUNT_MAX = 10            # frames of evidence kept, so a latched track outlives a 0.5 s gap
 
 
 def corroborated(v_ego, prob, vision_dist, vision_v, track) -> bool:
   """One frame of evidence that this track is a stopped car in our path."""
-  if v_ego < MIN_V_EGO or prob < MIN_PROB or vision_v >= VISION_SLOW * v_ego:
+  if v_ego < MIN_V_EGO or vision_v >= VISION_SLOW * v_ego:
     return False
-  if not track.measured or track.cnt < MIN_CNT or abs(track.vLead) >= MAX_V:
+  if not track.measured or track.cnt < MIN_CNT:
     return False
-  if not (max(RANGE[0], MIN_GAP_S * v_ego) < track.dRel < RANGE[1]):
+  if abs(track.vLead) < MAX_V:
+    min_prob, far = MIN_PROB, RANGE[1]
+  elif getattr(track, 'vLeadMax', 0.0) >= MOVED_V and track.vLead < SLOW_FRAC * v_ego:
+    min_prob, far = MIN_PROB_MOVED, RANGE_MOVED       # slowing to a stop: the radar saw it move
+  else:
+    return False
+  if prob < min_prob or not (max(RANGE[0], MIN_GAP_S * v_ego) < track.dRel < far):
     return False
   return abs(track.pathOffset) < MAX_PATH_OFFSET and abs(vision_dist - track.dRel) < DIST_TOL * track.dRel
 

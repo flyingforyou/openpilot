@@ -110,6 +110,7 @@ class Track:
     self.stopped_ahead_count = 0
     self.stopped_ahead = False
     self.pathOffset = 1e3
+    self.vLeadMax = 0.0     # fastest this track has been measured: a structure never moves
 
     # Lane-relative position, from CarrotPilot. yRel is measured along a straight line out of
     # the bumper, so on a curve a roadside object reads as very nearly ahead while the lane it
@@ -220,6 +221,11 @@ class Track:
                                          abs(self.vLead - prev_v) > TRACK_JUMP_V)
     else:
       discontinuous = False
+
+    if discontinuous:
+      self.vLeadMax = 0.0
+    if self.measured:
+      self.vLeadMax = max(self.vLeadMax, float(v_lead))
 
     if not self.measured or discontinuous:
       self.is_stopped_car_count = 0
