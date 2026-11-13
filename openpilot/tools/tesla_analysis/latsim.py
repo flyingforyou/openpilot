@@ -76,7 +76,7 @@ def warp(rpy, intrinsics, big, e, psi, height):
 
 LOGS = os.environ.get('OP_LOG_ROOT', '/home/compiler/openpilot/op-logs')
 VIDEO = os.environ.get('OP_VIDEO_ROOT', '/home/compiler/openpilot/op-video')
-COLS = ('t', 'v', 'dc_log', 'dc', 'lane_log', 'lane', 'e', 'psi', 'cmd', 'cmd_log', 'k_log', 'dk', 'hold', 'trim', 'act', 'closed')
+COLS = ('t', 'v', 'dc_log', 'dc', 'lane_log', 'lane', 'e', 'psi', 'cmd', 'cmd_log', 'k_log', 'dk', 'hold', 'trim', 'act', 'closed', 'aim')
 
 
 def available(seg=None):
@@ -120,11 +120,19 @@ def load(seg):
   return np.array(ctl), mdl, st
 
 
-def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=0.0, psi0=0.0):
-  """Replay one window. hold=None uses what the drive had. Returns a dict of arrays (COLS), one row per model frame."""
+def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=0.0, psi0=0.0, tune=None, aim=False):
+  """Replay one window. hold=None uses what the drive had; aim runs lane_aim.LaneAim (the
+  drives in the set had none); tune overrides lane_centering / lane_aim constants by name.
+  Returns a dict of arrays (COLS), one row per model frame."""
   segn = int(seg.split('--')[-1])
   ctl, mdl, st = load(seg)
   if hold is None: hold = st['hold_driven']
+  if tune:
+    from openpilot.selfdrive.controls.lib import lane_centering, lane_aim
+    for name, value in tune.items():
+      mod = lane_aim if name.startswith('AIM_') else lane_centering
+      assert hasattr(mod, name), name
+      setattr(mod, name, value)
   tb = mdl[0]['t']
   vd = f'{VIDEO}/{seg}'
   fr = {'img': FrameReader(f'{vd}/fcamera.hevc', pix_fmt='nv12'), 'big_img': FrameReader(f'{vd}/ecamera.hevc', pix_fmt='nv12')}
@@ -144,6 +152,9 @@ def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=
   n_delay = int(round(ACT_DELAY / DT_CTRL)); dq = [0.0] * n_delay; lag = 0.0
   desired = None
   ci = bisect.bisect_left(ctl[:, 0], tb + t0)
+  from openpilot.selfdrive.controls.lib.lane_aim import LaneAim
+  la = LaneAim()                                   # aim: the model is shown `bias` m to the right of where the car is
+  bias = 0.0
   rows = []
   for k, mm in enumerate(mdl):
     ts = mm['t'] - tb
@@ -160,7 +171,7 @@ def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=
       _, ef, pf = recent[j]
     else:
       ef, pf = 0.0, 0.0
-    ef += e0; pf += psi0
+    ef += e0 + bias; pf += psi0
     for key in fr:
       fid = mm['fid'] if key == 'img' else mm['fidx']
       idx = st['enc'][key].get(fid, fid - 1200 * segn)
@@ -196,9 +207,13 @@ def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=
       pose_hist.append((tc, e, psi))
       ci += 1
     lc_sim = 0.5 * (mv2.laneLines[1].y[0] + mv2.laneLines[2].y[0])
+    lc_sim += bias                                 # where the centre really is: what was reported, less what was shown
+    if aim and is_closed:
+      bias = la.update(mv2.laneLines[1].y[0], mv2.laneLines[2].y[0], mv2.laneLineProbs[1], mv2.laneLineProbs[2], v, True,
+                       bool(mm['act']), bool(ctl[min(ci, len(ctl) - 1), 5]), False)
     cj = min(ci, len(ctl) - 1)
     rows.append((ts, v, mm['dc'], action.desiredCurvature, mm['lc'], lc_sim, e, psi, desired if desired is not None else 0.0,
-                 float(ctl[cj, 2]), float(ctl[cj, 1]), lag, lcc._hold, lcc._correction, mm['act'], is_closed))
+                 float(ctl[cj, 2]), float(ctl[cj, 1]), lag, lcc._hold, lcc._correction, mm['act'], is_closed, bias))
   r = np.array(rows, dtype=float)
   return {c: r[:, i] for i, c in enumerate(COLS)}
 

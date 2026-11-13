@@ -81,6 +81,9 @@ HOLD_FLOOR_LAT = 0.08       # m/s^2 allowed with no bend at all
 HOLD_MAX_LAT = 0.60         # m/s^2
 HOLD_RELEASE_TAU = 0.5      # s, when the lines go or the driver signals
 HOLD_ROAD_TAU = 1.0         # s, low-pass on the model's curvature that stands for the bend
+HOLD_DEADBAND = CENTER_ERROR_DEADBAND  # m of offset left alone
+HOLD_ERROR_TAU = 0.0        # s, low-pass on where the car is between the lines (0: as read)
+HOLD_SMOOTH_TAU = SMOOTH_TAU  # s, low-pass on what is added
 
 
 class LaneCenteringController:
@@ -90,11 +93,13 @@ class LaneCenteringController:
     self._hold_i = 0.0        # its integral part
     self._road_curvature = 0.0
     self._near_error = None
+    self._hold_error = 0.0
 
   def reset(self) -> None:
     self._correction = 0.0
     self._hold = 0.0
     self._hold_i = 0.0
+    self._hold_error = 0.0
 
   def _hold_update(self, model_curvature: float, v_ego: float, enabled: bool, valid: bool) -> float:
     """The integrated trim. `valid` says the lines can be trusted this frame."""
@@ -103,8 +108,9 @@ class LaneCenteringController:
       self._hold = float(smooth_value(0.0, self._hold, HOLD_RELEASE_TAU, dt=DT_CTRL))
       self._hold_i = float(smooth_value(0.0, self._hold_i, HOLD_RELEASE_TAU, dt=DT_CTRL))
       return self._hold
-    error = self._near_error
-    error = 0.0 if abs(error) <= CENTER_ERROR_DEADBAND else float(np.copysign(abs(error) - CENTER_ERROR_DEADBAND, error))
+    self._hold_error = float(smooth_value(self._near_error, self._hold_error, HOLD_ERROR_TAU, dt=DT_CTRL))
+    error = self._hold_error
+    error = 0.0 if abs(error) <= HOLD_DEADBAND else float(np.copysign(abs(error) - HOLD_DEADBAND, error))
     v2 = max(v_ego, MIN_V_EGO) ** 2
     limit = min(HOLD_MAX_LAT / v2, HOLD_BEND_SHARE * abs(self._road_curvature) + HOLD_FLOOR_LAT / v2)
     # the integral gets no floor: on a straight it has to be gone, or what is left sits inside the
@@ -113,7 +119,7 @@ class LaneCenteringController:
     self._hold_i = float(np.clip(self._hold_i + HOLD_KI * error * DT_CTRL, -limit_i, limit_i))
     target = float(np.clip(self._hold_i + HOLD_KP_LAT / v2 * error, -limit, limit))
     # the lines' own frame-to-frame noise is not steering input
-    self._hold = float(smooth_value(target, self._hold, SMOOTH_TAU, dt=DT_CTRL))
+    self._hold = float(smooth_value(target, self._hold, HOLD_SMOOTH_TAU, dt=DT_CTRL))
     return self._hold
 
   def update(self, model_curvature, model_v2, v_ego, enabled, offset, e2e_authority, lat_active,

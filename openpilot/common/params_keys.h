@@ -204,6 +204,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneChangeAccel", {PERSISTENT, BOOL, "1"}},
     {"TurnLoadGuard", {PERSISTENT, BOOL, "1"}},
     {"TeslaMapExitDecel", {PERSISTENT, BOOL, "1"}},
+    {"LaneCenteringAim", {PERSISTENT, BOOL, "1"}},
     {"LaneCenteringCurveHold", {PERSISTENT, BOOL, "0"}},
     {"LaneChangeBoost", {PERSISTENT, INT, "100"}},
     {"LeadAccelSlope", {PERSISTENT, BOOL, "1"}},

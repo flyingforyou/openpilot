@@ -25,6 +25,7 @@ from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.overtake_block import OvertakeBlock
+from openpilot.selfdrive.controls.lib.lane_aim import LaneAim, shifted_warp, DEFAULT_HEIGHT
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, should_stop, smooth_value, get_curvature_from_plan, \
                                                            get_lat_smooth_seconds_dynamic
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
@@ -492,6 +493,17 @@ def main(demo=False):
 
   DH = DesireHelper()
   OB = OvertakeBlock()
+  # Where the model aims in a bend (LaneCenteringAim): see lane_aim.py. The shift it holds is what
+  # the next frame is warped with.
+  LA = LaneAim()
+  def read_aim_enabled() -> bool:
+    # an unreadable key must leave the feature off, not stop the model
+    try:
+      return bool(params.get_bool("LaneCenteringAim"))
+    except Exception:
+      return False
+  aim_enabled = read_aim_enabled()
+  aim_calib = None    # (device_from_calib_euler, main intrinsics, extra intrinsics, camera height)
 
   # Optional lateral smoothing (LatSmoothSec, centiseconds; 0 = off). Re-read periodically so it
   # can be turned on mid-drive from /live. lat_smooth_dynamic is what actually got applied on the
@@ -509,6 +521,7 @@ def main(demo=False):
   while True:
     model_frame += 1
     if model_frame % 100 == 0:
+      aim_enabled = read_aim_enabled()
       try:
         lat_smooth_seconds = (params.get("LatSmoothSec") or 0) * 0.01
       except Exception:
@@ -563,6 +576,9 @@ def main(demo=False):
       extra_intrinsics = dc.wide_road.intrinsics if has_wide_camera else dc.narrow_road.intrinsics
       model_transform_extra = get_warp_matrix(device_from_calib_euler, extra_intrinsics, True).astype(np.float32)
       extrinsics_calibration_seen = True
+      cal_height = sm["extrinsicsCalibration"].height
+      aim_calib = (device_from_calib_euler, main_intrinsics, extra_intrinsics,
+                   float(cal_height[0]) if len(cal_height) else DEFAULT_HEIGHT)
 
     traffic_convention = np.zeros(2)
     traffic_convention[int(is_rhd)] = 1
@@ -583,6 +599,10 @@ def main(demo=False):
 
     bufs = {name: buf_extra if 'big' in name else buf_main for name in model.vision_input_names}
     transforms = {name: model_transform_extra if 'big' in name else model_transform_main for name in model.vision_input_names}
+    aim_shift = LA.shift if aim_calib is not None else 0.0
+    if aim_shift != 0.0:
+      transforms = {name: shifted_warp(aim_calib[0], aim_calib[2] if 'big' in name else aim_calib[1], 'big' in name,
+                                       aim_shift, aim_calib[3]).astype(np.float32) for name in model.vision_input_names}
     frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
     action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
     lat_action_t = lat_delay + frame_delay + action_delay
@@ -652,6 +672,17 @@ def main(demo=False):
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
       modelv2_send.modelV2.meta.overtakeHoldLeft = overtake_hold[0]
       modelv2_send.modelV2.meta.overtakeHoldRight = overtake_hold[1]
+
+      # The lines this frame reports were seen through aim_shift; the next frame gets the update.
+      modelv2_send.modelV2.meta.laneAimShift = aim_shift
+      try:
+        lane_lines, lane_probs = modelv2_send.modelV2.laneLines, modelv2_send.modelV2.laneLineProbs
+        LA.update(lane_lines[1].y[0], lane_lines[2].y[0], lane_probs[1], lane_probs[2], v_ego, aim_enabled,
+                  sm['carControl'].latActive, bool(sm['carState'].leftBlinker or sm['carState'].rightBlinker),
+                  DH.lane_change_state != log.LaneChangeState.off)
+      except Exception:
+        cloudlog.exception("lane aim update failed, shift dropped")
+        LA.reset()
 
       fill_driving_model_data(drivingdata_send, modelv2_send)
       fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, extrinsics_calibration_seen)

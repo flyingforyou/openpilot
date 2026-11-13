@@ -1165,6 +1165,9 @@ struct ModelDataV2 {
     # published because the lane change is being held on it and the driver is owed the reason.
     overtakeHoldLeft @10 :Bool;
     overtakeHoldRight @11 :Bool;
+    # Metres the frames were shown to the right of where the camera is, to move the line the model
+    # picks in a bend toward the middle of the lane (selfdrive/controls/lib/lane_aim.py).
+    laneAimShift @12 :Float32;
 
     deprecated :group {
       brakeDisengageProb @2 :Float32;
