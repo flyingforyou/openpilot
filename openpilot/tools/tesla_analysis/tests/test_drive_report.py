@@ -66,8 +66,8 @@ def test_the_aim_is_judged_only_where_the_drive_had_it():
   assert status(drive(params={'LaneCenteringAim': '1'}), '에임 이동량') == dr.FAIL            # on, and never moved
   n = int(600 / dr.DT)
   small = 0.03 * np.sin(np.arange(n) / 400)
-  assert status(drive(params={'LaneCenteringAim': '1'}, aim=small, lane_l=-1.8 - small, lane_r=1.8 - small), '에임 이동량') == dr.PASS
-  assert status(drive(params={'LaneCenteringAim': '1'}, aim=0.30, lane_l=-2.1, lane_r=1.5), '에임 이동량') == dr.FAIL   # stuck at its limit
+  assert status(drive(params={'LaneCenteringAim': '1'}, aim=small), '에임 이동량') == dr.PASS          # lines are reported on the road
+  assert status(drive(params={'LaneCenteringAim': '1'}, aim=0.30), '에임 이동량') == dr.FAIL            # stuck at its limit
 
 
 def test_a_stopped_car_met_late_fails():

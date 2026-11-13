@@ -1166,7 +1166,9 @@ struct ModelDataV2 {
     overtakeHoldLeft @10 :Bool;
     overtakeHoldRight @11 :Bool;
     # Metres the frames were shown to the right of where the camera is, to move the line the model
-    # picks in a bend toward the middle of the lane (selfdrive/controls/lib/lane_aim.py).
+    # picks in a bend toward the middle of the lane (selfdrive/controls/lib/lane_aim.py). laneLines,
+    # roadEdges and leadsV3 are already put back where they are on the road (subtract this for what
+    # the model saw); position is the car's own path and needs nothing.
     laneAimShift @12 :Float32;
 
     deprecated :group {

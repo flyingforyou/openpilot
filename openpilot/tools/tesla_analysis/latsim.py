@@ -152,7 +152,7 @@ def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=
   n_delay = int(round(ACT_DELAY / DT_CTRL)); dq = [0.0] * n_delay; lag = 0.0
   desired = None
   ci = bisect.bisect_left(ctl[:, 0], tb + t0)
-  from openpilot.selfdrive.controls.lib.lane_aim import LaneAim
+  from openpilot.selfdrive.controls.lib.lane_aim import LaneAim, to_road_frame
   la = LaneAim()                                   # aim: the model is shown `bias` m to the right of where the car is
   bias = 0.0
   rows = []
@@ -191,6 +191,7 @@ def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=
     msg = messaging.new_message('modelV2')
     fill_model_msg(msg, out, action, ps, mm['fid'], mm['fidx'], mm['fid'], 0.0, mm['eof'], 0.0, True)
     mv2 = msg.modelV2
+    to_road_frame(mv2, bias)                       # as modeld publishes it
     # controller and car until the next model output
     t_next = mdl[k + 1]['t'] if k + 1 < len(mdl) else mm['t'] + 0.05
     while ci < len(ctl) and ctl[ci, 0] < t_next:
@@ -207,9 +208,8 @@ def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=
       pose_hist.append((tc, e, psi))
       ci += 1
     lc_sim = 0.5 * (mv2.laneLines[1].y[0] + mv2.laneLines[2].y[0])
-    lc_sim += bias                                 # where the centre really is: what was reported, less what was shown
     if aim and is_closed:
-      bias = la.update(mv2.laneLines[1].y[0], mv2.laneLines[2].y[0], mv2.laneLineProbs[1], mv2.laneLineProbs[2], v, True,
+      bias = la.update(mv2.laneLines[1].y[0] - bias, mv2.laneLines[2].y[0] - bias, mv2.laneLineProbs[1], mv2.laneLineProbs[2], v, True,
                        bool(mm['act']), bool(ctl[min(ci, len(ctl) - 1), 5]), False)
     cj = min(ci, len(ctl) - 1)
     rows.append((ts, v, mm['dc'], action.desiredCurvature, mm['lc'], lc_sim, e, psi, desired if desired is not None else 0.0,

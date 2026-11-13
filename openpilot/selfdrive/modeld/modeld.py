@@ -25,7 +25,7 @@ from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.overtake_block import OvertakeBlock
-from openpilot.selfdrive.controls.lib.lane_aim import LaneAim, shifted_warp, DEFAULT_HEIGHT
+from openpilot.selfdrive.controls.lib.lane_aim import LaneAim, shifted_warp, DEFAULT_HEIGHT, to_road_frame
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, should_stop, smooth_value, get_curvature_from_plan, \
                                                            get_lat_smooth_seconds_dynamic
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
@@ -652,6 +652,12 @@ def main(demo=False):
                      publish_state, meta_main.frame_id, meta_extra.frame_id, frame_id,
                      frame_drop_ratio, meta_main.timestamp_eof, model_execution_time, extrinsics_calibration_seen)
       modelv2_send.modelV2.big = model.usbgpu
+      # Lines, edges and leads were seen through aim_shift: report them where they are on the road,
+      # before anything here or downstream (radard, LDW, the UI, the lane change gates) reads them.
+      try:
+        to_road_frame(modelv2_send.modelV2, aim_shift)
+      except Exception:
+        cloudlog.exception("lane aim: outputs left as the model saw them")
 
       desire_state = modelv2_send.modelV2.meta.desireState
       l_lane_change_prob = desire_state[log.Desire.laneChangeLeft]
@@ -673,11 +679,11 @@ def main(demo=False):
       modelv2_send.modelV2.meta.overtakeHoldLeft = overtake_hold[0]
       modelv2_send.modelV2.meta.overtakeHoldRight = overtake_hold[1]
 
-      # The lines this frame reports were seen through aim_shift; the next frame gets the update.
-      modelv2_send.modelV2.meta.laneAimShift = aim_shift
+      # The shift takes the lines as the model saw them this frame; the next frame gets the update.
       try:
         lane_lines, lane_probs = modelv2_send.modelV2.laneLines, modelv2_send.modelV2.laneLineProbs
-        LA.update(lane_lines[1].y[0], lane_lines[2].y[0], lane_probs[1], lane_probs[2], v_ego, aim_enabled,
+        seen = modelv2_send.modelV2.meta.laneAimShift
+        LA.update(lane_lines[1].y[0] - seen, lane_lines[2].y[0] - seen, lane_probs[1], lane_probs[2], v_ego, aim_enabled,
                   sm['carControl'].latActive, bool(sm['carState'].leftBlinker or sm['carState'].rightBlinker),
                   DH.lane_change_state != log.LaneChangeState.off)
       except Exception:

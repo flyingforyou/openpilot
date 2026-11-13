@@ -245,8 +245,8 @@ def measure(d: Drive) -> dict:
   m['engaged_min'] = float(en.sum() * DT / 60)
 
   # -- lateral: bends and straights with both lines seen, hands off the stalk
-  # where the lane's middle is from the car (+ right); the model sees the lane moved by the aim
-  centre = 0.5 * (g('lane_l') + g('lane_r')) + g('aim')
+  # where the lane's middle is from the car (+ right); modelV2 reports the lines on the road (lane_aim.to_road_frame)
+  centre = 0.5 * (g('lane_l') + g('lane_r'))
   lat_model = v ** 2 * g('dc')
   lat_car = v ** 2 * g('k')
   swing, jerk = band(lat_car), np.gradient(lat_car, DT)

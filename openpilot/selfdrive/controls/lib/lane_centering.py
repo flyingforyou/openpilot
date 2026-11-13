@@ -197,10 +197,13 @@ class LaneCenteringController:
       if np.any(stds[[1, 2]] < 0.0) or np.any(stds[[1, 2]] > MAX_LANE_STD):
         return False, 0.0
 
+      # The lines as the model saw them: with the lane aim on (lane_aim.py) modelV2 reports them
+      # where they are on the road, and this trim was tuned and replayed against the model's view.
+      seen = float(getattr(model_v2.meta, 'laneAimShift', 0.0))
       left_x = np.asarray(lane_lines[1].x, dtype=float)
-      left_y = np.asarray(lane_lines[1].y, dtype=float)
+      left_y = np.asarray(lane_lines[1].y, dtype=float) - seen
       right_x = np.asarray(lane_lines[2].x, dtype=float)
-      right_y = np.asarray(lane_lines[2].y, dtype=float)
+      right_y = np.asarray(lane_lines[2].y, dtype=float) - seen
       pos_x = np.asarray(model_v2.position.x, dtype=float)
       pos_y = np.asarray(model_v2.position.y, dtype=float)
       if not (self._valid_path(left_x, left_y) and self._valid_path(right_x, right_y) and self._valid_path(pos_x, pos_y)):

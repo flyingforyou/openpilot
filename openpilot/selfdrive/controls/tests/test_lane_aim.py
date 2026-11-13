@@ -79,3 +79,61 @@ class TestShift:
     aim = la.LaneAim()
     run(aim, -0.3, 100)
     assert run(aim, -0.3, 1, enabled=False) == 0.0
+
+
+def _model(shift=0.0):
+  from openpilot.cereal import messaging
+  msg = messaging.new_message('modelV2')
+  m = msg.modelV2
+  xs = [float(x) for x in range(0, 66, 2)]
+  m.init('laneLines', 4)
+  for i, c in enumerate((-5.4, -1.6, 2.0, 5.6)):
+    m.laneLines[i].x = xs
+    m.laneLines[i].y = [c - shift + 0.002 * x * x for x in xs]
+  m.laneLineProbs = [0.5, 0.9, 0.9, 0.5]
+  m.laneLineStds = [0.1, 0.1, 0.1, 0.1]
+  m.init('roadEdges', 2)
+  for i, c in enumerate((-7.0, 7.0)):
+    m.roadEdges[i].x = xs
+    m.roadEdges[i].y = [c - shift for _ in xs]
+  m.init('leadsV3', 1)
+  m.leadsV3[0].x = [40.0, 42.0]
+  m.leadsV3[0].y = [0.5 - shift, 0.6 - shift]
+  m.position.x = xs
+  m.position.y = [0.001 * x * x for x in xs]
+  m.position.yStd = [0.05 for _ in xs]
+  return m
+
+
+class TestRoadFrame:
+  """modelV2 reports what the model saw through the shift where it is on the road."""
+
+  def test_the_world_moves_back_and_the_cars_path_does_not(self):
+    m = _model(shift=0.25)
+    path = list(m.position.y)
+    la.to_road_frame(m, 0.25)
+    assert m.meta.laneAimShift == pytest.approx(0.25)
+    np.testing.assert_allclose(m.laneLines[1].y[0], -1.6, atol=1e-6)
+    np.testing.assert_allclose(m.laneLines[2].y[0], 2.0, atol=1e-6)
+    np.testing.assert_allclose(m.roadEdges[0].y[5], -7.0, atol=1e-6)
+    np.testing.assert_allclose(list(m.leadsV3[0].y), [0.5, 0.6], atol=1e-6)
+    np.testing.assert_allclose(list(m.position.y), path)
+
+  def test_no_shift_touches_nothing(self):
+    m = _model()
+    before = list(m.laneLines[1].y)
+    la.to_road_frame(m, 0.0)
+    assert list(m.laneLines[1].y) == before and m.meta.laneAimShift == 0.0
+
+  def test_lane_centring_still_sees_what_the_model_saw(self):
+    # the trim was tuned and replayed on the model's view; reporting the road must not change it
+    from openpilot.selfdrive.controls.lib.lane_centering import LaneCenteringController
+    seen = _model(shift=0.25)                  # as the model saw it, nothing put back
+    road = _model(shift=0.25)
+    la.to_road_frame(road, 0.25)
+    a, b = LaneCenteringController(), LaneCenteringController()
+    for _ in range(40):
+      ka = a.update(0.001, seen, 30.0, True, 0.0, 0.0, True, True, True, False, False)
+      kb = b.update(0.001, road, 30.0, True, 0.0, 0.0, True, True, True, False, False)
+    assert a._correction != 0.0
+    assert kb == pytest.approx(ka, abs=1e-9)

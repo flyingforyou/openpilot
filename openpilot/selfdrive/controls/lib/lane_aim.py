@@ -46,6 +46,23 @@ def shifted_warp(device_from_calib_euler, intrinsics, bigmodel_frame: bool, shif
   return camera_from_calib @ ground @ calib_from_model
 
 
+def to_road_frame(model_v2, shift: float) -> None:
+  """Put what the model saw through the shift back where it is on the road, in place.
+
+  A point the model reports at y lies at y + shift (+ right). That holds for everything out in the
+  world -- lane lines, road edges, leads -- and those are moved. It does not hold for the model's
+  own path (position): that is where the car will go from where it is, which no warp changes, so it
+  stays. The lane centring trim (lane_centering.py) was tuned and replayed against the lines as the
+  model saw them, and takes the shift back off (meta.laneAimShift) to keep doing exactly that.
+  """
+  model_v2.meta.laneAimShift = float(shift)
+  if shift == 0.0:
+    return
+  for group in (model_v2.laneLines, model_v2.roadEdges, model_v2.leadsV3):
+    for item in group:
+      item.y = [float(y) + shift for y in item.y]
+
+
 class LaneAim:
   def __init__(self, dt: float = DT_MDL):
     self.dt = dt
@@ -56,7 +73,8 @@ class LaneAim:
 
   def update(self, left_y: float, right_y: float, left_prob: float, right_prob: float, v_ego: float,
              enabled: bool, lat_active: bool, turn_signal: bool, lane_change: bool) -> float:
-    """left_y, right_y: the lane lines beside the car as the model, shown the current shift, reports them."""
+    """left_y, right_y: the lane lines beside the car as the model, shown the current shift, reports them
+    (on the road they are `shift` further right; see to_road_frame)."""
     if not enabled:
       self.shift = 0.0
       return self.shift
