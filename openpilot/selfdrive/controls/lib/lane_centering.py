@@ -68,7 +68,12 @@ E2E_BREAK_IN_FULL = 0.50
 # off the model's line therefore costs 0.4 m/s^2, which is why the 0.07 m/s^2 the trim above can
 # reach moves nothing. Against that spring (test_lane_centering_hold.py, 12 s of a 1.5 m/s^2 bend) the
 # car goes from 0.215 m inside to 0.12 m and swings under 0.05 m the other way as the bend ends; with
-# springs of 1 to 3 rad/s it is 0.09 to 0.16 m and 0.07 to 0.03. Not driven yet.
+# springs of 1 to 3 rad/s it is 0.09 to 0.16 m and 0.07 to 0.03.
+#
+# Driven 11/11-11/13 (routes 0267-0270) it made bends unsteady and is off by default: the inside lean
+# fell 0.22 -> 0.08 m, but the model does not hold still like that spring -- half a second later it
+# steers back by 1.66x what this adds (corr -0.63), so the two fight. Lateral accel swing at 0.3-1 Hz
+# doubled, lateral jerk +18 % (e.g. 026a seg 4: hold -0.6, model 2.9 -> 3.6, car 2.2 <-> 3.1 m/s^2).
 HOLD_KP_LAT = 2.0           # m/s^2 per metre beside the car, as curvature at the car's speed
 HOLD_KI = 0.0005            # 1/m of curvature per metre of offset per second
 HOLD_BEND_SHARE = 0.30      # of the bend's curvature
