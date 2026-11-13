@@ -18,27 +18,35 @@ changes out of the window and allow 3 s of warm-up.
 """
 import os, sys, bisect
 S = os.environ.get('LATSIM_DIR', os.path.expanduser('~/.cache/latsim'))   # driving_tinygrad.pkl and clang/ live here
-os.environ.setdefault('DEV', 'CPU:LLVM')
-os.environ.setdefault('CC', f'{S}/clang/usr/lib/llvm-18/bin/clang')
 sys.path.insert(0, '/home/compiler/openpilot'); sys.path.insert(1, '/home/compiler/openpilot/tinygrad_repo')
 import numpy as np
-from openpilot.cereal import log, messaging
-from openpilot.tools.lib.logreader import LogReader
-from openpilot.tools.lib.framereader import FrameReader
-from openpilot.common.realtime import DT_CTRL
-from openpilot.common.transformations.camera import DEVICE_CAMERAS, view_frame_from_device_frame
-from openpilot.common.transformations.model import calib_from_medmodel, calib_from_sbigmodel, get_warp_matrix
-from openpilot.common.transformations.orientation import rot_from_euler
-from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
-from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, get_lat_smooth_seconds_dynamic
-from openpilot.selfdrive.controls.lib.lane_centering import LaneCenteringController
-from openpilot.selfdrive.modeld import modeld as M
-from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, PublishState
-from openpilot.selfdrive.modeld.constants import ModelConstants
 
-M.modeld_pkl_path = lambda usbgpu: f'{S}/driving_tinygrad.pkl'
-M.open_file_chunked = lambda p: open(p, 'rb')
-M.get_tg_input_devices = lambda name, usbgpu: {'WARP_DEV': 'CPU', 'QUEUE_DEV': 'CPU'}
+CC = os.environ.get('CC', f'{S}/clang/usr/lib/llvm-18/bin/clang')
+
+
+def _heavy():
+  """The model runtime, imported on first use so that reading metrics costs nothing."""
+  global log, messaging, LogReader, FrameReader, DT_CTRL, DEVICE_CAMERAS, view_frame_from_device_frame, calib_from_medmodel, calib_from_sbigmodel, rot_from_euler, get_nv12_info, clip_curvature, get_lat_smooth_seconds_dynamic, LaneCenteringController, M, fill_model_msg, PublishState, ModelConstants
+  if 'M' in globals(): return
+  os.environ.setdefault('DEV', 'CPU:LLVM')
+  os.environ['CC'] = CC
+  from openpilot.cereal import log, messaging
+  from openpilot.tools.lib.logreader import LogReader
+  from openpilot.tools.lib.framereader import FrameReader
+  from openpilot.common.realtime import DT_CTRL
+  from openpilot.common.transformations.camera import DEVICE_CAMERAS, view_frame_from_device_frame
+  from openpilot.common.transformations.model import calib_from_medmodel, calib_from_sbigmodel
+  from openpilot.common.transformations.orientation import rot_from_euler
+  from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
+  from openpilot.selfdrive.controls.lib.drive_helpers import clip_curvature, get_lat_smooth_seconds_dynamic
+  from openpilot.selfdrive.controls.lib.lane_centering import LaneCenteringController
+  from openpilot.selfdrive.modeld import modeld as M
+  from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, PublishState
+  from openpilot.selfdrive.modeld.constants import ModelConstants
+  M.modeld_pkl_path = lambda usbgpu: f'{S}/driving_tinygrad.pkl'
+  M.open_file_chunked = lambda p: open(p, 'rb')
+  M.get_tg_input_devices = lambda name, usbgpu: {'WARP_DEV': 'CPU', 'QUEUE_DEV': 'CPU'}
+
 
 ACT_DELAY, ACT_TAU = 0.20, 0.08       # measured: actual curvature follows the command 0.2-0.25 s late
 FRAME_AGE = 0.05                      # the frame a model output belongs to was taken this long before
@@ -66,14 +74,31 @@ def warp(rpy, intrinsics, big, e, psi, height):
   return (camera_from_calib @ H @ calib_from_model).astype(np.float32)
 
 
+LOGS = os.environ.get('OP_LOG_ROOT', '/home/compiler/openpilot/op-logs')
+VIDEO = os.environ.get('OP_VIDEO_ROOT', '/home/compiler/openpilot/op-video')
+COLS = ('t', 'v', 'dc_log', 'dc', 'lane_log', 'lane', 'e', 'psi', 'cmd', 'cmd_log', 'k_log', 'dk', 'hold', 'trim', 'act', 'closed')
+
+
+def available(seg=None):
+  """What the replay needs and the repo does not carry."""
+  ok = os.path.isfile(f'{S}/driving_tinygrad.pkl') and os.path.isfile(CC)
+  if seg is not None:
+    ok = ok and all(os.path.isfile(f'{VIDEO}/{seg}/{c}.hevc') for c in ('fcamera', 'ecamera')) and os.path.isfile(f'{LOGS}/{seg}/rlog.zst')
+  return ok
+
+
 def load(seg):
-  rl = f'/home/compiler/openpilot/op-logs/{seg}/rlog.zst'
+  _heavy()
+  rl = f'{LOGS}/{seg}/rlog.zst'
   cs, ctl, mdl = [], [], []
   enc = {'img': {}, 'big_img': {}}
-  st = dict(act=False, blk=False, v=0.0, roll=0.0, delay=0.3, rpy=None, height=1.37, dev='mici', sensor='os04c10')
+  st = dict(hold_driven=False, act=False, blk=False, v=0.0, roll=0.0, delay=0.3, rpy=None, height=1.37, dev='mici', sensor='os04c10')
   for m in LogReader(rl):
     w = m.which(); t = m.logMonoTime * 1e-9
-    if w == 'carState':
+    if w == 'initData':
+      for kv in m.initData.params.entries:
+        if kv.key == 'LaneCenteringCurveHold': st['hold_driven'] = bytes(kv.value) == b'1'
+    elif w == 'carState':
       c = m.carState; st['v'] = c.vEgo; st['blk'] = bool(c.leftBlinker or c.rightBlinker)
     elif w == 'carControl': st['act'] = bool(m.carControl.latActive)
     elif w == 'lateralDelay': st['delay'] = m.lateralDelay.lateralDelay
@@ -95,17 +120,13 @@ def load(seg):
   return np.array(ctl), mdl, st
 
 
-def main():
-  seg = sys.argv[1]
-  kw = dict(a.split('=') for a in sys.argv[2:])
-  hold, closed = kw.get('HOLD', '1') == '1', kw.get('CLOSED', '0') == '1'
-  e0, psi0 = float(kw.get('E0', 0)), float(kw.get('PSI0', 0))
-  t0s, t1s = float(kw.get('T0', 0)), float(kw.get('T1', 60))
-  tclose = float(kw.get('TCLOSE', 0))            # the loop is closed from here; before it the log is followed
+def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=0.0, psi0=0.0):
+  """Replay one window. hold=None uses what the drive had. Returns a dict of arrays (COLS), one row per model frame."""
   segn = int(seg.split('--')[-1])
   ctl, mdl, st = load(seg)
+  if hold is None: hold = st['hold_driven']
   tb = mdl[0]['t']
-  vd = f'/home/compiler/openpilot/op-video/{seg}'
+  vd = f'{VIDEO}/{seg}'
   fr = {'img': FrameReader(f'{vd}/fcamera.hevc', pix_fmt='nv12'), 'big_img': FrameReader(f'{vd}/ecamera.hevc', pix_fmt='nv12')}
   w, h = fr['img'].w, fr['img'].h
   dc = DEVICE_CAMERAS[(st['dev'], st['sensor'])]
@@ -116,26 +137,27 @@ def main():
   ps = PublishState(); prev_action = log.ModelDataV2.Action()
   lcc = LaneCenteringController()
   lat_smooth_dynamic = 0.0
-  # plant, at 100 Hz on the controlsState time base
+  # the car, at 100 Hz on the controlsState time base
   e, psi = 0.0, 0.0
-  einit = float(kw.get('EINIT', 0)); placed = False
+  placed = False
   pose_hist = []                                   # (t, e, psi)
   n_delay = int(round(ACT_DELAY / DT_CTRL)); dq = [0.0] * n_delay; lag = 0.0
   desired = None
-  ci = bisect.bisect_left(ctl[:, 0], tb + t0s)
+  ci = bisect.bisect_left(ctl[:, 0], tb + t0)
   rows = []
   for k, mm in enumerate(mdl):
     ts = mm['t'] - tb
-    if ts < t0s: continue
-    if ts > t1s: break
+    if ts < t0: continue
+    if ts > t1: break
     is_closed = closed and ts >= tclose
     if is_closed and not placed:
       e += einit; placed = True
     # the pose the frame was taken from
     if is_closed and pose_hist:
       tq = mm['t'] - FRAME_AGE
-      j = max(0, bisect.bisect_right([p[0] for p in pose_hist[-40:]], tq) - 1)
-      _, ef, pf = pose_hist[-40:][j]
+      recent = pose_hist[-40:]
+      j = max(0, bisect.bisect_right([p[0] for p in recent], tq) - 1)
+      _, ef, pf = recent[j]
     else:
       ef, pf = 0.0, 0.0
     ef += e0; pf += psi0
@@ -174,15 +196,46 @@ def main():
       pose_hist.append((tc, e, psi))
       ci += 1
     lc_sim = 0.5 * (mv2.laneLines[1].y[0] + mv2.laneLines[2].y[0])
+    cj = min(ci, len(ctl) - 1)
     rows.append((ts, v, mm['dc'], action.desiredCurvature, mm['lc'], lc_sim, e, psi, desired if desired is not None else 0.0,
-                 float(ctl[min(ci, len(ctl) - 1), 2]), float(ctl[min(ci, len(ctl) - 1), 1]), lag, lcc._hold, lcc._correction, mm['act']))
-  r = np.array(rows)
-  np.savez(kw.get('OUT', 'latsim_out.npz'), r=r)
-  v2 = r[:, 1] ** 2
-  print(f'frames {len(r)}  model dc: logged vs sim  rms diff {np.sqrt(((r[:,2]-r[:,3])**2*v2**2).mean()):.3f} m/s2  corr {np.corrcoef(r[:,2],r[:,3])[0,1]:.3f}')
-  print(f'lane centre: logged vs sim rms diff {np.sqrt(((r[:,4]-r[:,5])**2).mean()):.3f} m   mean shift {np.mean(r[:,5]-r[:,4]):+.3f}')
-  print(f'controller cmd: logged vs sim rms diff {np.sqrt(((r[:,8]-r[:,9])**2*v2**2).mean()):.3f} m/s2')
-  print(f'e: mean {r[:,6].mean():+.3f} min {r[:,6].min():+.3f} max {r[:,6].max():+.3f}')
+                 float(ctl[cj, 2]), float(ctl[cj, 1]), lag, lcc._hold, lcc._correction, mm['act'], is_closed))
+  r = np.array(rows, dtype=float)
+  return {c: r[:, i] for i, c in enumerate(COLS)}
+
+
+def _ma(x, n):
+  k = np.ones(n) / n
+  return np.convolve(np.pad(x, (n // 2, n - 1 - n // 2), mode='edge'), k, 'valid')
+
+
+def metrics(r, bend_from=None):
+  """What a window looked like once the loop was closed (and, for the bend figures, from `bend_from` s on)."""
+  m = r['closed'] > 0
+  if bend_from is not None: m &= r['t'] >= bend_from
+  v2 = r['v'] ** 2
+  lat = (r['k_log'] + r['dk']) * v2                      # the simulated car's lateral acceleration
+  lat_log = r['k_log'] * v2
+  side = np.sign(np.mean(r['dc_log'][m]))                # + is a bend to the right, and lane y + is right
+  swing = lambda a: float(np.sqrt(np.mean((a - _ma(a, 100))[m] ** 2)))
+  jerk = lambda a: float(np.sqrt(np.mean(np.gradient(_ma(a, 4), 0.05)[m] ** 2)))
+  return dict(
+    off_path=float(np.abs(r['e'][m]).max()),             # m from the logged path
+    inside=float(-side * np.mean(r['lane'][m])),         # m the car sits toward the inside of the bend
+    inside_log=float(-side * np.mean(r['lane_log'][m])),
+    swing=swing(lat), swing_log=swing(lat_log), jerk=jerk(lat), jerk_log=jerk(lat_log),
+    dc_corr=float(np.corrcoef(r['dc_log'][m], r['dc'][m])[0, 1]),
+    lat=float(np.mean(np.abs(lat_log[m]))), v=float(np.mean(r['v'][m])))
+
+
+def main():
+  seg = sys.argv[1]
+  kw = dict(a.split('=') for a in sys.argv[2:])
+  r = run(seg, hold=(kw['HOLD'] == '1') if 'HOLD' in kw else None, closed=kw.get('CLOSED', '0') == '1',
+          tclose=float(kw.get('TCLOSE', 0)), t0=float(kw.get('T0', 0)), t1=float(kw.get('T1', 60)),
+          einit=float(kw.get('EINIT', 0)), e0=float(kw.get('E0', 0)), psi0=float(kw.get('PSI0', 0)))
+  if 'OUT' in kw: np.savez(kw['OUT'], **r)
+  r['closed'][:] = 1
+  for k, v in metrics(r).items(): print(f'{k:11s} {v:+.3f}')
 
 
 if __name__ == '__main__':

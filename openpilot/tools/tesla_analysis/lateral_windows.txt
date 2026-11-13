@@ -1,0 +1,12 @@
+# Bends for the lateral closed-loop replay (latsim.py): segment, where the loop closes (5 s before the
+# bend, on a straight), where the window ends. Chosen for tidy lines, no lane change, no driver torque.
+# Routes below 0x267 were driven without the curve hold, the others with it.
+00000261--4215d97330--19 16 36
+00000261--4215d97330--20 4 26
+00000263--5ebbf1768e--8 32 51
+00000264--b68d7b9280--30 29 46
+0000026a--797c325f6e--13 12 31
+0000026b--bddf771bce--8 1 23
+0000026f--8b2ed4124f--21 10 35
+00000270--cf522eca99--7 18 40
+00000270--cf522eca99--10 1 23
