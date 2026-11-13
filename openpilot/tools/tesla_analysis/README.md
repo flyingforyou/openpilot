@@ -29,6 +29,7 @@ so they cannot be piped.
 
 | script | question |
 |---|---|
+| `drive_report.py <route>...` | After a drive: every feature still waiting for the road, as 합격 / 불합격 / 주의 / 장면 없음 against the reference drives in `drive_report_baseline.json` (bend steadiness, lane position, lane aim, lead matching, stopped cars, following comfort, launches, ramps, the relay handover, faults). Start here |
 | `disengage_review.py <route>...` | Every disengagement with its cause, sorted into driver_turn / driver_lane_change (not problems), problem (fault or alert) and review. Read only the review ones |
 | `analyze_fail.py <seg>...` | Broad first look: which feature flags were actually on, EPAS histograms, onroad events, and every state transition in order |
 | `window.py <from> <to> <seg>...` | Everything that happened between two timestamps, in order. The workhorse for pinning down a 0.1s cause |

@@ -31,7 +31,7 @@ LANE_CHANGE_MIN_KPH = 40.0
 # events that only describe the driver taking over, never a fault
 DRIVER_EVENTS = {'gasPressedOverride', 'steerOverride', 'pedalPressed', 'steerDisengage', 'buttonCancel',
                  'pcmDisable', 'laneChange', 'preLaneChangeLeft', 'preLaneChangeRight', 'laneChangeBlocked',
-                 'wrongGear', 'reverseGear', 'seatbeltNotLatched', 'doorOpen', 'manualRestart'}
+                 'wrongGear', 'reverseGear', 'seatbeltNotLatched', 'doorOpen', 'manualRestart', 'preEnableStandstill', 'brakeHold', 'parkBrake'}
 
 
 @dataclass
