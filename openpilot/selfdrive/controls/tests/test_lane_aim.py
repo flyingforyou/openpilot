@@ -10,11 +10,15 @@ RPY = np.array([0.0045, -0.088, -0.014])
 K = DEVICE_CAMERAS[('mici', 'os04c10')].narrow_road.intrinsics
 
 
-def run(aim, centre, n, v=30.0, enabled=True, active=True, signal=False, lane_change=False, prob=0.9, width=3.6):
-  """`centre`: where the lane centre really is beside the car (m, + right); the model reports it less the shift."""
+RIGHT, LEFT, STRAIGHT = (1.6, 1.6), (-1.6, -1.6), (0.0, 0.0)     # m/s2 over the plan ahead, + in a bend to the right
+
+
+def run(aim, centre, n, lat=RIGHT, v=30.0, enabled=True, active=True, signal=False, lane_change=False, prob=0.9, width=3.6):
+  """`centre`: where the lane centre really is beside the car (m, + right); the model reports it less the shift.
+  `lat`: the least and the most lateral accel in the model's plan (lat_accel_ahead)."""
   for _ in range(n):
     c = centre - aim.shift
-    aim.update(c - width / 2, c + width / 2, prob, prob, v, enabled, active, signal, lane_change)
+    aim.update(c - width / 2, c + width / 2, prob, prob, v, enabled, active, signal, lane_change, lat)
   return aim.shift
 
 
@@ -46,7 +50,7 @@ class TestWarp:
 class TestShift:
   def test_a_steady_lean_is_answered_slowly(self):
     aim = la.LaneAim()
-    # the car sits 0.25 m right of the centre (the centre is 0.25 m to its left)
+    # a bend to the right; the car sits 0.25 m right of the centre, to the inside (the centre is 0.25 m to its left)
     one = run(aim, -0.25, 20)
     assert 0.0 < one < 0.12                                  # after a second: on its way, no jump
     assert one == pytest.approx(la.AIM_GAIN * (0.25 - la.AIM_DEADBAND), rel=0.1)
@@ -54,7 +58,7 @@ class TestShift:
     assert run(aim, -0.25, 200) == pytest.approx(la.AIM_MAX, abs=1e-6)
 
   def test_the_other_side(self):
-    assert run(la.LaneAim(), +0.25, 20) < 0.0
+    assert run(la.LaneAim(), +0.25, 20, lat=LEFT) < 0.0
 
   def test_inside_the_deadband_nothing_builds(self):
     assert run(la.LaneAim(), -0.07, 400) == 0.0
@@ -63,9 +67,8 @@ class TestShift:
     aim = la.LaneAim()
     run(aim, -0.25, 60)
     held = aim.shift
-    after = run(aim, -0.05, 100)                             # the car is now within the deadband
+    after = run(aim, -0.05, 100)                             # the car is now within the deadband, the bend goes on
     assert 0.5 * held < after < held                         # kept, less the leak
-    assert run(aim, 0.0, 2000) < 0.01                        # and gone on a long straight
 
   @pytest.mark.parametrize("kw", [dict(active=False), dict(signal=True), dict(lane_change=True), dict(prob=0.3),
                                   dict(v=5.0), dict(width=5.5)])
@@ -79,6 +82,53 @@ class TestShift:
     aim = la.LaneAim()
     run(aim, -0.3, 100)
     assert run(aim, -0.3, 1, enabled=False) == 0.0
+
+
+class TestTheShiftBelongsToTheBend:
+  """11/15, routes 0272-0277: the shift a bend had built was still there when the bend opened out, and the
+  car ran 0.13-0.60 m toward the outside line in all 11 exits."""
+
+  def test_no_more_than_the_bend_is_hard(self):
+    gentle = (0.5, 0.5)
+    assert run(la.LaneAim(), -0.25, 400, lat=gentle) == pytest.approx(la.AIM_PER_LAT * 0.5, abs=1e-6)
+
+  def test_nothing_on_a_straight(self):
+    assert run(la.LaneAim(), -0.25, 400, lat=STRAIGHT) == 0.0
+
+  def test_not_toward_the_inside(self):
+    # in a bend to the left the car is on the outside (right of the centre): that is not for the shift to answer
+    assert run(la.LaneAim(), -0.25, 400, lat=LEFT) == 0.0
+
+  def test_it_comes_off_as_the_exit_comes_into_the_plan(self):
+    aim = la.LaneAim()
+    run(aim, -0.25, 200)
+    full = aim.shift
+    # the bend still holds here, and has opened out by the end of the lookahead; the car is still inside
+    assert run(aim, -0.25, 20, lat=(0.2, 1.6)) < 0.25 * full                 # 1 s
+    assert run(aim, -0.25, 40, lat=(0.0, 1.6)) < 0.01
+
+  def test_it_does_not_jump(self):
+    aim = la.LaneAim()
+    run(aim, -0.25, 200)
+    full = aim.shift
+    assert full - run(aim, -0.25, 1, lat=STRAIGHT) < 0.05                  # one frame: the view moves, it is not cut
+
+  def test_gone_before_a_bend_the_other_way(self):
+    # the second half of an S: the plan ahead already turns left while the car still turns right
+    aim = la.LaneAim()
+    run(aim, -0.25, 200)
+    assert abs(run(aim, -0.25, 40, lat=(-1.6, 1.2))) < 0.01                  # 2 s
+    # and in it, the car inside (left of the centre now), it builds the other way
+    assert run(aim, +0.25, 100, lat=LEFT) < -0.05
+
+  def test_what_the_plan_holds_ahead(self):
+    from openpilot.cereal import log
+    m = log.ModelDataV2.new_message()
+    assert la.lat_accel_ahead(m) == (0.0, 0.0)
+    m.orientationRate.t = m.velocity.t = [0.0, 0.5, 1.0, 2.0, 2.5, 4.0]
+    m.orientationRate.z = [0.05, 0.05, 0.04, 0.02, -0.03, -0.05]
+    m.velocity.x = [30.0] * 6
+    assert la.lat_accel_ahead(m) == pytest.approx((0.6, 1.5))               # up to AIM_LOOKAHEAD, not past it
 
 
 def _model(shift=0.0):

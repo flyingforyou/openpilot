@@ -25,7 +25,7 @@ from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.overtake_block import OvertakeBlock
-from openpilot.selfdrive.controls.lib.lane_aim import LaneAim, shifted_warp, DEFAULT_HEIGHT, to_road_frame
+from openpilot.selfdrive.controls.lib.lane_aim import LaneAim, shifted_warp, DEFAULT_HEIGHT, to_road_frame, lat_accel_ahead
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, should_stop, smooth_value, get_curvature_from_plan, \
                                                            get_lat_smooth_seconds_dynamic
 from openpilot.selfdrive.modeld.parse_model_outputs import Parser
@@ -685,7 +685,7 @@ def main(demo=False):
         seen = modelv2_send.modelV2.meta.laneAimShift
         LA.update(lane_lines[1].y[0] - seen, lane_lines[2].y[0] - seen, lane_probs[1], lane_probs[2], v_ego, aim_enabled,
                   sm['carControl'].latActive, bool(sm['carState'].leftBlinker or sm['carState'].rightBlinker),
-                  DH.lane_change_state != log.LaneChangeState.off)
+                  DH.lane_change_state != log.LaneChangeState.off, lat_accel_ahead(modelv2_send.modelV2))
       except Exception:
         cloudlog.exception("lane aim update failed, shift dropped")
         LA.reset()

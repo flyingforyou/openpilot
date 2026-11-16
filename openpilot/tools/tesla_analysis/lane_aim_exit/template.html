@@ -1,0 +1,369 @@
+<title>Lane Aim 코너 탈출</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one reading column of findings, each finding a figure drawn from the drives' own logs. */
+:root {
+  --bg: #f7f8f6; --surface: #ffffff; --ink: #111412; --ink-2: #4b524d; --ink-3: #7c847e; --rule: #dde1dc;
+  --band: #ebeee9; --win: #dbe8f8; --win-edge: #2a78d6;
+  --push: #2a78d6; --pos: #eb6834; --view: #1baf7a; --lat: #4b524d;
+  --warn: #c25a1d; --ok: #0c7d0c;
+  --f-body: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #131614; --surface: #1a1d1b; --ink: #eef0ec; --ink-2: #b9c0ba; --ink-3: #8b938c; --rule: #2e332f;
+  --band: #252a26; --win: #1d2c40; --win-edge: #3987e5;
+  --push: #3987e5; --pos: #d95926; --view: #199e70; --lat: #b9c0ba; --warn: #e48a52; --ok: #3fb63f; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #131614; --surface: #1a1d1b; --ink: #eef0ec; --ink-2: #b9c0ba; --ink-3: #8b938c; --rule: #2e332f;
+  --band: #252a26; --win: #1d2c40; --win-edge: #3987e5;
+  --push: #3987e5; --pos: #d95926; --view: #199e70; --lat: #b9c0ba; --warn: #e48a52; --ok: #3fb63f; color-scheme: dark }
+body { background: var(--bg); color: var(--ink); font: 15px/1.65 var(--f-body); }
+.wrap { max-width: 920px; margin: 0 auto; padding-block: 40px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 44px; }
+header { display: grid; gap: 10px; }
+.eyebrow { font: 500 12px/1 var(--f-mono); letter-spacing: .08em; color: var(--ink-3); text-transform: uppercase; }
+h1 { font-size: 30px; line-height: 1.25; margin: 0; font-weight: 700; text-wrap: balance; }
+h2 { font-size: 20px; margin: 0; font-weight: 600; text-wrap: balance; }
+p { margin: 0; max-width: 68ch; color: var(--ink-2); }
+p strong, li strong { color: var(--ink); font-weight: 600; }
+section { display: grid; gap: 14px; min-width: 0; }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.fact { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; display: grid; gap: 4px; }
+.fact .k { font-size: 12.5px; color: var(--ink-3); }
+.fact .v { font: 600 22px/1.2 var(--f-mono); font-variant-numeric: tabular-nums; }
+.fact .v small { font-size: 13px; color: var(--ink-3); font-weight: 400; }
+.fig { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 16px; display: grid; gap: 10px; min-width: 0; }
+.fig .cap { font-size: 13px; color: var(--ink-3); }
+.chart { position: relative; width: 100%; overflow: hidden; }
+.chart svg { display: block; width: 100%; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 13px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 16px; height: 3px; border-radius: 2px; display: inline-block; }
+.sw.box { height: 10px; width: 14px; border-radius: 2px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs button { font: 500 12.5px/1 var(--f-mono); padding: 7px 10px; border-radius: 6px; border: 1px solid var(--rule);
+  background: var(--bg); color: var(--ink-2); cursor: pointer; font-variant-numeric: tabular-nums; }
+.tabs button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.tabs button:focus-visible { outline: 2px solid var(--push); outline-offset: 2px; }
+.readout { font: 13px/1.5 var(--f-mono); color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 6px 9px; font: 12px/1.5 var(--f-mono); color: var(--ink); box-shadow: 0 2px 8px rgba(0,0,0,.12); white-space: nowrap; font-variant-numeric: tabular-nums; }
+svg text { font-family: var(--f-mono); font-size: 11px; fill: var(--ink-3); }
+svg .lbl { fill: var(--ink-2); font-family: var(--f-body); font-size: 12px; }
+svg .lbl-strong { fill: var(--ink); font-family: var(--f-body); font-size: 12.5px; font-weight: 600; }
+ol, ul { margin: 0; padding-left: 20px; color: var(--ink-2); max-width: 70ch; display: grid; gap: 8px; }
+code { font: 13px var(--f-mono); background: var(--band); padding: 1px 5px; border-radius: 4px; color: var(--ink); }
+.table-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; min-width: 560px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--rule); }
+th { font-weight: 500; color: var(--ink-3); font-size: 12.5px; }
+td.num { font-family: var(--f-mono); font-variant-numeric: tabular-nums; text-align: right; }
+.pill { display: inline-block; font: 500 11.5px/1 var(--f-mono); padding: 4px 7px; border-radius: 999px; }
+.pill.warn { color: var(--warn); border: 1px solid var(--warn); }
+.pill.ok { color: var(--ok); border: 1px solid var(--ok); }
+.note { font-size: 13px; color: var(--ink-3); max-width: 70ch; }
+@media (max-width: 560px) { h1 { font-size: 24px; } .wrap { gap: 34px; } }
+</style>
+
+<div class="wrap">
+<header>
+  <div class="eyebrow">LaneCenteringAim · 실주행 11/15 (0272–0277)</div>
+  <h1>코너를 빠져나올 때 차가 바깥 차선 쪽으로 붙는 이유</h1>
+  <p>코너 안에서는 모델이 안쪽으로 붙는 버릇을 덜어 주려고 모델에게 보여 주는 화면을 옆으로 옮깁니다(이동량). 그런데 이 이동량이 <strong>코너가 풀려도 바로 빠지지 않습니다.</strong> 모델의 안쪽 쏠림은 코너가 풀리는 순간 사라지는데 바깥으로 미는 이동량은 남아 있어서, 차가 코너 바깥쪽 선으로 밀려납니다.</p>
+</header>
+
+<section>
+  <div class="facts">
+    <div class="fact"><span class="k">탈출 후 5초 최대 바깥 치우침 (중앙값)</span><span class="v">0.33 m <small>이전 0.23</small></span></div>
+    <div class="fact"><span class="k">0.3 m 넘게 밀린 탈출</span><span class="v">57–70% <small>이전 22%</small></span></div>
+    <div class="fact"><span class="k">바깥쪽으로 밀린 탈출</span><span class="v">17/17 <small>이전 7/11</small></span></div>
+    <div class="fact"><span class="k">코너가 풀릴 때 이동량이 바깥으로 밀던 경우</span><span class="v">11/11 <small>2건은 상한 0.30</small></span></div>
+  </div>
+  <p class="note">이전 = 이 기능 전 11/13 주행 11건(코너 홀드가 켜져 있었을 수 있음, 도로도 다름). 이후 = 11/15 주행 17건. 조향 켜짐·깜빡이 없음·차선 확실한 탈출만 셌습니다.</p>
+</section>
+
+<section>
+  <h2>1. 무슨 일이 일어나는가</h2>
+  <p>코너를 펼쳐서 그린 개념도입니다. 가로는 진행 거리, 세로는 차선 안 위치입니다. 숫자는 실측 중앙값을 따랐습니다.</p>
+  <div class="fig">
+    <div class="chart" id="concept"></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--ink-3)"></i>이 기능 없이 (모델 기본)</span>
+      <span><i class="sw" style="background:var(--pos)"></i>이 기능 켬 (지금)</span>
+      <span><i class="sw" style="background:var(--push)"></i>이동량이 차를 미는 양</span>
+    </div>
+    <div class="cap">코너 안: 모델은 안쪽에 0.22 m 붙고, 이동량이 바깥으로 밀어 중앙에 가깝게 맞춥니다. 코너가 풀리면 안쪽 쏠림은 바로 사라지는데 이동량은 20초 누설로만 천천히 빠져서, 그만큼 차가 바깥으로 밀립니다. 차가 0.08 m 넘게 밀린 뒤에야 적분기가 되돌리기 시작하고, 그때는 반대로 넘어가기도 합니다.</div>
+  </div>
+</section>
+
+<section>
+  <h2>2. 실제 탈출 11건</h2>
+  <p>11/15 주행 rlog(20 Hz)에서 뽑은 코너 탈출입니다. 가로축 0은 코너 시작, 회색 띠는 코너 구간, 세로 점선은 코너가 풀리기 시작한 시점(횡가속도가 코너 평균의 60% 아래)입니다. 모든 세로축은 <strong>+ = 오른쪽</strong>입니다.</p>
+  <div class="fig">
+    <div class="tabs" id="exitTabs" role="group" aria-label="탈출 선택"></div>
+    <div class="readout" id="exitReadout"></div>
+    <div class="chart" id="exitChart"></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--lat)"></i>횡가속도 m/s² (+ 오른쪽 코너)</span>
+      <span><i class="sw" style="background:var(--push)"></i>이동량이 차를 미는 방향 m</span>
+      <span><i class="sw" style="background:var(--pos)"></i>차선 안 실제 위치 m</span>
+      <span><i class="sw" style="background:var(--view)"></i>모델이 자기 위치라고 보는 곳 m</span>
+    </div>
+  </div>
+  <div class="table-wrap"><table id="exitTable"><thead><tr><th>탈출</th><th>코너</th><th class="num">코너 안 안쪽 치우침</th><th class="num">풀릴 때 바깥으로 미는 이동량</th><th class="num">이후 최대 바깥 치우침</th></tr></thead><tbody></tbody></table></div>
+</section>
+
+<section>
+  <h2>3. 이전과 비교</h2>
+  <p>탈출 후 5초 안에 차선 중앙에서 가장 멀리 벗어난 거리입니다. 채운 점은 방금 돈 코너의 바깥쪽, 빈 점은 안쪽으로 벗어난 경우입니다.</p>
+  <div class="fig">
+    <div class="chart" id="peaks"></div>
+    <div class="legend">
+      <span><i class="sw box" style="background:var(--pos)"></i>바깥쪽</span>
+      <span><i class="sw box" style="border:2px solid var(--ink-3);background:transparent"></i>안쪽</span>
+      <span><i class="sw" style="background:var(--ink)"></i>중앙값</span>
+    </div>
+    <div class="cap">qlog 2 Hz 차선 위치로 잰 값이라 rlog 표(20 Hz)와 건별 수치는 조금 다릅니다.</div>
+  </div>
+</section>
+
+<section>
+  <h2>4. 검증 시뮬레이션은 코너의 처음과 끝을 담았나</h2>
+  <p>이 기능은 실제 모델로 9개 코너를 재현해서 검증했습니다(<code>test_lateral_replay</code>). 그 중 원본이 아직 기기에 있는 3개 구간을 코너와 겹쳐 봤습니다. 파란 띠가 검증 구간이고, 진한 부분부터 코너 지표를 계산합니다. <strong>세 구간 모두 코너가 끝나기 전이나 끝나는 순간에 멈춥니다.</strong> 탈출 뒤는 한 번도 측정되지 않았습니다.</p>
+  <div class="fig">
+    <div id="windows" style="display:grid;gap:14px"></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--lat)"></i>횡가속도 m/s²</span>
+      <span><i class="sw box" style="background:var(--band)"></i>코너 구간</span>
+      <span><i class="sw box" style="background:var(--win)"></i>검증 구간 (루프 닫힘 → 끝)</span>
+    </div>
+    <div class="cap">지표도 코너 구간 평균(안쪽 치우침, 흔들림, 저크)뿐이고, "바깥으로 밀렸나" 검사도 같은 구간 평균이라 탈출 쏠림은 원래부터 잡을 수 없었습니다. 나머지 6개 구간(0261–026b)은 기기에서 지워져 확인하지 못했습니다.</div>
+  </div>
+</section>
+
+<section>
+  <h2>5. 연속 코너 (S자)</h2>
+  <p>반대 방향 코너가 3–4초 안에 이어지는 경우입니다. 앞 코너에서 바깥으로 밀던 이동량은 다음 코너에서는 <strong>안쪽으로 미는 방향</strong>이 됩니다. 그래서 다음 코너 진입에서 안쪽을 파고들고, 적분기가 방향을 바꾸는 데 2초 넘게 걸립니다. 그 코너가 끝나면 다시 바깥으로 밀립니다.</p>
+  <div class="fig">
+    <div class="tabs" id="sTabs" role="group" aria-label="연속 코너 선택"></div>
+    <div class="readout" id="sReadout"></div>
+    <div class="chart" id="sChart"></div>
+    <div class="legend">
+      <span><i class="sw" style="background:var(--lat)"></i>횡가속도 m/s²</span>
+      <span><i class="sw" style="background:var(--push)"></i>이동량이 미는 방향 m</span>
+      <span><i class="sw" style="background:var(--pos)"></i>차선 안 실제 위치 m</span>
+      <span><i class="sw" style="background:var(--view)"></i>모델이 보는 자기 위치 m</span>
+    </div>
+    <div class="cap">헤어핀은 이 주행에서 9 m/s 이하로 지나가 기능의 최저 속도(10 m/s) 아래였습니다. 속도 조건이 바뀌거나 빠른 헤어핀이 이어지면 같은 이월이 더 크게 나타날 구조입니다.</div>
+  </div>
+</section>
+
+<section>
+  <h2>6. 구현의 구멍</h2>
+  <ol>
+    <li><strong>이동량이 코너와 묶여 있지 않습니다.</strong> 차선 위치 오차의 적분이라 코너가 끝나도 남습니다. 모델의 안쪽 쏠림은 곡률과 함께 사라지는데, 이동량은 곡률을 모릅니다.</li>
+    <li><strong>직선에서도 20초 누설이 전부입니다.</strong> 설명에는 "직선에서 빠진다"고 되어 있지만 누설은 코너든 직선이든 같습니다. 1.5초로 빨리 빠지는 건 깜빡이, 차선 변경, 조향 꺼짐, 차선 불확실일 때뿐입니다.</li>
+    <li><strong>차가 밀려야 풀립니다.</strong> 중앙 ±0.08 m 안에서는 적분이 멈추고, 그 밖에서도 초당 오차 1 m당 0.6 m로 느립니다. 탈출 후 차가 0.08 m 넘게 밀린 다음에야 되돌리기 시작하고, 반대로 넘어가기도 합니다.</li>
+    <li><strong>방향이 바뀌는 연속 코너에서 반대로 작동합니다.</strong> 앞 코너의 이동량이 다음 코너 진입에서 안쪽으로 밉니다.</li>
+    <li><strong>검증에 탈출 구간이 없습니다.</strong> 재현 검증 구간이 코너 끝 전후에서 멈추고, 지표도 코너 구간 평균뿐입니다.</li>
+    <li><strong>상한에 붙습니다.</strong> 11건 중 2건은 코너 안에서 이미 0.30 m 상한에 붙어 있었고, 그래도 안쪽에 0.31–0.34 m 남아 있었습니다. 그 상태로 코너가 풀리면 바깥으로 0.50 m 넘게 밀렸습니다.</li>
+  </ol>
+</section>
+
+<section>
+  <h2>7. 고칠 방향</h2>
+  <ul>
+    <li><strong>이동량을 곡률에 묶습니다.</strong> 허용 이동량을 지금 코너 세기에 비례시켜, 곡률이 줄면 이동량도 함께 줄게 합니다.</li>
+    <li><strong>코너가 풀리기 전에 내려놓습니다.</strong> 모델이 1초쯤 앞에서 보는 곡률이 줄기 시작하면 미리 빼기 시작해서, 안쪽 쏠림이 사라지는 시점과 맞춥니다.</li>
+    <li><strong>방향이 바뀌면 바로 비웁니다.</strong> 앞쪽 곡률의 부호가 바뀌면 남은 이동량을 빠르게 0으로 보냅니다.</li>
+    <li><strong>검증 구간을 늘립니다.</strong> 코너 앞 5초부터 탈출 뒤 10초까지 담고, 탈출 뒤 바깥 치우침을 지표로 넣어 지금 실측(0.33 m)보다 나빠지면 실패하게 합니다. S자 구간도 넣습니다.</li>
+  </ul>
+  <p class="note">부호: 이 데이터에서 <code>controlsState.curvature</code> 양수는 오른쪽 코너입니다(GPS 방위각 변화와 상관 +0.63, +0.83). 차선 위치 y는 오른쪽이 양수이고, 이동량 <code>laneAimShift</code> 양수는 모델에게 차가 더 오른쪽에 있는 것처럼 보여서 차를 왼쪽으로 보냅니다. 그래프의 "미는 방향"은 <code>−laneAimShift</code>입니다.</p>
+</section>
+</div>
+
+<script type="application/json" id="data">__DATA__</script>
+<script>
+const D = JSON.parse(document.getElementById('data').textContent);
+const NS = 'http://www.w3.org/2000/svg';
+const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (parent) parent.appendChild(e); return e; };
+const fmt = (v, n = 2) => (v >= 0 ? '+' : '−') + Math.abs(v).toFixed(n);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+// Stacked panels that share one time axis. panels: [{h, label, lines:[{key, color, dash}], range:[lo,hi], ticks:[...], refs:[{y, dash}]}]
+function stacked(host, d, panels, opt) {
+  host.innerHTML = '';
+  const W = Math.max(320, host.clientWidth), ML = 46, MR = 12, gap = 14, top = 8;
+  const H = panels.reduce((a, p) => a + p.h + gap, top) + 22;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': opt.aria || '' }, host);
+  const t = d.t, t0 = opt.t0 ?? t[0], t1 = opt.t1 ?? t[t.length - 1];
+  const X = v => ML + (v - t0) / (t1 - t0) * (W - ML - MR);
+  let y0 = top; const geo = [];
+  for (const p of panels) {
+    const [lo, hi] = p.range, Y = v => y0 + (hi - Math.max(lo, Math.min(hi, v))) / (hi - lo) * p.h;
+    for (const b of (opt.bands || [])) el('rect', { x: X(b[0]), y: y0, width: Math.max(0, X(b[1]) - X(b[0])), height: p.h, fill: css('--band') }, svg);
+    for (const v of p.ticks) {
+      el('line', { x1: ML, x2: W - MR, y1: Y(v), y2: Y(v), stroke: css('--rule'), 'stroke-width': v === 0 ? 1.2 : 0.6 }, svg);
+      const tx = el('text', { x: ML - 6, y: Y(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = (v > 0 ? '+' : '') + v;
+    }
+    for (const r of (p.refs || [])) el('line', { x1: ML, x2: W - MR, y1: Y(r.y), y2: Y(r.y), stroke: css('--ink-3'), 'stroke-dasharray': '2 3', 'stroke-width': 1 }, svg);
+    for (const m of (opt.marks || [])) el('line', { x1: X(m), x2: X(m), y1: y0, y2: y0 + p.h, stroke: css('--ink-2'), 'stroke-dasharray': '4 3', 'stroke-width': 1 }, svg);
+    for (const ln of p.lines) {
+      let dd = '';
+      t.forEach((v, i) => { if (v < t0 || v > t1) return; dd += (dd ? 'L' : 'M') + X(v).toFixed(1) + ',' + Y(d[ln.key][i]).toFixed(1); });
+      el('path', { d: dd, fill: 'none', stroke: css(ln.color), 'stroke-width': 2, 'stroke-linejoin': 'round', 'stroke-dasharray': ln.dash || '' }, svg);
+    }
+    const lab = el('text', { x: ML + 4, y: y0 + 12, class: 'lbl' }, svg); lab.textContent = p.label;
+    if (p.side) { const s = el('text', { x: W - MR - 4, y: y0 + 12, 'text-anchor': 'end', class: 'lbl' }, svg); s.textContent = p.side; }
+    geo.push({ y0, h: p.h, Y, p }); y0 += p.h + gap;
+  }
+  const step = (t1 - t0) > 30 ? 10 : 5;
+  for (let v = Math.ceil(t0 / step) * step; v <= t1; v += step) { const tx = el('text', { x: X(v), y: H - 6, 'text-anchor': 'middle' }, svg); tx.textContent = v + ' s'; }
+  // crosshair + tooltip
+  const cross = el('line', { y1: top, y2: H - 22, stroke: css('--ink'), 'stroke-width': 1, opacity: 0 }, svg);
+  const dots = geo.flatMap(g => g.p.lines.map(ln => ({ g, ln, c: el('circle', { r: 4, fill: css(ln.color), stroke: css('--surface'), 'stroke-width': 2, opacity: 0 }, svg) })));
+  const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; host.appendChild(tip);
+  const hit = el('rect', { x: ML, y: 0, width: W - ML - MR, height: H, fill: 'transparent' }, svg);
+  const move = ev => {
+    const r = svg.getBoundingClientRect(), sx = (ev.clientX - r.left) * W / r.width;
+    const tv = t0 + (sx - ML) / (W - ML - MR) * (t1 - t0);
+    let i = 0, best = Infinity; t.forEach((v, k) => { const e = Math.abs(v - tv); if (e < best) { best = e; i = k; } });
+    cross.setAttribute('x1', X(t[i])); cross.setAttribute('x2', X(t[i])); cross.setAttribute('opacity', 0.5);
+    dots.forEach(o => { o.c.setAttribute('cx', X(t[i])); o.c.setAttribute('cy', o.g.Y(d[o.ln.key][i])); o.c.setAttribute('opacity', 1); });
+    tip.innerHTML = `<b>${t[i].toFixed(1)} s</b><br>` + geo.flatMap(g => g.p.lines.map(ln => `<span style="color:${css(ln.color)}">●</span> ${ln.name} ${fmt(d[ln.key][i])}`)).join('<br>');
+    tip.hidden = false;
+    const px = (X(t[i]) / W) * r.width; tip.style.left = (px > r.width * 0.6 ? px - tip.offsetWidth - 12 : px + 12) + 'px'; tip.style.top = '8px';
+  };
+  hit.addEventListener('pointermove', move);
+  hit.addEventListener('pointerleave', () => { tip.hidden = true; cross.setAttribute('opacity', 0); dots.forEach(o => o.c.setAttribute('opacity', 0)); });
+}
+
+const TRIO = (bends, outsideNote) => [
+  { h: 70, label: '횡가속도 m/s² (+ 오른쪽 코너)', range: [-2.5, 2.5], ticks: [-2, 0, 2], lines: [{ key: 'lat', color: '--lat', name: '횡가속도' }] },
+  { h: 90, label: '이동량이 차를 미는 방향 m', side: '점선 = 상한 ±0.30', range: [-0.35, 0.35], ticks: [-0.3, 0, 0.3], refs: [{ y: 0.3 }, { y: -0.3 }], lines: [{ key: 'push', color: '--push', name: '미는 방향' }] },
+  { h: 120, label: '차선 안 위치 m (+ 중앙보다 오른쪽)', side: outsideNote, range: [-0.7, 0.7], ticks: [-0.5, 0, 0.5], lines: [{ key: 'pos', color: '--pos', name: '실제 위치' }, { key: 'view', color: '--view', name: '모델이 보는 위치', dash: '5 3' }] },
+];
+
+// 1. concept: unrolled lane, distance along the road on x
+function concept() {
+  const host = document.getElementById('concept'); host.innerHTML = '';
+  const W = Math.max(320, host.clientWidth), H = 250, ML = 70, MR = 14;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': '코너 진입, 코너 안, 탈출 후 차선 안 위치와 이동량 개념도' }, host);
+  const X = s => ML + s / 100 * (W - ML - MR), laneTop = 30, laneH = 130, Y = y => laneTop + laneH / 2 - y / 1.8 * (laneH / 2);
+  const bend = [25, 60];
+  el('rect', { x: X(bend[0]), y: laneTop - 18, width: X(bend[1]) - X(bend[0]), height: laneH + 18, fill: css('--band') }, svg);
+  const bl = el('text', { x: (X(bend[0]) + X(bend[1])) / 2, y: laneTop - 6, 'text-anchor': 'middle', class: 'lbl' }, svg); bl.textContent = '코너 (오른쪽으로 휨)';
+  for (const y of [1.8, -1.8]) el('line', { x1: ML, x2: W - MR, y1: Y(y), y2: Y(y), stroke: css('--ink-2'), 'stroke-width': 2 }, svg);
+  el('line', { x1: ML, x2: W - MR, y1: Y(0), y2: Y(0), stroke: css('--rule'), 'stroke-dasharray': '6 5' }, svg);
+  [['오른쪽 선 (안쪽)', 1.8], ['중앙', 0], ['왼쪽 선 (바깥)', -1.8]].forEach(([s, y]) => { const t = el('text', { x: ML - 6, y: Y(y) + 4, 'text-anchor': 'end', class: 'lbl' }, svg); t.textContent = s; });
+  const smooth = (s, a, b, w) => 1 / (1 + Math.exp(-(s - a) / w)) - 1 / (1 + Math.exp(-(s - b) / w));
+  const N = 200, base = [], aim = [], push = [];
+  let sh = 0;
+  for (let k = 0; k <= N; k++) {
+    const s = k / N * 100, bias = 0.22 * smooth(s, bend[0], bend[1], 2.2);           // model's own inside lean (m, + right = inside)
+    const target = Math.min(0.3, 0.2 * smooth(s, bend[0] + 4, 200, 3));             // shift builds in the bend...
+    sh = s < bend[1] ? Math.max(sh, target) : sh * 0.965;                            // ...and only leaks after it
+    const after = s > bend[1] ? Math.exp(-(s - bend[1]) / 9) : 0;
+    base.push([s, bias]); push.push([s, sh]);
+    aim.push([s, bias - sh + (s > bend[1] ? -0.06 * Math.sin((s - bend[1]) / 5) * after : 0)]);
+  }
+  const path = (pts, f) => pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' + f(p[1]).toFixed(1)).join('');
+  el('path', { d: path(base, Y), fill: 'none', stroke: css('--ink-3'), 'stroke-width': 2, 'stroke-dasharray': '5 4' }, svg);
+  el('path', { d: path(aim, Y), fill: 'none', stroke: css('--pos'), 'stroke-width': 2.5 }, svg);
+  const strip = 196, SY = v => strip + 30 - v / 0.3 * 30;
+  el('line', { x1: ML, x2: W - MR, y1: SY(0), y2: SY(0), stroke: css('--rule') }, svg);
+  el('path', { d: path(push, SY) + `L${X(100)},${SY(0)}L${X(0)},${SY(0)}Z`, fill: css('--push'), opacity: 0.18 }, svg);
+  el('path', { d: path(push, SY), fill: 'none', stroke: css('--push'), 'stroke-width': 2 }, svg);
+  const st = el('text', { x: ML - 6, y: SY(0.15) + 4, 'text-anchor': 'end', class: 'lbl' }, svg); st.textContent = '이동량';
+  const pk = aim.reduce((a, p) => p[1] < a[1] ? p : a);
+  el('circle', { cx: X(pk[0]), cy: Y(pk[1]), r: 5, fill: css('--pos'), stroke: css('--surface'), 'stroke-width': 2 }, svg);
+  const a1 = el('text', { x: X(pk[0]) + 9, y: Y(pk[1]) + 18, class: 'lbl-strong' }, svg); a1.textContent = '탈출 후 바깥으로 −0.33 m';
+  const a2 = el('text', { x: X(bend[0] + 3), y: Y(0.5), class: 'lbl' }, svg); a2.textContent = '모델 혼자: 안쪽 +0.22 m';
+  const a3 = el('text', { x: X(bend[1] + 3), y: SY(0.27), class: 'lbl' }, svg); a3.textContent = '코너가 끝나도 남음 (20초 누설)';
+}
+
+// 2. exits
+let exitSel = 0;
+function exits() {
+  const tabs = document.getElementById('exitTabs'); tabs.innerHTML = '';
+  D.exits.forEach((e, i) => { const b = document.createElement('button'); b.id = 'ex' + i; b.textContent = `${e.name} ${e.summary.side === 'R' ? '오른쪽' : '왼쪽'}`;
+    b.setAttribute('aria-pressed', i === exitSel); b.onclick = () => { exitSel = i; exits(); }; tabs.appendChild(b); });
+  const e = D.exits[exitSel], s = e.summary, out = s.side === 'R' ? '바깥 = 아래(왼쪽)' : '바깥 = 위(오른쪽)';
+  document.getElementById('exitReadout').textContent =
+    `${s.side === 'R' ? '오른쪽' : '왼쪽'} 코너 ${s.bendS}초 · 풀리기 시작 ${s.rampT}초에 이동량이 바깥으로 ${s.pushOutAtRamp.toFixed(2)} m 미는 중 → 이후 바깥으로 최대 ${s.peakOut.toFixed(2)} m`;
+  stacked(document.getElementById('exitChart'), e, TRIO(e.bend, out), { bands: [[e.bend[0], e.bend[1]]], marks: [s.rampT], aria: `탈출 ${e.name}` });
+}
+function exitTable() {
+  const tb = document.querySelector('#exitTable tbody'); tb.innerHTML = '';
+  for (const e of D.exits) { const s = e.summary, tr = document.createElement('tr');
+    tr.innerHTML = `<td>${e.name}</td><td>${s.side === 'R' ? '오른쪽' : '왼쪽'} ${s.bendS}초</td><td class="num">${s.inside.toFixed(2)} m</td>` +
+      `<td class="num">${s.pushOutAtRamp.toFixed(2)} m${Math.abs(s.pushOutAtRamp) >= 0.299 ? ' <span class="pill warn">상한</span>' : ''}</td>` +
+      `<td class="num">${s.peakOut.toFixed(2)} m ${s.peakOut >= 0.3 ? '<span class="pill warn">0.3+</span>' : ''}</td>`; tb.appendChild(tr); }
+}
+
+// 3. before / after strip
+function peaks() {
+  const host = document.getElementById('peaks'); host.innerHTML = '';
+  const W = Math.max(320, host.clientWidth), H = 150, ML = 96, MR = 16;
+  const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': '탈출 후 최대 치우침 이전과 이후' }, host);
+  const X = v => ML + v / 0.65 * (W - ML - MR);
+  for (const v of [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6]) { el('line', { x1: X(v), x2: X(v), y1: 10, y2: H - 26, stroke: css('--rule'), 'stroke-width': v === 0.3 ? 1.2 : 0.6, 'stroke-dasharray': v === 0.3 ? '3 3' : '' }, svg);
+    const t = el('text', { x: X(v), y: H - 8, 'text-anchor': 'middle' }, svg); t.textContent = v.toFixed(1) + ' m'; }
+  const tip = document.createElement('div'); tip.className = 'tip'; tip.hidden = true; host.appendChild(tip);
+  [['이전 (11/13)', D.peaks.before, 42], ['이후 (11/15)', D.peaks.after, 92]].forEach(([name, arr, y]) => {
+    const l = el('text', { x: ML - 10, y: y + 4, 'text-anchor': 'end', class: 'lbl' }, svg); l.textContent = name;
+    const vals = arr.map(a => a[0]).sort((a, b) => a - b), med = vals[Math.floor(vals.length / 2)];
+    arr.forEach((a, i) => { const jit = ((i * 37) % 9 - 4) * 2.6;
+      const c = el('circle', { cx: X(a[0]), cy: y + jit, r: 5, fill: a[1] === 'outside' ? css('--pos') : css('--surface'), stroke: a[1] === 'outside' ? css('--surface') : css('--ink-3'), 'stroke-width': 2 }, svg);
+      c.addEventListener('pointerenter', () => { tip.innerHTML = `${name}<br>${a[0].toFixed(2)} m · ${a[1] === 'outside' ? '바깥쪽' : '안쪽'}`; tip.hidden = false;
+        const r = svg.getBoundingClientRect(); tip.style.left = (X(a[0]) / W * r.width + 10) + 'px'; tip.style.top = (y / H * r.height - 10) + 'px'; });
+      c.addEventListener('pointerleave', () => tip.hidden = true); });
+    el('line', { x1: X(med), x2: X(med), y1: y - 16, y2: y + 16, stroke: css('--ink'), 'stroke-width': 2.5 }, svg);
+    const m = el('text', { x: X(med), y: y - 20, 'text-anchor': 'middle', class: 'lbl-strong' }, svg); m.textContent = med.toFixed(2);
+  });
+}
+
+// 4. replay windows
+function windows() {
+  const host = document.getElementById('windows'); host.innerHTML = '';
+  for (const w of D.windows) {
+    const box = document.createElement('div'); box.className = 'chart'; host.appendChild(box);
+    const W = Math.max(320, box.clientWidth), H = 130, ML = 46, MR = 12, top = 26, ph = 72;
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': `검증 구간 ${w.name}` }, box);
+    const t0 = w.t[0], t1 = w.t[w.t.length - 1], X = v => ML + (v - t0) / (t1 - t0) * (W - ML - MR), Y = v => top + (2.5 - Math.max(-2.5, Math.min(2.5, v))) / 5 * ph;
+    for (const b of w.bends) el('rect', { x: X(b[0]), y: top, width: X(Math.min(b[1], t1)) - X(b[0]), height: ph, fill: css('--band') }, svg);
+    el('rect', { x: X(w.close), y: top, width: X(w.end) - X(w.close), height: ph, fill: css('--win'), opacity: 0.55 }, svg);
+    el('rect', { x: X(w.bend_from), y: top, width: X(w.end) - X(w.bend_from), height: ph, fill: css('--win') }, svg);
+    el('line', { x1: X(w.end), x2: X(w.end), y1: top - 4, y2: top + ph + 4, stroke: css('--win-edge'), 'stroke-width': 2 }, svg);
+    for (const v of [-2, 0, 2]) { el('line', { x1: ML, x2: W - MR, y1: Y(v), y2: Y(v), stroke: css('--rule'), 'stroke-width': v ? 0.6 : 1.2 }, svg);
+      const tx = el('text', { x: ML - 6, y: Y(v) + 4, 'text-anchor': 'end' }, svg); tx.textContent = (v > 0 ? '+' : '') + v; }
+    let dd = ''; w.t.forEach((v, i) => dd += (i ? 'L' : 'M') + X(v).toFixed(1) + ',' + Y(w.lat[i]).toFixed(1));
+    el('path', { d: dd, fill: 'none', stroke: css('--lat'), 'stroke-width': 2 }, svg);
+    const b = w.bends[0], cutMid = b[1] > w.end + 1;
+    const tt = el('text', { x: ML, y: 14, class: 'lbl-strong' }, svg);
+    tt.textContent = `${w.name} · 검증 끝 ${w.end}초, 코너 끝 ${b[1]}초` + (cutMid ? ' (코너 한가운데서 멈춤)' : ' (탈출 직전에 멈춤)');
+    for (let v = Math.ceil(t0 / 10) * 10; v <= t1; v += 10) { const tx = el('text', { x: X(v), y: H - 8, 'text-anchor': 'middle' }, svg); tx.textContent = v + ' s'; }
+  }
+}
+
+// 5. S-bends
+let sSel = 0;
+function sbends() {
+  const tabs = document.getElementById('sTabs'); tabs.innerHTML = '';
+  D.sbends.forEach((s, i) => { const b = document.createElement('button'); b.id = 's' + i; b.textContent = s.name; b.setAttribute('aria-pressed', i === sSel); b.onclick = () => { sSel = i; sbends(); }; tabs.appendChild(b); });
+  const s = D.sbends[sSel], [b1, b2] = s.bends, t = s.t, at = x => t.reduce((bi, v, k) => Math.abs(v - x) < Math.abs(t[bi] - x) ? k : bi, 0);
+  const k1 = at(b1[1]), k2 = at(b2[0]), side2 = b2[2] > 0 ? '오른쪽' : '왼쪽';
+  document.getElementById('sReadout').textContent =
+    `${b1[2] > 0 ? '오른쪽' : '왼쪽'} ${b1[1]}초 → ${(b2[0] - b1[1]).toFixed(1)}초 뒤 ${side2} ${(b2[1] - b2[0]).toFixed(1)}초 · 둘째 코너 진입 때 이동량 ${fmt(s.push[k2])} m (둘째 코너의 ${Math.sign(s.push[k2]) === b2[2] ? '안쪽' : '바깥쪽'}으로 미는 중)`;
+  stacked(document.getElementById('sChart'), s, TRIO(null, '둘째 코너 안쪽 = ' + (b2[2] > 0 ? '위' : '아래')), { bands: [[b1[0], b1[1]], [b2[0], b2[1]]], marks: [b2[0]], aria: `연속 코너 ${s.name}` });
+}
+
+function all() { concept(); exits(); exitTable(); peaks(); windows(); sbends(); }
+all();
+let rt; addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(() => { concept(); exits(); peaks(); windows(); sbends(); }, 150); });
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', all);
+new MutationObserver(all).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+</script>

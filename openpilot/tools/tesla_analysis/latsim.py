@@ -152,7 +152,7 @@ def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=
   n_delay = int(round(ACT_DELAY / DT_CTRL)); dq = [0.0] * n_delay; lag = 0.0
   desired = None
   ci = bisect.bisect_left(ctl[:, 0], tb + t0)
-  from openpilot.selfdrive.controls.lib.lane_aim import LaneAim, to_road_frame
+  from openpilot.selfdrive.controls.lib.lane_aim import LaneAim, to_road_frame, lat_accel_ahead
   la = LaneAim()                                   # aim: the model is shown `bias` m to the right of where the car is
   bias = 0.0
   rows = []
@@ -210,7 +210,7 @@ def run(seg, hold=None, closed=True, tclose=0.0, t0=0.0, t1=60.0, einit=0.0, e0=
     lc_sim = 0.5 * (mv2.laneLines[1].y[0] + mv2.laneLines[2].y[0])
     if aim and is_closed:
       bias = la.update(mv2.laneLines[1].y[0] - bias, mv2.laneLines[2].y[0] - bias, mv2.laneLineProbs[1], mv2.laneLineProbs[2], v, True,
-                       bool(mm['act']), bool(ctl[min(ci, len(ctl) - 1), 5]), False)
+                       bool(mm['act']), bool(ctl[min(ci, len(ctl) - 1), 5]), False, lat_accel_ahead(mv2))
     cj = min(ci, len(ctl) - 1)
     rows.append((ts, v, mm['dc'], action.desiredCurvature, mm['lc'], lc_sim, e, psi, desired if desired is not None else 0.0,
                  float(ctl[cj, 2]), float(ctl[cj, 1]), lag, lcc._hold, lcc._correction, mm['act'], is_closed, bias))
